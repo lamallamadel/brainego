@@ -381,6 +381,72 @@ services:
       retries: 3
       start_period: 40s
 
+  data-collection:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: data-collection
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "8002:8002"
+    volumes:
+      - ./configs:/app/configs:ro
+    environment:
+      - DATA_COLLECTION_PORT=8002
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - GITHUB_DEFAULT_REPO=${GITHUB_DEFAULT_REPO:-}
+      - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:-}
+      - NOTION_API_KEY=${NOTION_API_KEY:-}
+      - NOTION_WEBHOOK_SECRET=${NOTION_WEBHOOK_SECRET:-}
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN:-}
+      - SLACK_CHANNELS=${SLACK_CHANNELS:-}
+      - COLLECTION_CONFIG=/app/configs/collection-schedule.yaml
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    command: python data_collection_service.py
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8002/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  ingestion-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: ingestion-worker
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    volumes:
+      - ./configs:/app/configs:ro
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - NUM_WORKERS=4
+    depends_on:
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      data-collection:
+        condition: service_healthy
+    command: python worker_service.py
+
 networks:
   ai-platform-net:
     driver: bridge

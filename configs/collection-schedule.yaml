@@ -1,0 +1,57 @@
+# Data Collection Schedule Configuration
+
+schedules:
+  # GitHub data collection - every 6 hours
+  - name: github_collection
+    source: github
+    interval: 6h
+    enabled: true
+    config:
+      # If repo_name is not set, will collect user activity
+      repo_name: ${GITHUB_DEFAULT_REPO}
+      hours_back: 6
+      include_issues: true
+      include_prs: true
+      include_commits: true
+      include_discussions: false
+
+  # Notion data collection - every 4 hours
+  - name: notion_collection
+    source: notion
+    interval: 4h
+    enabled: true
+    config:
+      hours_back: 4
+      # Optional: specific database ID
+      # database_id: ${NOTION_DATABASE_ID}
+
+  # Slack data collection - every 2 hours
+  - name: slack_collection
+    source: slack
+    interval: 2h
+    enabled: true
+    config:
+      # Comma-separated list of channel IDs
+      channel_ids: ${SLACK_CHANNELS}
+      hours_back: 2
+
+# Deduplication settings
+deduplication:
+  enabled: true
+  hash_based: true
+  similarity_based: true
+  similarity_threshold: 0.95
+
+# Queue settings
+queue:
+  name: ingestion
+  max_retries: 3
+  job_timeout: 300  # 5 minutes
+  result_ttl: 3600  # 1 hour
+  failure_ttl: 86400  # 24 hours
+
+# Worker settings
+workers:
+  num_workers: 4
+  worker_class: default
+  log_level: info

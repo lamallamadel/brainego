@@ -73,3 +73,9 @@ load_test_report.json
 tmp/
 temp/
 *.tmp
+
+# Data Collection Pipeline
+*.rdb
+dump.rdb
+celerybeat-schedule
+celerybeat.pid

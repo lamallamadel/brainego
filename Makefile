@@ -43,6 +43,14 @@ help:
 	@echo "  make graph-example   - Run graph usage examples"
 	@echo "  make graph-ui        - Open Neo4j Browser UI"
 	@echo "  make neo4j-logs      - View Neo4j logs"
+	@echo ""
+	@echo "Data Collection Pipeline commands:"
+	@echo "  make datacollection       - Build and start data collection service"
+	@echo "  make datacollection-start - Start data collection and workers"
+	@echo "  make datacollection-stop  - Stop data collection services"
+	@echo "  make datacollection-logs  - View data collection logs"
+	@echo "  make datacollection-test  - Run data collection tests"
+	@echo "  make datacollection-stats - Get collection statistics"
 
 install:
 	pip install -r requirements.txt
@@ -182,3 +190,34 @@ graph-ui:
 neo4j-logs:
 	@echo "Viewing Neo4j logs..."
 	@docker compose logs -f neo4j
+
+datacollection:
+	@echo "Building and starting data collection service..."
+	@docker compose build data-collection ingestion-worker
+	@docker compose up -d data-collection ingestion-worker
+	@echo ""
+	@echo "Data Collection Service started on http://localhost:8002"
+	@echo ""
+	@echo "Test with: make datacollection-test"
+	@echo "View stats: make datacollection-stats"
+
+datacollection-start:
+	@echo "Starting data collection and workers..."
+	@docker compose up -d data-collection ingestion-worker
+	@echo "Data Collection Service started on http://localhost:8002"
+
+datacollection-stop:
+	@echo "Stopping data collection services..."
+	@docker compose stop data-collection ingestion-worker
+
+datacollection-logs:
+	@echo "Viewing data collection logs..."
+	@docker compose logs -f data-collection ingestion-worker
+
+datacollection-test:
+	@echo "Running data collection tests..."
+	@python test_data_collection.py
+
+datacollection-stats:
+	@echo "Fetching collection statistics..."
+	@curl -s http://localhost:8002/stats | python -m json.tool || echo "Data collection service not responding"
