@@ -43,6 +43,13 @@ logs/
 
 # Docker
 .env
+.env.mcpjungle
+
+# Workspace (for filesystem MCP)
+workspace/
+
+# Jaeger/Tracing data
+jaeger-data/
 
 # IDE
 .vscode/

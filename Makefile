@@ -1,4 +1,4 @@
-.PHONY: help install download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo
+.PHONY: help install download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui
 
 help:
 	@echo "MAX Serve + Llama 3.3 8B Infrastructure"
@@ -27,6 +27,16 @@ help:
 	@echo "  make gateway-stop    - Stop gateway service"
 	@echo "  make gateway-test    - Run gateway end-to-end tests"
 	@echo "  make gateway-demo    - Run gateway demo"
+	@echo ""
+	@echo "MCPJungle Gateway commands:"
+	@echo "  make mcpjungle       - Build and start MCPJungle gateway"
+	@echo "  make mcpjungle-build - Build MCPJungle Docker image"
+	@echo "  make mcpjungle-start - Start MCPJungle gateway"
+	@echo "  make mcpjungle-stop  - Stop MCPJungle gateway"
+	@echo "  make mcpjungle-logs  - View MCPJungle logs"
+	@echo "  make mcpjungle-test  - Run MCPJungle tests"
+	@echo "  make mcpjungle-health- Check MCPJungle health"
+	@echo "  make jaeger-ui       - Open Jaeger UI for tracing"
 
 install:
 	pip install -r requirements.txt
@@ -105,3 +115,45 @@ gateway-test:
 gateway-demo:
 	@echo "Running gateway demo..."
 	@python examples/gateway_demo.py
+
+mcpjungle:
+	@echo "Building and starting MCPJungle gateway..."
+	@docker compose build mcpjungle-gateway jaeger
+	@docker compose up -d mcpjungle-gateway jaeger
+	@echo ""
+	@echo "MCPJungle Gateway started on http://localhost:9100"
+	@echo "Jaeger UI available at http://localhost:16686"
+	@echo ""
+	@echo "Test with: make mcpjungle-test"
+	@echo "View logs: make mcpjungle-logs"
+
+mcpjungle-build:
+	@echo "Building MCPJungle Docker image..."
+	@docker compose build mcpjungle-gateway
+
+mcpjungle-start:
+	@echo "Starting MCPJungle gateway and Jaeger..."
+	@docker compose up -d mcpjungle-gateway jaeger
+	@echo "MCPJungle Gateway started on http://localhost:9100"
+	@echo "Jaeger UI available at http://localhost:16686"
+
+mcpjungle-stop:
+	@echo "Stopping MCPJungle gateway..."
+	@docker compose stop mcpjungle-gateway jaeger
+
+mcpjungle-logs:
+	@echo "Viewing MCPJungle gateway logs..."
+	@docker compose logs -f mcpjungle-gateway
+
+mcpjungle-test:
+	@echo "Running MCPJungle tests..."
+	@python test_mcpjungle.py
+
+mcpjungle-health:
+	@echo "Checking MCPJungle health..."
+	@curl -s http://localhost:9100/health | python -m json.tool || echo "MCPJungle gateway not responding"
+
+jaeger-ui:
+	@echo "Opening Jaeger UI..."
+	@echo "Jaeger UI: http://localhost:16686"
+	@command -v open >/dev/null 2>&1 && open http://localhost:16686 || echo "Open http://localhost:16686 in your browser"

@@ -103,6 +103,76 @@ services:
       retries: 3
       start_period: 20s
 
+  mcpjungle-gateway:
+    build:
+      context: .
+      dockerfile: Dockerfile.mcpjungle
+    container_name: mcpjungle-gateway
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "9100:9100"
+    volumes:
+      - ./configs:/app/configs:ro
+      - ./workspace:/workspace
+    environment:
+      - MAX_SERVE_URL=http://max-serve:8080
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION=documents
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - API_KEYS=${API_KEYS:-}
+      - ENABLE_TELEMETRY=true
+      - OTLP_ENDPOINT=http://jaeger:4317
+      - JAEGER_ENDPOINT=jaeger:6831
+      - MCP_SERVERS_CONFIG=/app/configs/mcp-servers.yaml
+      - MCP_ACL_CONFIG=/app/configs/mcp-acl.yaml
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-}
+      - NOTION_API_KEY=${NOTION_API_KEY:-}
+    depends_on:
+      max-serve:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      jaeger:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9100/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
+  jaeger:
+    image: jaegertracing/all-in-one:1.52
+    container_name: jaeger
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "5775:5775/udp"
+      - "6831:6831/udp"
+      - "6832:6832/udp"
+      - "5778:5778"
+      - "16686:16686"
+      - "14268:14268"
+      - "14250:14250"
+      - "4317:4317"
+      - "4318:4318"
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+      - SPAN_STORAGE_TYPE=badger
+      - BADGER_EPHEMERAL=false
+      - BADGER_DIRECTORY_VALUE=/badger/data
+      - BADGER_DIRECTORY_KEY=/badger/key
+    volumes:
+      - jaeger-data:/badger
+
   qdrant:
     image: qdrant/qdrant:latest
     container_name: qdrant
@@ -199,4 +269,6 @@ volumes:
   postgres-data:
     driver: local
   minio-data:
+    driver: local
+  jaeger-data:
     driver: local

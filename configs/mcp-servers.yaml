@@ -1,0 +1,112 @@
+# MCP Server Registry Configuration
+# Defines available MCP servers and their connection details
+
+servers:
+  mcp-github:
+    name: "GitHub MCP Server"
+    description: "Access GitHub repositories, issues, PRs, and code"
+    type: "stdio"
+    command: "npx"
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-github"
+    env:
+      GITHUB_TOKEN: "${GITHUB_TOKEN}"
+    capabilities:
+      - "resources"
+      - "tools"
+      - "prompts"
+    resources:
+      - "repositories"
+      - "issues"
+      - "pull_requests"
+      - "commits"
+      - "code_search"
+    tools:
+      - "github_search_repositories"
+      - "github_get_repository"
+      - "github_list_issues"
+      - "github_create_issue"
+      - "github_get_issue"
+      - "github_list_pull_requests"
+      - "github_get_pull_request"
+      - "github_search_code"
+      - "github_get_file_contents"
+    enabled: true
+    timeout: 30
+    max_retries: 3
+
+  mcp-notion:
+    name: "Notion MCP Server"
+    description: "Access Notion databases, pages, and blocks"
+    type: "stdio"
+    command: "npx"
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-notion"
+    env:
+      NOTION_API_KEY: "${NOTION_API_KEY}"
+    capabilities:
+      - "resources"
+      - "tools"
+    resources:
+      - "databases"
+      - "pages"
+      - "blocks"
+    tools:
+      - "notion_search"
+      - "notion_get_page"
+      - "notion_create_page"
+      - "notion_update_page"
+      - "notion_get_database"
+      - "notion_query_database"
+      - "notion_get_block_children"
+      - "notion_append_block_children"
+    enabled: true
+    timeout: 30
+    max_retries: 3
+
+  mcp-filesystem:
+    name: "Filesystem MCP Server"
+    description: "Access and manipulate filesystem with controlled permissions"
+    type: "stdio"
+    command: "npx"
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-filesystem"
+      - "/workspace"
+    env: {}
+    capabilities:
+      - "resources"
+      - "tools"
+    resources:
+      - "files"
+      - "directories"
+    tools:
+      - "read_file"
+      - "write_file"
+      - "list_directory"
+      - "create_directory"
+      - "delete_file"
+      - "move_file"
+      - "search_files"
+      - "get_file_info"
+    enabled: true
+    timeout: 30
+    max_retries: 3
+    security:
+      allowed_paths:
+        - "/workspace"
+      blocked_paths:
+        - "/workspace/.git"
+        - "/workspace/.env"
+      max_file_size_mb: 10
+
+# Global MCP Configuration
+settings:
+  default_timeout: 30
+  max_concurrent_requests: 10
+  enable_caching: true
+  cache_ttl_seconds: 300
+  log_requests: true
+  log_responses: false

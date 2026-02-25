@@ -1,0 +1,205 @@
+# MCP Access Control Lists (ACL)
+# Defines agent roles and their permissions for MCP servers
+
+roles:
+  admin:
+    description: "Full access to all MCP servers and operations"
+    permissions:
+      mcp-github:
+        resources: ["*"]
+        tools: ["*"]
+        operations: ["read", "write", "delete"]
+      mcp-notion:
+        resources: ["*"]
+        tools: ["*"]
+        operations: ["read", "write", "delete"]
+      mcp-filesystem:
+        resources: ["*"]
+        tools: ["*"]
+        operations: ["read", "write", "delete"]
+    rate_limits:
+      requests_per_minute: 1000
+      requests_per_hour: 10000
+
+  developer:
+    description: "Read/write access to code repositories and filesystem"
+    permissions:
+      mcp-github:
+        resources:
+          - "repositories"
+          - "issues"
+          - "pull_requests"
+          - "commits"
+          - "code_search"
+        tools:
+          - "github_search_repositories"
+          - "github_get_repository"
+          - "github_list_issues"
+          - "github_create_issue"
+          - "github_get_issue"
+          - "github_list_pull_requests"
+          - "github_get_pull_request"
+          - "github_search_code"
+          - "github_get_file_contents"
+        operations: ["read", "write"]
+      mcp-notion:
+        resources:
+          - "pages"
+          - "databases"
+        tools:
+          - "notion_search"
+          - "notion_get_page"
+          - "notion_get_database"
+          - "notion_query_database"
+        operations: ["read"]
+      mcp-filesystem:
+        resources:
+          - "files"
+          - "directories"
+        tools:
+          - "read_file"
+          - "write_file"
+          - "list_directory"
+          - "create_directory"
+          - "search_files"
+          - "get_file_info"
+        operations: ["read", "write"]
+    rate_limits:
+      requests_per_minute: 300
+      requests_per_hour: 5000
+
+  analyst:
+    description: "Read-only access to data sources"
+    permissions:
+      mcp-github:
+        resources:
+          - "repositories"
+          - "issues"
+          - "commits"
+        tools:
+          - "github_search_repositories"
+          - "github_get_repository"
+          - "github_list_issues"
+          - "github_get_issue"
+          - "github_search_code"
+        operations: ["read"]
+      mcp-notion:
+        resources:
+          - "pages"
+          - "databases"
+          - "blocks"
+        tools:
+          - "notion_search"
+          - "notion_get_page"
+          - "notion_get_database"
+          - "notion_query_database"
+          - "notion_get_block_children"
+        operations: ["read"]
+      mcp-filesystem:
+        resources:
+          - "files"
+          - "directories"
+        tools:
+          - "read_file"
+          - "list_directory"
+          - "search_files"
+          - "get_file_info"
+        operations: ["read"]
+    rate_limits:
+      requests_per_minute: 100
+      requests_per_hour: 2000
+
+  writer:
+    description: "Write access to Notion and limited GitHub access"
+    permissions:
+      mcp-github:
+        resources:
+          - "issues"
+        tools:
+          - "github_list_issues"
+          - "github_create_issue"
+          - "github_get_issue"
+        operations: ["read", "write"]
+      mcp-notion:
+        resources:
+          - "pages"
+          - "databases"
+          - "blocks"
+        tools:
+          - "notion_search"
+          - "notion_get_page"
+          - "notion_create_page"
+          - "notion_update_page"
+          - "notion_get_database"
+          - "notion_query_database"
+          - "notion_get_block_children"
+          - "notion_append_block_children"
+        operations: ["read", "write"]
+      mcp-filesystem:
+        resources:
+          - "files"
+        tools:
+          - "read_file"
+          - "write_file"
+        operations: ["read", "write"]
+    rate_limits:
+      requests_per_minute: 200
+      requests_per_hour: 3000
+
+  readonly:
+    description: "Read-only access to all sources"
+    permissions:
+      mcp-github:
+        resources:
+          - "repositories"
+          - "issues"
+        tools:
+          - "github_search_repositories"
+          - "github_get_repository"
+          - "github_list_issues"
+          - "github_get_issue"
+        operations: ["read"]
+      mcp-notion:
+        resources:
+          - "pages"
+          - "databases"
+        tools:
+          - "notion_search"
+          - "notion_get_page"
+          - "notion_get_database"
+          - "notion_query_database"
+        operations: ["read"]
+      mcp-filesystem:
+        resources:
+          - "files"
+        tools:
+          - "read_file"
+          - "list_directory"
+        operations: ["read"]
+    rate_limits:
+      requests_per_minute: 60
+      requests_per_hour: 1000
+
+# Default role for unauthenticated or unspecified users
+default_role: readonly
+
+# API key to role mappings
+# In production, use a secure database or secrets manager
+api_key_roles:
+  sk-admin-key-456: admin
+  sk-dev-key-789: developer
+  sk-test-key-123: analyst
+
+# User/agent to role mappings (for JWT-based auth)
+user_roles:
+  admin@example.com: admin
+  developer@example.com: developer
+  analyst@example.com: analyst
+  writer@example.com: writer
+
+# Rate limiting settings
+rate_limiting:
+  enabled: true
+  storage: redis
+  key_prefix: "mcp_rate_limit"
+  block_duration_seconds: 300
