@@ -1,0 +1,340 @@
+{{- if .Values.kong.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kong-proxy
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-proxy
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: LoadBalancer
+  ports:
+    - name: proxy
+      port: 80
+      targetPort: 8000
+      protocol: TCP
+    - name: proxy-ssl
+      port: 443
+      targetPort: 8443
+      protocol: TCP
+  selector:
+    app.kubernetes.io/name: kong
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: oauth2-plugin
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-oauth2
+    app.kubernetes.io/component: auth
+config:
+  scopes:
+    - api.read
+    - api.write
+    - admin
+  mandatory_scope: true
+  token_expiration: {{ .Values.kong.oauth2.tokenExpiration }}
+  enable_authorization_code: true
+  enable_client_credentials: true
+  enable_implicit_grant: false
+  enable_password_grant: false
+  provision_key: {{ .Values.kong.oauth2.provisionKey }}
+  refresh_token_ttl: {{ .Values.kong.oauth2.refreshTokenTtl }}
+  reuse_refresh_token: false
+  pkce: required
+  auth_methods:
+    - client_credentials
+    - authorization_code
+plugin: oauth2
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: jwt-plugin
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-jwt
+    app.kubernetes.io/component: auth
+config:
+  uri_param_names:
+    - jwt
+  claims_to_verify:
+    - exp
+    - nbf
+  key_claim_name: kid
+  secret_is_base64: false
+  anonymous: null
+  run_on_preflight: true
+  maximum_expiration: {{ .Values.kong.jwt.maximumExpiration }}
+  cookie_names: []
+  header_names:
+    - Authorization
+  algorithm: RS256
+plugin: jwt
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: rate-limit-ip
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-rate-limit-ip
+    app.kubernetes.io/component: security
+config:
+  minute: {{ .Values.kong.rateLimiting.perIp.minute }}
+  policy: redis
+  redis_host: {{ .Values.redis.service.name | default "redis" }}
+  redis_port: {{ .Values.redis.service.port | default 6379 }}
+  redis_database: {{ .Values.kong.rateLimiting.redisDatabase }}
+  redis_timeout: 2000
+  fault_tolerant: true
+  hide_client_headers: false
+  identifier: ip
+plugin: rate-limiting
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: rate-limit-user
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-rate-limit-user
+    app.kubernetes.io/component: security
+config:
+  hour: {{ .Values.kong.rateLimiting.perUser.hour }}
+  policy: redis
+  redis_host: {{ .Values.redis.service.name | default "redis" }}
+  redis_port: {{ .Values.redis.service.port | default 6379 }}
+  redis_database: {{ .Values.kong.rateLimiting.redisDatabase }}
+  redis_timeout: 2000
+  fault_tolerant: true
+  hide_client_headers: false
+  identifier: consumer
+plugin: rate-limiting
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: rate-limit-workspace
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-rate-limit-workspace
+    app.kubernetes.io/component: security
+config:
+  day: {{ .Values.kong.rateLimiting.perWorkspace.day }}
+  policy: redis
+  redis_host: {{ .Values.redis.service.name | default "redis" }}
+  redis_port: {{ .Values.redis.service.port | default 6379 }}
+  redis_database: {{ .Values.kong.rateLimiting.redisDatabase }}
+  redis_timeout: 2000
+  fault_tolerant: true
+  hide_client_headers: false
+  identifier: header
+  header_name: X-Workspace-Id
+plugin: rate-limiting
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: token-budget-plugin
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-token-budget
+    app.kubernetes.io/component: security
+config:
+  daily_token_limit: {{ .Values.kong.tokenBudget.dailyLimit }}
+  redis_host: {{ .Values.redis.service.name | default "redis" }}
+  redis_port: {{ .Values.redis.service.port | default 6379 }}
+  redis_database: {{ .Values.kong.tokenBudget.redisDatabase }}
+  header_name: X-Workspace-Id
+plugin: request-transformer
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: file-log-plugin
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-audit-log
+    app.kubernetes.io/component: logging
+config:
+  path: /var/log/kong/audit.log
+  reopen: true
+  custom_fields_by_lua:
+    user_id: "return kong.request.get_header('X-User-Id') or 'anonymous'"
+    workspace_id: "return kong.request.get_header('X-Workspace-Id') or 'default'"
+    tokens_used: "return kong.ctx.shared.tokens_used or 0"
+    model_name: "return kong.ctx.shared.model_name or 'unknown'"
+    tools_used: "return kong.ctx.shared.tools_used or '[]'"
+    request_latency: "return kong.ctx.shared.request_latency or 0"
+plugin: file-log
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: http-log-plugin
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-audit-log-http
+    app.kubernetes.io/component: logging
+config:
+  http_endpoint: {{ .Values.kong.auditLog.httpEndpoint }}
+  method: POST
+  timeout: 10000
+  keepalive: 60000
+  retry_count: 10
+  queue_size: 1000
+  flush_timeout: 2
+  content_type: application/json
+  custom_fields_by_lua:
+    user_id: "return kong.request.get_header('X-User-Id') or 'anonymous'"
+    workspace_id: "return kong.request.get_header('X-Workspace-Id') or 'default'"
+    tokens_used: "return kong.ctx.shared.tokens_used or 0"
+    model_name: "return kong.ctx.shared.model_name or 'unknown'"
+    tools_used: "return kong.ctx.shared.tools_used or '[]'"
+    request_latency: "return kong.ctx.shared.request_latency or 0"
+    timestamp: "return os.time()"
+plugin: http-log
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: correlation-id-plugin
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-correlation-id
+    app.kubernetes.io/component: observability
+config:
+  header_name: X-Request-Id
+  generator: uuid
+  echo_downstream: true
+plugin: correlation-id
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongPlugin
+metadata:
+  name: prometheus-plugin
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-prometheus
+    app.kubernetes.io/component: observability
+config:
+  status_code_metrics: true
+  latency_metrics: true
+  bandwidth_metrics: true
+  upstream_health_metrics: true
+  per_consumer: true
+plugin: prometheus
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-platform-ingress
+  namespace: {{ .Values.global.namespace }}
+  annotations:
+    kubernetes.io/ingress.class: kong
+    konghq.com/plugins: oauth2-plugin,jwt-plugin,rate-limit-ip,rate-limit-user,rate-limit-workspace,file-log-plugin,http-log-plugin,correlation-id-plugin,prometheus-plugin
+    konghq.com/protocols: https
+    konghq.com/https-redirect-status-code: "301"
+    konghq.com/preserve-host: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/acme-challenge-type: http01
+  labels:
+    app.kubernetes.io/name: ai-platform-ingress
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  tls:
+  - hosts:
+    - {{ .Values.kong.ingress.host }}
+    secretName: ai-platform-tls
+  rules:
+  - host: {{ .Values.kong.ingress.host }}
+    http:
+      paths:
+      - path: /v1/chat/completions
+        pathType: Prefix
+        backend:
+          service:
+            name: agent-router
+            port:
+              number: 8000
+      - path: /v1/embeddings
+        pathType: Prefix
+        backend:
+          service:
+            name: agent-router
+            port:
+              number: 8000
+      - path: /gateway
+        pathType: Prefix
+        backend:
+          service:
+            name: gateway
+            port:
+              number: 9002
+      - path: /mcp
+        pathType: Prefix
+        backend:
+          service:
+            name: mcpjungle-gateway
+            port:
+              number: 9100
+      - path: /memory
+        pathType: Prefix
+        backend:
+          service:
+            name: mem0
+            port:
+              number: 8006
+      - path: /learning
+        pathType: Prefix
+        backend:
+          service:
+            name: learning-engine
+            port:
+              number: 8003
+      - path: /metrics
+        pathType: Prefix
+        backend:
+          service:
+            name: prometheus
+            port:
+              number: 9090
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: ai-platform-grafana-ingress
+  namespace: {{ .Values.global.namespace }}
+  annotations:
+    kubernetes.io/ingress.class: kong
+    konghq.com/plugins: oauth2-plugin,jwt-plugin,correlation-id-plugin
+    konghq.com/protocols: https
+    konghq.com/https-redirect-status-code: "301"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/acme-challenge-type: http01
+  labels:
+    app.kubernetes.io/name: grafana-ingress
+    app.kubernetes.io/component: ingress
+spec:
+  tls:
+  - hosts:
+    - grafana.{{ .Values.kong.ingress.host }}
+    secretName: grafana-tls
+  rules:
+  - host: grafana.{{ .Values.kong.ingress.host }}
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: grafana
+            port:
+              number: 3000
+{{- end }}

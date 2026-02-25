@@ -1,0 +1,72 @@
+{{- if .Values.kong.enabled }}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: kong-jwt-keypair
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-jwt-keypair
+    app.kubernetes.io/component: auth
+type: Opaque
+stringData:
+  private_key: |
+    -----BEGIN RSA PRIVATE KEY-----
+    {{ .Values.kong.jwt.privateKey | b64dec }}
+    -----END RSA PRIVATE KEY-----
+  public_key: |
+    -----BEGIN PUBLIC KEY-----
+    {{ .Values.kong.jwt.publicKey | b64dec }}
+    -----END PUBLIC KEY-----
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongConsumer
+metadata:
+  name: default-admin-user
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-consumer-admin
+    app.kubernetes.io/component: auth
+  annotations:
+    kubernetes.io/ingress.class: kong
+    konghq.com/plugins: jwt-plugin,rate-limit-user
+username: admin
+custom_id: "00000000-0000-0000-0000-000000000001"
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongCredential
+metadata:
+  name: admin-jwt-credential
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-jwt-credential
+    app.kubernetes.io/component: auth
+consumerRef: default-admin-user
+type: jwt
+config:
+  key: admin-key
+  algorithm: RS256
+  rsa_public_key: |
+    -----BEGIN PUBLIC KEY-----
+    {{ .Values.kong.jwt.publicKey | b64dec }}
+    -----END PUBLIC KEY-----
+  secret: null
+---
+apiVersion: configuration.konghq.com/v1
+kind: KongCredential
+metadata:
+  name: admin-oauth2-credential
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-oauth2-credential
+    app.kubernetes.io/component: auth
+consumerRef: default-admin-user
+type: oauth2
+config:
+  name: "Admin Application"
+  client_id: {{ .Values.kong.oauth2.adminClientId }}
+  client_secret: {{ .Values.kong.oauth2.adminClientSecret }}
+  redirect_uris:
+    - {{ .Values.kong.oauth2.redirectUri }}
+  hash_secret: true
+{{- end }}

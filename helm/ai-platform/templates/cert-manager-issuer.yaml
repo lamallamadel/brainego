@@ -1,0 +1,80 @@
+{{- if .Values.certManager.enabled }}
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+  labels:
+    app.kubernetes.io/name: cert-manager-issuer
+    app.kubernetes.io/component: tls
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: {{ .Values.certManager.email }}
+    privateKeySecretRef:
+      name: letsencrypt-staging-key
+    solvers:
+    - http01:
+        ingress:
+          class: kong
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+  labels:
+    app.kubernetes.io/name: cert-manager-issuer
+    app.kubernetes.io/component: tls
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: {{ .Values.certManager.email }}
+    privateKeySecretRef:
+      name: letsencrypt-prod-key
+    solvers:
+    - http01:
+        ingress:
+          class: kong
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: ai-platform-tls
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: ai-platform-certificate
+    app.kubernetes.io/component: tls
+spec:
+  secretName: ai-platform-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: {{ .Values.kong.ingress.host }}
+  dnsNames:
+  - {{ .Values.kong.ingress.host }}
+  privateKey:
+    algorithm: RSA
+    encoding: PKCS1
+    size: 4096
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: grafana-tls
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: grafana-certificate
+    app.kubernetes.io/component: tls
+spec:
+  secretName: grafana-tls
+  issuerRef:
+    name: letsencrypt-prod
+    kind: ClusterIssuer
+  commonName: grafana.{{ .Values.kong.ingress.host }}
+  dnsNames:
+  - grafana.{{ .Values.kong.ingress.host }}
+  privateKey:
+    algorithm: RSA
+    encoding: PKCS1
+    size: 4096
+{{- end }}

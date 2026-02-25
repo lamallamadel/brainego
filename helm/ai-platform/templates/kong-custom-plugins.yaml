@@ -1,0 +1,191 @@
+{{- if .Values.kong.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kong-token-budget-plugin
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-custom-plugin
+    app.kubernetes.io/component: security
+data:
+  handler.lua: |
+    local redis = require "resty.redis"
+    local cjson = require "cjson"
+    
+    local TokenBudgetHandler = {
+      VERSION = "1.0.0",
+      PRIORITY = 1000,
+    }
+    
+    local function connect_to_redis(conf)
+      local red = redis:new()
+      red:set_timeout(1000)
+      
+      local ok, err = red:connect(conf.redis_host, conf.redis_port)
+      if not ok then
+        kong.log.err("Failed to connect to Redis: ", err)
+        return nil, err
+      end
+      
+      if conf.redis_database then
+        local ok, err = red:select(conf.redis_database)
+        if not ok then
+          kong.log.err("Failed to select Redis database: ", err)
+          return nil, err
+        end
+      end
+      
+      return red
+    end
+    
+    local function get_workspace_id()
+      return kong.request.get_header("X-Workspace-Id") or "default"
+    end
+    
+    local function get_daily_key(workspace_id)
+      local date = os.date("%Y-%m-%d")
+      return "token_budget:" .. workspace_id .. ":" .. date
+    end
+    
+    function TokenBudgetHandler:access(conf)
+      local workspace_id = get_workspace_id()
+      local key = get_daily_key(workspace_id)
+      
+      local red, err = connect_to_redis(conf)
+      if not red then
+        kong.log.warn("Redis unavailable, skipping token budget check")
+        return
+      end
+      
+      local used_tokens, err = red:get(key)
+      if not used_tokens or used_tokens == ngx.null then
+        used_tokens = 0
+      else
+        used_tokens = tonumber(used_tokens)
+      end
+      
+      local remaining = conf.daily_token_limit - used_tokens
+      kong.response.set_header("X-Token-Budget-Remaining", tostring(remaining))
+      kong.response.set_header("X-Token-Budget-Limit", tostring(conf.daily_token_limit))
+      kong.response.set_header("X-Token-Budget-Used", tostring(used_tokens))
+      
+      if used_tokens >= conf.daily_token_limit then
+        red:set_keepalive(10000, 100)
+        return kong.response.exit(429, {
+          message = "Daily token budget exceeded for workspace",
+          workspace_id = workspace_id,
+          limit = conf.daily_token_limit,
+          used = used_tokens,
+          reset_at = os.date("%Y-%m-%d 00:00:00", os.time() + 86400)
+        })
+      end
+      
+      red:set_keepalive(10000, 100)
+    end
+    
+    function TokenBudgetHandler:header_filter(conf)
+      local workspace_id = get_workspace_id()
+      local tokens_used = kong.service.response.get_header("X-Tokens-Used")
+      
+      if tokens_used then
+        tokens_used = tonumber(tokens_used)
+        kong.ctx.shared.tokens_used = tokens_used
+        
+        local red, err = connect_to_redis(conf)
+        if red then
+          local key = get_daily_key(workspace_id)
+          red:incrby(key, tokens_used)
+          red:expire(key, 86400)
+          
+          local used_total, err = red:get(key)
+          if used_total and used_total ~= ngx.null then
+            local remaining = conf.daily_token_limit - tonumber(used_total)
+            kong.response.set_header("X-Token-Budget-Remaining", tostring(remaining))
+            kong.response.set_header("X-Token-Budget-Used", tostring(used_total))
+          end
+          
+          red:set_keepalive(10000, 100)
+        end
+      end
+    end
+    
+    return TokenBudgetHandler
+  
+  schema.lua: |
+    return {
+      name = "token-budget",
+      fields = {
+        { config = {
+            type = "record",
+            fields = {
+              { daily_token_limit = { type = "number", required = true, default = 1000000 } },
+              { redis_host = { type = "string", required = true } },
+              { redis_port = { type = "number", required = true, default = 6379 } },
+              { redis_database = { type = "number", default = 0 } },
+              { header_name = { type = "string", default = "X-Workspace-Id" } },
+            },
+          },
+        },
+      },
+    }
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kong-audit-enrichment-plugin
+  namespace: {{ .Values.global.namespace }}
+  labels:
+    app.kubernetes.io/name: kong-audit-enrichment
+    app.kubernetes.io/component: logging
+data:
+  handler.lua: |
+    local cjson = require "cjson"
+    
+    local AuditEnrichmentHandler = {
+      VERSION = "1.0.0",
+      PRIORITY = 999,
+    }
+    
+    function AuditEnrichmentHandler:access(conf)
+      kong.ctx.shared.request_start_time = ngx.now()
+      kong.ctx.shared.user_id = kong.request.get_header("X-User-Id") or "anonymous"
+      kong.ctx.shared.workspace_id = kong.request.get_header("X-Workspace-Id") or "default"
+    end
+    
+    function AuditEnrichmentHandler:header_filter(conf)
+      local request_time = ngx.now() - (kong.ctx.shared.request_start_time or ngx.now())
+      kong.ctx.shared.request_latency = math.floor(request_time * 1000)
+      
+      local model_header = kong.service.response.get_header("X-Model-Name")
+      kong.ctx.shared.model_name = model_header or "unknown"
+      
+      local tools_header = kong.service.response.get_header("X-Tools-Used")
+      if tools_header then
+        kong.ctx.shared.tools_used = tools_header
+      else
+        kong.ctx.shared.tools_used = "[]"
+      end
+      
+      local tokens_header = kong.service.response.get_header("X-Tokens-Used")
+      if tokens_header then
+        kong.ctx.shared.tokens_used = tonumber(tokens_header) or 0
+      else
+        kong.ctx.shared.tokens_used = 0
+      end
+    end
+    
+    return AuditEnrichmentHandler
+  
+  schema.lua: |
+    return {
+      name = "audit-enrichment",
+      fields = {
+        { config = {
+            type = "record",
+            fields = {},
+          },
+        },
+      },
+    }
+{{- end }}

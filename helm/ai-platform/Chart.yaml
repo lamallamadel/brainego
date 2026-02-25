@@ -18,3 +18,10 @@ sources:
   - https://github.com/modular/max-serve
   - https://github.com/neo4j/neo4j
   - https://qdrant.tech/
+dependencies:
+  - name: kong
+    version: "2.30.0"
+    repository: https://charts.konghq.com
+  - name: cert-manager
+    version: "1.13.3"
+    repository: https://charts.jetstack.io

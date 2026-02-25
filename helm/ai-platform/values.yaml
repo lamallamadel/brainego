@@ -1121,6 +1121,8 @@ secrets:
     secretKey: bWluaW9hZG1pbjEyMw==  # minioadmin123
   grafana:
     password: YWRtaW4=  # admin
+  kong:
+    postgresPassword: a29uZ19wYXNzd29yZA==  # kong_password
 
 # ConfigMaps
 configMaps:
@@ -1134,3 +1136,136 @@ configMaps:
     enabled: true
   grafana:
     enabled: true
+
+# Kong Ingress Controller Configuration
+kong:
+  enabled: true
+  
+  # OAuth 2.1 Configuration
+  oauth2:
+    provisionKey: provision_oauth2_key_change_in_production
+    tokenExpiration: 3600
+    refreshTokenTtl: 1209600
+    adminClientId: admin-client-id-change-in-production
+    adminClientSecret: admin-client-secret-change-in-production
+    redirectUri: https://your-domain.com/auth/callback
+  
+  # JWT RS256 Configuration
+  jwt:
+    maximumExpiration: 86400
+    privateKey: LS0tLS1CRUdJTiBSU0EgUFJJVkFURSBLRVktLS0tLQ==  # Base64 encoded private key
+    publicKey: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0=  # Base64 encoded public key
+  
+  # Multi-layer Rate Limiting
+  rateLimiting:
+    redisDatabase: 1
+    perIp:
+      minute: 100
+    perUser:
+      hour: 1000
+    perWorkspace:
+      day: 10000
+  
+  # Token Budget
+  tokenBudget:
+    dailyLimit: 1000000
+    redisDatabase: 2
+  
+  # Audit Logging
+  auditLog:
+    enabled: true
+    httpEndpoint: http://logging-service:8080/audit
+  
+  # Ingress Configuration
+  ingress:
+    enabled: true
+    host: api.your-domain.com
+    className: kong
+  
+  # Dependency Configuration (from Kong Helm Chart)
+  proxy:
+    enabled: true
+    type: LoadBalancer
+    http:
+      enabled: true
+      servicePort: 80
+      containerPort: 8000
+    tls:
+      enabled: true
+      servicePort: 443
+      containerPort: 8443
+      parameters:
+        - http2
+  
+  admin:
+    enabled: true
+    type: ClusterIP
+    http:
+      enabled: true
+      servicePort: 8001
+    tls:
+      enabled: true
+      servicePort: 8444
+  
+  env:
+    database: postgres
+    pg_host: postgres
+    pg_port: 5432
+    pg_database: kong
+    pg_user: kong
+    pg_password:
+      valueFrom:
+        secretKeyRef:
+          name: kong-postgres-credentials
+          key: password
+    ssl_protocols: TLSv1.3
+    ssl_ciphers: TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256
+    ssl_prefer_server_ciphers: "on"
+    log_level: notice
+    plugins: bundled,oauth2,jwt,rate-limiting,file-log,http-log,correlation-id,prometheus
+    lua_package_path: /usr/local/share/lua/5.1/?.lua;;
+    redis_host: redis
+    redis_port: 6379
+  
+  ingressController:
+    enabled: true
+    installCRDs: false
+    env:
+      feature_gates: GatewayAlpha=true
+  
+  postgresql:
+    enabled: true
+    auth:
+      username: kong
+      password: kong_password
+      database: kong
+  
+  plugins:
+    - name: oauth2
+      enabled: true
+    - name: jwt
+      enabled: true
+    - name: rate-limiting
+      enabled: true
+    - name: file-log
+      enabled: true
+    - name: http-log
+      enabled: true
+    - name: correlation-id
+      enabled: true
+    - name: prometheus
+      enabled: true
+  
+  customPlugins:
+    enabled: true
+    plugins:
+      - name: token-budget
+        configMap: kong-token-budget-plugin
+      - name: audit-enrichment
+        configMap: kong-audit-enrichment-plugin
+
+# cert-manager Configuration
+certManager:
+  enabled: true
+  email: admin@your-domain.com
+  installCRDs: true

@@ -103,3 +103,15 @@ prometheus-data/
 migration_work/
 migration_*.log
 migration_metadata.json
+
+# Kong JWT Keys and Secrets (NEVER COMMIT!)
+kong-jwt-keys/
+*.pem
+*.key
+*.crt
+*.csr
+kong-deployment-values.yaml
+kong-deployment-info.txt
+
+# Kong Configuration (may contain secrets)
+*.b64

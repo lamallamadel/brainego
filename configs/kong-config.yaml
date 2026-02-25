@@ -1,0 +1,321 @@
+# Kong Gateway Configuration
+# OAuth 2.1 + JWT (RS256) Authentication with Multi-layer Rate Limiting
+
+kong:
+  database: postgres
+  pg_host: postgres
+  pg_port: 5432
+  pg_database: kong
+  pg_user: kong
+  pg_password: kong_password
+  
+  admin_listen: 0.0.0.0:8001, 0.0.0.0:8444 ssl
+  proxy_listen: 0.0.0.0:8000, 0.0.0.0:8443 ssl http2
+  
+  # TLS 1.3 Configuration
+  ssl_protocols: TLSv1.3
+  ssl_ciphers: TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_128_GCM_SHA256
+  ssl_prefer_server_ciphers: on
+  ssl_session_cache: shared:SSL:10m
+  ssl_session_timeout: 10m
+  
+  # Custom Plugins
+  plugins: bundled,oauth2,jwt,rate-limiting,file-log,http-log,correlation-id,prometheus,token-budget,audit-enrichment
+  lua_package_path: /usr/local/share/lua/5.1/?.lua;/usr/local/share/lua/5.1/?/init.lua;;
+  
+  # Redis for Rate Limiting
+  redis_host: redis
+  redis_port: 6379
+  redis_database: 1
+  
+  # Logging
+  log_level: notice
+  proxy_access_log: /var/log/kong/access.log
+  proxy_error_log: /var/log/kong/error.log
+  admin_access_log: /var/log/kong/admin_access.log
+  admin_error_log: /var/log/kong/admin_error.log
+  
+  # Security Headers
+  headers:
+    - "X-Frame-Options: DENY"
+    - "X-Content-Type-Options: nosniff"
+    - "X-XSS-Protection: 1; mode=block"
+    - "Strict-Transport-Security: max-age=31536000; includeSubDomains"
+    - "Content-Security-Policy: default-src 'self'"
+  
+  # Performance
+  nginx_worker_processes: auto
+  nginx_daemon: off
+  mem_cache_size: 128m
+  
+  # OAuth 2.1 Configuration
+  oauth2:
+    enable_client_credentials: true
+    enable_authorization_code: true
+    enable_implicit_grant: false
+    enable_password_grant: false
+    token_expiration: 3600
+    refresh_token_ttl: 1209600
+    mandatory_scope: true
+    scopes:
+      - api.read
+      - api.write
+      - admin
+    pkce: required
+    provision_key: provision_oauth2_key_change_in_production
+  
+  # JWT Configuration (RS256)
+  jwt:
+    algorithm: RS256
+    claims_to_verify:
+      - exp
+      - nbf
+      - iat
+    maximum_expiration: 86400
+    uri_param_names:
+      - jwt
+    header_names:
+      - Authorization
+    cookie_names: []
+    key_claim_name: kid
+    secret_is_base64: false
+    anonymous: null
+    run_on_preflight: true
+  
+  # Multi-layer Rate Limiting
+  rate_limiting:
+    # Layer 1: Per IP (100 requests/minute)
+    per_ip:
+      minute: 100
+      policy: redis
+      fault_tolerant: true
+      hide_client_headers: false
+    
+    # Layer 2: Per User (1000 requests/hour)
+    per_user:
+      hour: 1000
+      policy: redis
+      fault_tolerant: true
+      hide_client_headers: false
+    
+    # Layer 3: Per Workspace (Daily Token Budget)
+    per_workspace:
+      day: 10000
+      policy: redis
+      fault_tolerant: true
+      hide_client_headers: false
+  
+  # Token Budget Configuration
+  token_budget:
+    daily_limit: 1000000
+    redis_database: 2
+  
+  # Audit Logging
+  audit_log:
+    enabled: true
+    file_path: /var/log/kong/audit.log
+    http_endpoint: http://logging-service:8080/audit
+    log_format: json
+    fields:
+      - timestamp
+      - request_id
+      - user_id
+      - workspace_id
+      - method
+      - path
+      - status_code
+      - latency_ms
+      - tokens_used
+      - model_name
+      - tools_used
+      - ip_address
+      - user_agent
+    retention_days: 90
+  
+  # Prometheus Metrics
+  prometheus:
+    enabled: true
+    status_code_metrics: true
+    latency_metrics: true
+    bandwidth_metrics: true
+    upstream_health_metrics: true
+    per_consumer: true
+
+# Service Routes Configuration
+routes:
+  - name: chat-completions
+    paths:
+      - /v1/chat/completions
+    methods:
+      - POST
+    service: agent-router
+    plugins:
+      - oauth2
+      - jwt
+      - rate-limit-ip
+      - rate-limit-user
+      - rate-limit-workspace
+      - token-budget
+      - audit-enrichment
+      - file-log
+      - http-log
+      - correlation-id
+      - prometheus
+    strip_path: false
+    preserve_host: true
+  
+  - name: embeddings
+    paths:
+      - /v1/embeddings
+    methods:
+      - POST
+    service: agent-router
+    plugins:
+      - oauth2
+      - jwt
+      - rate-limit-ip
+      - rate-limit-user
+      - correlation-id
+      - prometheus
+    strip_path: false
+    preserve_host: true
+  
+  - name: gateway
+    paths:
+      - /gateway
+    service: gateway
+    plugins:
+      - oauth2
+      - jwt
+      - rate-limit-ip
+      - rate-limit-user
+      - correlation-id
+      - prometheus
+    strip_path: true
+    preserve_host: true
+  
+  - name: mcp
+    paths:
+      - /mcp
+    service: mcpjungle-gateway
+    plugins:
+      - oauth2
+      - jwt
+      - rate-limit-ip
+      - rate-limit-user
+      - audit-enrichment
+      - file-log
+      - correlation-id
+      - prometheus
+    strip_path: true
+    preserve_host: true
+  
+  - name: memory
+    paths:
+      - /memory
+    service: mem0
+    plugins:
+      - oauth2
+      - jwt
+      - rate-limit-ip
+      - rate-limit-user
+      - correlation-id
+      - prometheus
+    strip_path: true
+    preserve_host: true
+  
+  - name: learning
+    paths:
+      - /learning
+    service: learning-engine
+    plugins:
+      - oauth2
+      - jwt
+      - rate-limit-ip
+      - correlation-id
+      - prometheus
+    strip_path: true
+    preserve_host: true
+  
+  - name: metrics
+    paths:
+      - /metrics
+    service: prometheus
+    plugins:
+      - oauth2
+      - jwt
+      - correlation-id
+    strip_path: true
+    preserve_host: true
+
+# Service Definitions
+services:
+  - name: agent-router
+    url: http://agent-router:8000
+    protocol: http
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    retries: 3
+  
+  - name: gateway
+    url: http://gateway:9002
+    protocol: http
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    retries: 3
+  
+  - name: mcpjungle-gateway
+    url: http://mcpjungle-gateway:9100
+    protocol: http
+    connect_timeout: 60000
+    write_timeout: 60000
+    read_timeout: 60000
+    retries: 3
+  
+  - name: mem0
+    url: http://mem0:8006
+    protocol: http
+    connect_timeout: 30000
+    write_timeout: 30000
+    read_timeout: 30000
+    retries: 3
+  
+  - name: learning-engine
+    url: http://learning-engine:8003
+    protocol: http
+    connect_timeout: 120000
+    write_timeout: 120000
+    read_timeout: 120000
+    retries: 1
+  
+  - name: prometheus
+    url: http://prometheus:9090
+    protocol: http
+    connect_timeout: 10000
+    write_timeout: 10000
+    read_timeout: 10000
+    retries: 3
+
+# Consumer Configuration
+consumers:
+  - username: admin
+    custom_id: 00000000-0000-0000-0000-000000000001
+    credentials:
+      oauth2:
+        - name: "Admin Application"
+          client_id: admin-client-id-change-in-production
+          client_secret: admin-client-secret-change-in-production
+          redirect_uris:
+            - https://your-domain.com/auth/callback
+      jwt:
+        - key: admin-key
+          algorithm: RS256
+          rsa_public_key: |
+            -----BEGIN PUBLIC KEY-----
+            MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA...
+            -----END PUBLIC KEY-----
+    tags:
+      - admin
+      - production
