@@ -102,6 +102,103 @@ servers:
         - "/workspace/.env"
       max_file_size_mb: 10
 
+  mcp-slack:
+    name: "Slack MCP Server"
+    description: "Access Slack channels, messages, and workspace data"
+    type: "stdio"
+    command: "npx"
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-slack"
+    env:
+      SLACK_BOT_TOKEN: "${SLACK_BOT_TOKEN}"
+    capabilities:
+      - "resources"
+      - "tools"
+    resources:
+      - "channels"
+      - "messages"
+      - "users"
+    tools:
+      - "slack_list_channels"
+      - "slack_get_channel_history"
+      - "slack_post_message"
+      - "slack_search_messages"
+      - "slack_list_users"
+      - "slack_get_user_info"
+      - "slack_upload_file"
+      - "slack_add_reaction"
+    enabled: true
+    timeout: 30
+    max_retries: 3
+
+  mcp-gmail:
+    name: "Gmail MCP Server"
+    description: "Read-only access to Gmail messages and threads"
+    type: "stdio"
+    command: "npx"
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-gmail"
+    env:
+      GMAIL_CLIENT_ID: "${GMAIL_CLIENT_ID}"
+      GMAIL_CLIENT_SECRET: "${GMAIL_CLIENT_SECRET}"
+      GMAIL_REFRESH_TOKEN: "${GMAIL_REFRESH_TOKEN}"
+    capabilities:
+      - "resources"
+      - "tools"
+    resources:
+      - "messages"
+      - "threads"
+      - "labels"
+    tools:
+      - "gmail_list_messages"
+      - "gmail_get_message"
+      - "gmail_search_messages"
+      - "gmail_get_thread"
+      - "gmail_list_labels"
+      - "gmail_get_profile"
+    enabled: true
+    timeout: 30
+    max_retries: 3
+    security:
+      read_only: true
+      allowed_operations:
+        - "read"
+        - "search"
+        - "list"
+
+  mcp-calendar:
+    name: "Google Calendar MCP Server"
+    description: "Access Google Calendar events and calendars"
+    type: "stdio"
+    command: "npx"
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-google-calendar"
+    env:
+      GOOGLE_CALENDAR_CLIENT_ID: "${GOOGLE_CALENDAR_CLIENT_ID}"
+      GOOGLE_CALENDAR_CLIENT_SECRET: "${GOOGLE_CALENDAR_CLIENT_SECRET}"
+      GOOGLE_CALENDAR_REFRESH_TOKEN: "${GOOGLE_CALENDAR_REFRESH_TOKEN}"
+    capabilities:
+      - "resources"
+      - "tools"
+    resources:
+      - "calendars"
+      - "events"
+    tools:
+      - "calendar_list_calendars"
+      - "calendar_get_calendar"
+      - "calendar_list_events"
+      - "calendar_get_event"
+      - "calendar_create_event"
+      - "calendar_update_event"
+      - "calendar_delete_event"
+      - "calendar_search_events"
+    enabled: true
+    timeout: 30
+    max_retries: 3
+
 # Global MCP Configuration
 settings:
   default_timeout: 30
