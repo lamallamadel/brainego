@@ -1,364 +1,248 @@
-# Grafana Dashboards - Quick Start Guide
+# Grafana Dashboards Quick Start Guide
 
-Get your drift monitoring dashboards up and running in 5 minutes.
+## Quick Access
 
-## 🚀 Quick Setup
+### Dashboard URLs
+- **Platform Overview**: `http://localhost:3000/d/platform-overview`
+- **Learning Engine**: `http://localhost:3000/d/learning-engine`
+- **MCP Activity**: `http://localhost:3000/d/mcp-activity`
 
-### Step 1: Start Services
+Default Grafana credentials:
+- Username: `admin`
+- Password: `admin` (change on first login)
 
+## Dashboard Summary
+
+### 1. Platform Overview
+**Purpose**: Real-time platform health monitoring  
+**Key Metrics**: Latency P99, Error Rate, GPU Utilization, Token Usage, Memory Hit Rate  
+**Refresh**: 30s  
+**When to Use**: System health checks, performance troubleshooting
+
+### 2. Learning Engine
+**Purpose**: Model drift detection and training monitoring  
+**Key Metrics**: KL Divergence, PSI, Accuracy, Training Loss, LoRA Versions  
+**Refresh**: 1m  
+**When to Use**: Model quality monitoring, retraining decisions
+
+### 3. MCP Activity
+**Purpose**: MCP server monitoring  
+**Key Metrics**: Calls per Server, Tool Latency, Errors, Operation Distribution  
+**Refresh**: 30s  
+**When to Use**: Tool server health, load balancing, error investigation
+
+## Common Tasks
+
+### View Current Performance
+1. Open Platform Overview dashboard
+2. Check P99 latency (should be < 1.5s)
+3. Verify error rate (should be < 1%)
+4. Monitor GPU utilization (optimal: 70-85%)
+
+### Check Model Drift
+1. Open Learning Engine dashboard
+2. Check KL Divergence gauge (red if > 0.2)
+3. Check PSI gauge (red if > 0.3)
+4. Review accuracy trends
+5. Check last training run details
+
+### Monitor MCP Servers
+1. Open MCP Activity dashboard
+2. Check active servers count
+3. Review latency stats (P99 < 2s)
+4. Check error rates per server
+5. View operation distribution
+
+### Investigate Issues
+
+#### High Latency
+1. Platform Overview → Check P99 latency trend
+2. Identify spike timing
+3. Check GPU utilization at same time
+4. Review queue depth
+5. MCP Activity → Check if specific servers are slow
+
+#### Errors
+1. Platform Overview → Error Rate panel
+2. Note affected endpoints
+3. MCP Activity → MCP Errors by Server
+4. Identify problematic server/operation
+5. Check error rate percentage
+
+#### Model Drift
+1. Learning Engine → Check KL Divergence
+2. If > 0.15, review accuracy trend
+3. Check PSI for confirmation
+4. Review LoRA version history
+5. Check when last training occurred
+
+## Alert Thresholds
+
+### Critical (Immediate Action)
+- ❌ Error Rate > 5%
+- ❌ P99 Latency > 3s
+- ❌ GPU Temperature > 85°C
+- ❌ KL Divergence > 0.2
+
+### Warning (Monitor Closely)
+- ⚠️ Error Rate > 1%
+- ⚠️ P99 Latency > 1.5s
+- ⚠️ Cache Hit Rate < 70%
+- ⚠️ PSI > 0.2
+
+### Good (Healthy)
+- ✅ Error Rate < 1%
+- ✅ P99 Latency < 1s
+- ✅ Cache Hit Rate > 85%
+- ✅ KL Divergence < 0.1
+
+## Troubleshooting
+
+### Dashboard Not Loading
 ```bash
-# Start Prometheus, Grafana, and Drift Monitor
-docker compose up -d prometheus grafana drift-monitor postgres
+# Check Grafana is running
+docker ps | grep grafana
 
-# Wait for services to be healthy (30-60 seconds)
-docker compose ps
+# Check Grafana logs
+docker logs grafana
+
+# Restart Grafana
+docker restart grafana
 ```
 
-### Step 2: Access Grafana
-
-1. Open browser: http://localhost:3000
-2. Login with default credentials:
-   - **Username**: `admin`
-   - **Password**: `admin`
-3. Change password when prompted (or skip)
-
-### Step 3: View Dashboards
-
-Navigate to **Dashboards** → **Browse** or use direct links:
-
-- **Overview**: http://localhost:3000/d/drift-overview
-- **KL Divergence**: http://localhost:3000/d/drift-kl-divergence
-- **PSI Trends**: http://localhost:3000/d/drift-psi-trends
-- **Accuracy**: http://localhost:3000/d/drift-accuracy-tracking
-- **LoRA Versions**: http://localhost:3000/d/lora-version-tracking
-
-### Step 4: Generate Sample Data (Optional)
-
+### No Data Showing
 ```bash
-# Trigger manual drift check
-curl -X POST http://localhost:8004/drift/check
+# Check Prometheus
+docker ps | grep prometheus
+docker logs prometheus
 
-# Check metrics are being collected
-curl http://localhost:8004/metrics
-
-# View in Prometheus
-open http://localhost:9090
+# Verify services are exporting metrics
+curl http://localhost:8000/metrics  # API server
+curl http://localhost:9090/api/v1/targets  # Prometheus targets
 ```
 
-## 📊 Dashboard Overview
+### Slow Performance
+- Reduce time range (top-right picker)
+- Increase refresh interval
+- Use smaller time windows for detailed analysis
 
-### 1. Drift Monitoring - Overview
-**Best for**: Daily health checks
+## Pro Tips
 
-**Shows**:
-- ✅ Current drift status (4 gauges)
-- 📈 All metrics combined timeline
-- 🔢 Total checks and detections
-- 📋 Recent drift check history
+### Keyboard Shortcuts
+- `d` + `h` = Go to home dashboard
+- `f` = Toggle fullscreen for panel
+- `Ctrl/Cmd` + `S` = Save dashboard
+- `Esc` = Exit fullscreen
 
-**Time Range**: Last 6 hours  
-**Refresh**: 30 seconds
+### Time Ranges
+- **5m**: Real-time monitoring
+- **1h**: Recent activity review
+- **6h**: Shift analysis
+- **24h**: Daily trends
+- **7d**: Weekly patterns
 
----
+### Panel Features
+- **Click & Drag**: Zoom into time range
+- **Double Click**: Reset zoom
+- **Legend Click**: Toggle series on/off
+- **Shift + Click Legend**: Solo series
 
-### 2. KL Divergence Evolution
-**Best for**: Embedding distribution drift analysis
+## Metrics Quick Reference
 
-**Shows**:
-- 📊 Real-time KL Divergence
-- 📉 Historical trends
-- 🎯 Current value vs threshold
-- 📅 7-day average
+### Platform
+```
+http_request_duration_seconds_bucket  # Request latency histogram
+http_requests_total                   # Request counter
+inference_tokens_total                # Token processing
+cache_hits_total / cache_misses_total # Cache efficiency
+DCGM_FI_DEV_GPU_UTIL                 # GPU utilization
+```
 
-**Time Range**: Last 7 days  
-**Refresh**: 30 seconds
+### Learning Engine
+```
+drift_kl_divergence        # Distribution drift
+drift_psi                  # Population stability
+drift_current_accuracy     # Model accuracy
+training_loss              # Training loss
+validation_loss            # Validation loss
+ewc_lambda                 # EWC regularization
+lora_versions_total        # LoRA version count
+```
 
-**Thresholds**:
-- 🟢 < 0.1: No drift
-- 🟡 0.1-0.15: Warning
-- 🟠 0.15-0.2: Moderate
-- 🔴 > 0.2: Critical
+### MCP
+```
+mcp_requests_total                    # MCP requests
+mcp_operation_duration_seconds_bucket # Operation latency
+```
 
----
+## Integration Commands
 
-### 3. PSI Trends
-**Best for**: Intent distribution stability monitoring
-
-**Shows**:
-- 📊 Real-time PSI
-- 📉 Historical PSI trends
-- 🎯 Current PSI gauge
-- 📊 PSI event counter
-- 📋 Recent measurements
-
-**Time Range**: Last 7 days  
-**Refresh**: 30 seconds
-
-**Thresholds**:
-- 🟢 < 0.1: Stable
-- 🟡 0.1-0.2: Moderate shift
-- 🟠 0.2-0.3: Significant shift
-- 🔴 > 0.3: Critical drift
-
----
-
-### 4. Accuracy Over Time
-**Best for**: Model performance tracking
-
-**Shows**:
-- 📊 Baseline vs Current accuracy
-- 📈 Daily accuracy trends
-- 🎯 Accuracy delta
-- 📉 Low accuracy events
-- 📊 30-day bar chart
-
-**Time Range**: Last 7 days  
-**Refresh**: 30 seconds
-
-**Thresholds**:
-- 🟢 > 80%: Excellent
-- 🟡 75-80%: Good
-- 🟠 70-75%: Warning
-- 🔴 < 70%: Critical
-
----
-
-### 5. LoRA Version Tracking
-**Best for**: Adapter management and comparison
-
-**Shows**:
-- 📋 All adapter versions
-- 📊 Training/validation loss
-- ⏱️ Training time per version
-- 📈 Performance comparison
-- 📊 Distribution by model/rank
-
-**Time Range**: Last 30 days  
-**Refresh**: 1 minute
-
----
-
-## 🎯 Common Tasks
-
-### Check Current Drift Status
-1. Go to **Drift Monitoring - Overview**
-2. Look at the 4 gauges at the top
-3. Green = healthy, Yellow/Orange = warning, Red = action needed
-
-### Investigate Drift Detection
-1. Note which metric triggered (KL/PSI/Accuracy)
-2. Open the specific dashboard (e.g., KL Divergence)
-3. Look at timeline to see when drift started
-4. Check annotations for related events
-
-### Compare LoRA Versions
-1. Open **LoRA Version Tracking**
-2. View the versions table
-3. Check training loss trends
-4. Compare performance metrics graph
-5. Identify active version
-
-### Track Fine-tuning Impact
-1. Open **LoRA Version Tracking**
-2. Look for "Fine-tuning Triggered" annotations (purple)
-3. Check training loss for new version
-4. Switch to **Accuracy** dashboard
-5. Observe accuracy improvement post-deployment
-
-## 🔧 Configuration
-
-### Change Refresh Rate
-1. Open any dashboard
-2. Click refresh dropdown (top-right)
-3. Select: 5s, 10s, 30s, 1m, 5m, 15m, 30m, 1h
-
-### Adjust Time Range
-1. Click time range (top-right)
-2. Select preset: Last 5m, 15m, 1h, 6h, 12h, 24h, 7d, 30d
-3. Or set custom: Absolute/Relative time
-
-### Modify Thresholds
-1. Dashboard Settings (⚙️ icon)
-2. JSON Model tab
-3. Edit `thresholds` values
-4. Save dashboard
-
-## 📈 Metrics Endpoints
-
-### Prometheus Metrics
+### Export Dashboard
 ```bash
-# Drift Monitor metrics
-curl http://localhost:8004/metrics
+# Via API (from Grafana container)
+curl -H "Authorization: Bearer <api-key>" \
+  http://localhost:3000/api/dashboards/uid/platform-overview
 
-# Prometheus UI
-open http://localhost:9090
+# Via UI
+Dashboard → Settings → JSON Model → Copy to clipboard
 ```
 
-### PostgreSQL Data
+### Import Dashboard
 ```bash
-# Connect to database
-docker compose exec postgres psql -U ai_user -d ai_platform
+# Place JSON file in configs/grafana/dashboards/
+cp my-dashboard.json configs/grafana/dashboards/
 
-# Query drift metrics
-SELECT * FROM drift_metrics ORDER BY timestamp DESC LIMIT 10;
-
-# Query LoRA adapters
-SELECT version, training_loss, is_active FROM lora_adapters ORDER BY created_at DESC;
+# Restart Grafana or wait 10s for auto-reload
+docker restart grafana
 ```
 
-## 🚨 Alerts
-
-### View Active Alerts
-1. Navigate to **Alerting** → **Alert rules**
-2. Check firing status
-3. View alert details
-
-### Create New Alert
-1. Go to dashboard panel
-2. Click panel title → **Edit**
-3. **Alert** tab → **Create alert**
-4. Configure:
-   - Query/Condition
-   - Evaluation interval
-   - Notification channel
-
-## 🔍 Troubleshooting
-
-### No Data in Dashboards
-
-**Check 1: Services Running**
+### Create Snapshot
 ```bash
-docker compose ps
-# All services should show "Up" and "healthy"
+# Share dashboard snapshot
+Dashboard → Share → Snapshot → Create Snapshot
 ```
 
-**Check 2: Drift Monitor Running Checks**
-```bash
-docker compose logs drift-monitor | tail -20
-# Should see "Running Drift Detection Check"
-```
+## Monitoring Schedule
 
-**Check 3: Metrics Endpoint**
-```bash
-curl http://localhost:8004/metrics | grep drift_kl
-# Should return metric values
-```
+### Real-time (Every 5-10 min)
+- ✅ Platform Overview
+- ✅ MCP Activity
 
-**Check 4: Prometheus Scraping**
-```bash
-# Open Prometheus UI
-open http://localhost:9090/targets
-# drift-monitor should show "UP" status
-```
+### Periodic (Hourly)
+- ✅ Learning Engine (quick check)
+- ✅ MCP load distribution
 
----
+### Daily
+- ✅ Learning Engine (full review)
+- ✅ Drift metrics analysis
+- ✅ Training logs review
 
-### Datasource Connection Failed
+### Weekly
+- ✅ Performance trends
+- ✅ Resource utilization patterns
+- ✅ Model quality trends
+- ✅ LoRA version management
 
-**PostgreSQL**:
-```bash
-# Test connection
-docker compose exec grafana psql -h postgres -U ai_user -d ai_platform -c "SELECT 1"
-```
+## Best Practices
 
-**Prometheus**:
-```bash
-# Test connection
-docker compose exec grafana wget -qO- http://prometheus:9090/api/v1/query?query=up
-```
+1. **Set Time Range First**: Choose appropriate window for analysis
+2. **Use Legends**: Toggle series to focus on specific metrics
+3. **Check Related Metrics**: Cross-reference between dashboards
+4. **Export Data**: Download CSV for detailed analysis
+5. **Create Annotations**: Mark important events (deployments, incidents)
 
----
+## Next Steps
 
-### Dashboards Not Auto-Loading
+1. **Set Up Alerts**: Configure Grafana Alerting for critical metrics
+2. **Customize Dashboards**: Add panels for specific needs
+3. **Create Variables**: Filter by model, server, environment
+4. **Schedule Reports**: Automate dashboard PDF generation
+5. **Review Documentation**: See `configs/grafana/README.md` for details
 
-**Check provisioning**:
-```bash
-# List dashboards
-docker compose exec grafana ls -la /var/lib/grafana/dashboards
+## Support
 
-# Check provisioning config
-docker compose exec grafana cat /etc/grafana/provisioning/dashboards/dashboards.yml
-```
-
-**Reload**:
-```bash
-docker compose restart grafana
-```
-
----
-
-## 📊 Sample Queries
-
-### Prometheus (PromQL)
-
-**Drift detection rate**:
-```promql
-rate(drift_detected_total[5m])
-```
-
-**Average KL Divergence (1 hour)**:
-```promql
-avg_over_time(drift_kl_divergence[1h])
-```
-
-**Fine-tuning triggers per hour**:
-```promql
-rate(finetuning_triggers_total[1h])
-```
-
-### PostgreSQL (SQL)
-
-**Recent drift events**:
-```sql
-SELECT timestamp, kl_divergence, psi, severity 
-FROM drift_metrics 
-WHERE drift_detected = true 
-ORDER BY timestamp DESC 
-LIMIT 10;
-```
-
-**Adapter performance**:
-```sql
-SELECT version, training_loss, validation_loss, is_active
-FROM lora_adapters
-ORDER BY created_at DESC;
-```
-
-## 🎨 Dashboard Links
-
-Create quick access bookmarks:
-
-```
-Overview:      http://localhost:3000/d/drift-overview
-KL Divergence: http://localhost:3000/d/drift-kl-divergence
-PSI Trends:    http://localhost:3000/d/drift-psi-trends
-Accuracy:      http://localhost:3000/d/drift-accuracy-tracking
-LoRA Tracking: http://localhost:3000/d/lora-version-tracking
-```
-
-## 📱 Mobile Access
-
-Grafana dashboards work on mobile:
-1. Use http://[your-server-ip]:3000 from mobile browser
-2. Dashboards are responsive
-3. Touch gestures supported (pinch-to-zoom)
-
-## 🎯 Next Steps
-
-1. ✅ Set up dashboards (you're done!)
-2. 📊 Monitor for a few days to establish baseline
-3. 🔔 Configure alerts for critical metrics
-4. 📈 Customize thresholds based on your data
-5. 📚 Read full documentation: `GRAFANA_DASHBOARDS.md`
-
-## 📞 Need Help?
-
-- **Drift Monitor Issues**: See `DRIFT_MONITOR_README.md`
-- **Grafana Docs**: https://grafana.com/docs/
-- **Prometheus Docs**: https://prometheus.io/docs/
-
----
-
-**Setup Time**: 5 minutes  
-**Skill Level**: Beginner  
-**Last Updated**: 2025-01-25
+- Dashboard Documentation: `configs/grafana/README.md`
+- Implementation Details: `GRAFANA_DASHBOARDS_IMPLEMENTATION.md`
+- Metrics Reference: `metrics_exporter.py`, `learning_engine/metrics.py`
+- Platform Architecture: `ARCHITECTURE.md`
+- Observability Guide: `OBSERVABILITY_README.md`
