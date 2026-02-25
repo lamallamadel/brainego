@@ -1,0 +1,232 @@
+# Memory Budget Allocator Configuration
+
+# Default Workspace Configuration
+default:
+  workspace_id: default
+  max_total_tokens: 8192
+  
+  # Tier allocation percentages (must sum to 1.0)
+  tier_allocation:
+    working_memory_pct: 0.30  # 30% for immediate/working context
+    project_memory_pct: 0.25  # 25% for project/session context
+    long_term_memory_pct: 0.20  # 20% for historical facts
+    rag_memory_pct: 0.25  # 25% for retrieved documents
+  
+  # Query complexity multipliers
+  complexity_multipliers:
+    simple: 0.5  # Simple queries use 50% of base budget
+    medium: 1.0  # Medium queries use 100% of base budget
+    complex: 1.5  # Complex queries use 150% of base budget
+    expert: 2.0  # Expert queries use 200% of base budget
+  
+  # Mem0 scoring weights (must sum to 1.0)
+  scoring_weights:
+    relevance: 0.5  # Weight for semantic similarity
+    importance: 0.3  # Weight for intrinsic importance
+    freshness: 0.2  # Weight for recency
+  
+  # Freshness decay configuration
+  freshness:
+    half_life_hours: 168.0  # 1 week (168 hours)
+    # Examples:
+    # 24.0 = 1 day (fast decay)
+    # 168.0 = 1 week (moderate decay)
+    # 720.0 = 30 days (slow decay)
+  
+  # Promotion/demotion thresholds
+  promotion:
+    threshold: 0.8  # Combined score needed for promotion
+    access_threshold: 3  # Minimum access count for promotion
+  
+  demotion:
+    threshold: 0.3  # Score below which item is demoted
+  
+  # Token estimation
+  tokens_per_char: 0.25  # Approximate tokens per character
+
+# Development Workspace - Focus on working memory
+development:
+  workspace_id: development
+  max_total_tokens: 4096
+  
+  tier_allocation:
+    working_memory_pct: 0.50  # 50% for immediate context
+    project_memory_pct: 0.30  # 30% for project
+    long_term_memory_pct: 0.10  # 10% for history
+    rag_memory_pct: 0.10  # 10% for docs
+  
+  complexity_multipliers:
+    simple: 0.4
+    medium: 0.8
+    complex: 1.2
+    expert: 1.6
+  
+  scoring_weights:
+    relevance: 0.6  # Higher relevance weight
+    importance: 0.2
+    freshness: 0.2
+  
+  freshness:
+    half_life_hours: 72.0  # 3 days (faster decay)
+  
+  promotion:
+    threshold: 0.75
+    access_threshold: 2
+  
+  demotion:
+    threshold: 0.25
+  
+  tokens_per_char: 0.25
+
+# Research Workspace - Focus on RAG and long-term memory
+research:
+  workspace_id: research
+  max_total_tokens: 16384
+  
+  tier_allocation:
+    working_memory_pct: 0.15  # 15% for immediate context
+    project_memory_pct: 0.20  # 20% for project
+    long_term_memory_pct: 0.25  # 25% for history
+    rag_memory_pct: 0.40  # 40% for retrieved documents
+  
+  complexity_multipliers:
+    simple: 0.5
+    medium: 1.2
+    complex: 1.8
+    expert: 2.5
+  
+  scoring_weights:
+    relevance: 0.4
+    importance: 0.4  # Higher importance weight
+    freshness: 0.2
+  
+  freshness:
+    half_life_hours: 336.0  # 2 weeks (slower decay)
+  
+  promotion:
+    threshold: 0.85
+    access_threshold: 5
+  
+  demotion:
+    threshold: 0.35
+  
+  tokens_per_char: 0.25
+
+# Production Workspace - Balanced, conservative limits
+production:
+  workspace_id: production
+  max_total_tokens: 6144
+  
+  tier_allocation:
+    working_memory_pct: 0.35
+    project_memory_pct: 0.25
+    long_term_memory_pct: 0.20
+    rag_memory_pct: 0.20
+  
+  complexity_multipliers:
+    simple: 0.6
+    medium: 1.0
+    complex: 1.3
+    expert: 1.7
+  
+  scoring_weights:
+    relevance: 0.5
+    importance: 0.3
+    freshness: 0.2
+  
+  freshness:
+    half_life_hours: 168.0  # 1 week
+  
+  promotion:
+    threshold: 0.8
+    access_threshold: 4
+  
+  demotion:
+    threshold: 0.3
+  
+  tokens_per_char: 0.25
+
+# Conversation Workspace - Optimized for chat interactions
+conversation:
+  workspace_id: conversation
+  max_total_tokens: 4096
+  
+  tier_allocation:
+    working_memory_pct: 0.60  # 60% for recent conversation
+    project_memory_pct: 0.20  # 20% for session
+    long_term_memory_pct: 0.15  # 15% for user profile
+    rag_memory_pct: 0.05  # 5% for external docs
+  
+  complexity_multipliers:
+    simple: 0.5
+    medium: 1.0
+    complex: 1.5
+    expert: 2.0
+  
+  scoring_weights:
+    relevance: 0.5
+    importance: 0.2
+    freshness: 0.3  # Higher freshness weight for chat
+  
+  freshness:
+    half_life_hours: 24.0  # 1 day (fast decay for chat)
+  
+  promotion:
+    threshold: 0.7
+    access_threshold: 2
+  
+  demotion:
+    threshold: 0.2
+  
+  tokens_per_char: 0.25
+
+# Code Analysis Workspace - For code review and analysis tasks
+code_analysis:
+  workspace_id: code_analysis
+  max_total_tokens: 12288
+  
+  tier_allocation:
+    working_memory_pct: 0.25
+    project_memory_pct: 0.35  # 35% for project context
+    long_term_memory_pct: 0.15
+    rag_memory_pct: 0.25  # 25% for code docs
+  
+  complexity_multipliers:
+    simple: 0.6
+    medium: 1.1
+    complex: 1.6
+    expert: 2.2
+  
+  scoring_weights:
+    relevance: 0.6  # High relevance for code search
+    importance: 0.3
+    freshness: 0.1  # Low freshness weight (code doesn't age quickly)
+  
+  freshness:
+    half_life_hours: 720.0  # 30 days (very slow decay)
+  
+  promotion:
+    threshold: 0.85
+    access_threshold: 3
+  
+  demotion:
+    threshold: 0.3
+  
+  tokens_per_char: 0.30  # Code tends to be denser
+
+# General Settings
+logging:
+  enable_allocation_logging: true
+  log_level: INFO
+  export_directory: ./logs/allocations
+
+# Performance Settings
+performance:
+  # Enable allocation history tracking
+  track_history: true
+  
+  # Maximum history size (0 = unlimited)
+  max_history_size: 1000
+  
+  # Auto-export interval (seconds, 0 = disabled)
+  auto_export_interval: 3600  # Export every hour
