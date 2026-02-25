@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 import httpx
 
 from rag_service import RAGIngestionService
+from memory_service import MemoryService
 
 # Configure logging
 logging.basicConfig(
@@ -36,6 +37,10 @@ MAX_SERVE_GENERATE_URL = f"{MAX_SERVE_URL}/generate"
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "documents")
+
+REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
+REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
+REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 
 # Create FastAPI app
 app = FastAPI(
@@ -166,6 +171,48 @@ class RAGQueryResponse(BaseModel):
     retrieval_stats: Dict[str, Any] = Field(..., description="Statistics about retrieval")
 
 
+class MemoryAddRequest(BaseModel):
+    messages: List[Dict[str, str]] = Field(..., description="Conversation messages to store")
+    user_id: Optional[str] = Field(None, description="Optional user identifier")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Optional metadata")
+
+
+class MemoryAddResponse(BaseModel):
+    status: str
+    memory_id: str
+    timestamp: str
+    user_id: str
+    facts_extracted: int
+
+
+class MemorySearchRequest(BaseModel):
+    query: str = Field(..., description="Search query text")
+    user_id: Optional[str] = Field(None, description="Optional user ID to filter memories")
+    limit: int = Field(10, ge=1, le=100, description="Maximum number of results")
+    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    use_temporal_decay: bool = Field(True, description="Apply temporal decay to scores")
+
+
+class MemorySearchResponse(BaseModel):
+    query: str
+    results: List[Dict[str, Any]]
+    limit: int
+
+
+class MemoryForgetResponse(BaseModel):
+    status: str
+    memory_id: str
+    message: str
+
+
+class MemoryStatsResponse(BaseModel):
+    collection_name: str
+    qdrant_points: int
+    redis_memories: int
+    vector_dimension: int
+    distance_metric: str
+
+
 # Metrics storage
 class MetricsStore:
     def __init__(self):
@@ -213,6 +260,7 @@ metrics = MetricsStore()
 
 # Initialize RAG service (lazy loading)
 rag_service = None
+memory_service = None
 
 
 def get_rag_service() -> RAGIngestionService:
@@ -229,6 +277,25 @@ def get_rag_service() -> RAGIngestionService:
         )
         logger.info("RAG Ingestion Service initialized")
     return rag_service
+
+
+def get_memory_service() -> MemoryService:
+    """Get or initialize Memory service."""
+    global memory_service
+    if memory_service is None:
+        logger.info("Initializing Memory Service...")
+        memory_service = MemoryService(
+            qdrant_host=QDRANT_HOST,
+            qdrant_port=QDRANT_PORT,
+            redis_host=REDIS_HOST,
+            redis_port=REDIS_PORT,
+            redis_db=REDIS_DB,
+            memory_collection="memories",
+            embedding_model="sentence-transformers/all-MiniLM-L6-v2",
+            temporal_decay_factor=0.1
+        )
+        logger.info("Memory Service initialized")
+    return memory_service
 
 
 def format_chat_prompt(messages: List[ChatMessage]) -> str:
@@ -294,7 +361,7 @@ async def call_max_serve(prompt: str, params: Dict[str, Any]) -> tuple[str, int,
 async def root():
     """Root endpoint."""
     return {
-        "message": "OpenAI-Compatible API for MAX Serve with RAG",
+        "message": "OpenAI-Compatible API for MAX Serve with RAG and Memory",
         "version": "1.0.0",
         "endpoints": {
             "chat": "/v1/chat/completions",
@@ -305,7 +372,11 @@ async def root():
             "rag_search": "/v1/rag/search",
             "rag_query": "/v1/rag/query",
             "rag_delete": "/v1/rag/documents/{document_id}",
-            "rag_stats": "/v1/rag/stats"
+            "rag_stats": "/v1/rag/stats",
+            "memory_add": "POST /memory/add",
+            "memory_search": "GET /memory/search",
+            "memory_forget": "DELETE /memory/forget/{memory_id}",
+            "memory_stats": "GET /memory/stats"
         }
     }
 
@@ -696,6 +767,132 @@ async def rag_query(request: RAGQueryRequest):
         metrics.record_request((time.time() - start_time) * 1000, error=True)
         logger.error(f"Error in RAG query: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"RAG query error: {str(e)}")
+
+
+@app.post("/memory/add", response_model=MemoryAddResponse)
+async def memory_add(request: MemoryAddRequest):
+    """
+    Add memory from conversation messages with automatic fact extraction.
+    
+    This endpoint:
+    1. Accepts conversation messages in {"role": "...", "content": "..."} format
+    2. Uses Mem0 to automatically extract facts from the conversation
+    3. Stores memories in Qdrant with embeddings for similarity search
+    4. Stores metadata in Redis for fast key-value access
+    5. Supports user-specific memories via user_id
+    
+    Args:
+        messages: List of conversation messages
+        user_id: Optional user identifier for personalized memories
+        metadata: Optional metadata to store with the memory
+    
+    Returns:
+        Memory ID, timestamp, and number of facts extracted
+    """
+    try:
+        service = get_memory_service()
+        result = service.add_memory(
+            messages=request.messages,
+            user_id=request.user_id,
+            metadata=request.metadata
+        )
+        logger.info(f"Memory added: {result['memory_id']} ({result['facts_extracted']} facts)")
+        return MemoryAddResponse(**result)
+    except Exception as e:
+        logger.error(f"Error adding memory: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Memory add error: {str(e)}")
+
+
+@app.post("/memory/search", response_model=MemorySearchResponse)
+async def memory_search(request: MemorySearchRequest):
+    """
+    Search memories with cosine similarity + temporal decay scoring.
+    
+    This endpoint:
+    1. Embeds the search query using the same model as stored memories
+    2. Performs cosine similarity search in Qdrant
+    3. Applies temporal decay to favor recent memories (configurable)
+    4. Combines scores: 70% cosine similarity + 30% temporal score
+    5. Optionally filters by user_id and metadata
+    
+    Temporal decay formula:
+        temporal_score = exp(-decay_factor * age_in_days)
+    
+    Args:
+        query: Search query text
+        user_id: Optional user ID to filter memories
+        limit: Maximum number of results (1-100)
+        filters: Optional metadata filters
+        use_temporal_decay: Apply temporal decay (default: True)
+    
+    Returns:
+        List of memories with combined scores, cosine scores, and temporal scores
+    """
+    try:
+        service = get_memory_service()
+        results = service.search_memory(
+            query=request.query,
+            user_id=request.user_id,
+            limit=request.limit,
+            filters=request.filters,
+            use_temporal_decay=request.use_temporal_decay
+        )
+        logger.info(f"Memory search: {len(results)} results for query: {request.query[:50]}...")
+        return MemorySearchResponse(
+            query=request.query,
+            results=results,
+            limit=request.limit
+        )
+    except Exception as e:
+        logger.error(f"Error searching memory: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Memory search error: {str(e)}")
+
+
+@app.delete("/memory/forget/{memory_id}", response_model=MemoryForgetResponse)
+async def memory_forget(memory_id: str):
+    """
+    Delete a memory by ID.
+    
+    This endpoint:
+    1. Removes the memory from Qdrant vector store
+    2. Removes the memory metadata from Redis
+    3. Permanently deletes all associated data
+    
+    Args:
+        memory_id: Memory ID to delete
+    
+    Returns:
+        Deletion status
+    """
+    try:
+        service = get_memory_service()
+        result = service.forget_memory(memory_id)
+        logger.info(f"Memory deleted: {memory_id}")
+        return MemoryForgetResponse(**result)
+    except Exception as e:
+        logger.error(f"Error deleting memory: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Memory delete error: {str(e)}")
+
+
+@app.get("/memory/stats", response_model=MemoryStatsResponse)
+async def memory_stats():
+    """
+    Get memory system statistics.
+    
+    Returns:
+        - Collection name
+        - Number of vectors in Qdrant
+        - Number of memories in Redis
+        - Vector dimension
+        - Distance metric used
+    """
+    try:
+        service = get_memory_service()
+        stats = service.get_memory_stats()
+        return MemoryStatsResponse(**stats)
+    except Exception as e:
+        logger.error(f"Error getting memory stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Memory stats error: {str(e)}")
 
 
 if __name__ == "__main__":

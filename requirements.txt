@@ -13,3 +13,8 @@ qdrant-client==1.7.0
 sentence-transformers==2.2.2
 torch==2.1.0
 tiktoken==0.5.1
+
+# Memory (Mem0) Dependencies
+mem0ai==0.0.30
+redis==5.0.1
+numpy==1.24.3

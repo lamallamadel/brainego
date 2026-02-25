@@ -1,0 +1,45 @@
+# Mem0 Memory Service Configuration
+
+# Vector Store Configuration (Qdrant)
+vector_store:
+  provider: qdrant
+  host: localhost
+  port: 6333
+  collection_name: memories
+  
+# Embedding Configuration
+embedder:
+  provider: huggingface
+  model: sentence-transformers/all-MiniLM-L6-v2
+  
+# Redis Configuration (Key-Value Store)
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+  
+# Memory Service Configuration
+memory:
+  # Temporal decay factor (higher = faster decay)
+  # 0.1 means ~90% score after 1 day, ~50% after 1 week
+  temporal_decay_factor: 0.1
+  
+  # Default limits
+  default_search_limit: 10
+  max_search_limit: 100
+  
+  # Memory retention (in seconds)
+  redis_ttl: 2592000  # 30 days
+  
+  # Scoring weights
+  cosine_weight: 0.7
+  temporal_weight: 0.3
+  
+# Optional: LLM Configuration for Fact Extraction
+# Uncomment and configure if you want to use Mem0's LLM-based fact extraction
+# llm:
+#   provider: openai
+#   model: gpt-3.5-turbo
+#   temperature: 0.1
+#   max_tokens: 1000
+#   api_key: ${OPENAI_API_KEY}
