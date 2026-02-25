@@ -12,9 +12,18 @@ services:
     volumes:
       - ./models:/models
       - ./configs:/configs
+      - ./logs:/logs
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_VISIBLE_DEVICES=0
+    command: >
+      max-serve
+      --model-path /models/llama-3.3-8b-instruct-q4_k_m.gguf
+      --host 0.0.0.0
+      --port 8080
+      --max-batch-size 32
+      --max-waiting-time 10
+      --max-tokens 2048
     deploy:
       resources:
         reservations:
@@ -27,7 +36,29 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-      start_period: 40s
+      start_period: 60s
+
+  api-server:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: api-server
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "8000:8000"
+    environment:
+      - MAX_SERVE_URL=http://max-serve:8080
+    depends_on:
+      max-serve:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
 
   qdrant:
     image: qdrant/qdrant:latest

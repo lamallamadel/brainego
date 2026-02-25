@@ -1,0 +1,42 @@
+# MAX Serve Configuration for Llama 3.3 8B Instruct
+model:
+  name: "llama-3.3-8b-instruct"
+  path: "/models/llama-3.3-8b-instruct-q4_k_m.gguf"
+  type: "gguf"
+  format: "Q4_K_M"
+
+# Batching configuration
+batching:
+  max_batch_size: 32
+  max_wait_time_ms: 10
+  timeout_ms: 30000
+
+# Server configuration
+server:
+  host: "0.0.0.0"
+  port: 8080
+  workers: 4
+  max_concurrent_requests: 64
+
+# Inference settings
+inference:
+  max_tokens: 2048
+  temperature: 0.7
+  top_p: 0.9
+  top_k: 40
+  repeat_penalty: 1.1
+  context_length: 8192
+
+# Performance settings
+performance:
+  num_gpu_layers: -1  # Use all GPU layers
+  threads: 8
+  batch_size: 512
+  use_mmap: true
+  use_mlock: false
+
+# Logging
+logging:
+  level: "INFO"
+  format: "json"
+  file: "/logs/max-serve.log"
