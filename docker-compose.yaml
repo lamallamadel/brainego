@@ -1,9 +1,9 @@
 version: '3.8'
 
 services:
-  max-serve:
+  max-serve-llama:
     image: modular/max-serve:latest
-    container_name: max-serve
+    container_name: max-serve-llama
     restart: unless-stopped
     networks:
       - ai-platform-net
@@ -38,6 +38,80 @@ services:
       retries: 3
       start_period: 60s
 
+  max-serve-qwen:
+    image: modular/max-serve:latest
+    container_name: max-serve-qwen
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "8081:8081"
+    volumes:
+      - ./models:/models
+      - ./configs:/configs
+      - ./logs:/logs
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+    command: >
+      max-serve
+      --model-path /models/qwen2.5-coder-7b-instruct-q4_k_m.gguf
+      --host 0.0.0.0
+      --port 8081
+      --max-batch-size 32
+      --max-waiting-time 10
+      --max-tokens 4096
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8081/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
+  max-serve-deepseek:
+    image: modular/max-serve:latest
+    container_name: max-serve-deepseek
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "8082:8082"
+    volumes:
+      - ./models:/models
+      - ./configs:/configs
+      - ./logs:/logs
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+    command: >
+      max-serve
+      --model-path /models/deepseek-r1-distill-qwen-7b-q4_k_m.gguf
+      --host 0.0.0.0
+      --port 8082
+      --max-batch-size 32
+      --max-waiting-time 10
+      --max-tokens 4096
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8082/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+
   api-server:
     build:
       context: .
@@ -48,8 +122,11 @@ services:
       - ai-platform-net
     ports:
       - "8000:8000"
+      - "8001:8001"
+    volumes:
+      - ./configs:/app/configs:ro
     environment:
-      - MAX_SERVE_URL=http://max-serve:8080
+      - AGENT_ROUTER_CONFIG=/app/configs/agent-router.yaml
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION=documents
@@ -57,7 +134,11 @@ services:
       - REDIS_PORT=6379
       - REDIS_DB=0
     depends_on:
-      max-serve:
+      max-serve-llama:
+        condition: service_healthy
+      max-serve-qwen:
+        condition: service_healthy
+      max-serve-deepseek:
         condition: service_healthy
       qdrant:
         condition: service_healthy
@@ -80,8 +161,10 @@ services:
       - ai-platform-net
     ports:
       - "9000:9000"
+    volumes:
+      - ./configs:/app/configs:ro
     environment:
-      - MAX_SERVE_URL=http://max-serve:8080
+      - AGENT_ROUTER_CONFIG=/app/configs/agent-router.yaml
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION=documents
@@ -90,7 +173,11 @@ services:
       - REDIS_DB=0
       - API_KEYS=${API_KEYS:-}
     depends_on:
-      max-serve:
+      max-serve-llama:
+        condition: service_healthy
+      max-serve-qwen:
+        condition: service_healthy
+      max-serve-deepseek:
         condition: service_healthy
       qdrant:
         condition: service_healthy
@@ -117,7 +204,7 @@ services:
       - ./configs:/app/configs:ro
       - ./workspace:/workspace
     environment:
-      - MAX_SERVE_URL=http://max-serve:8080
+      - AGENT_ROUTER_CONFIG=/app/configs/agent-router.yaml
       - QDRANT_HOST=qdrant
       - QDRANT_PORT=6333
       - QDRANT_COLLECTION=documents
@@ -133,7 +220,11 @@ services:
       - GITHUB_TOKEN=${GITHUB_TOKEN:-}
       - NOTION_API_KEY=${NOTION_API_KEY:-}
     depends_on:
-      max-serve:
+      max-serve-llama:
+        condition: service_healthy
+      max-serve-qwen:
+        condition: service_healthy
+      max-serve-deepseek:
         condition: service_healthy
       qdrant:
         condition: service_healthy

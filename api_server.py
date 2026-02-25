@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-OpenAI-compatible API server for MAX Serve with Llama 3.3 8B Instruct.
+OpenAI-compatible API server for MAX Serve with multi-model routing.
+Supports Llama 3.3 8B (general), Qwen 2.5 Coder 7B (code), DeepSeek R1 7B (reasoning).
 Exposes /v1/chat/completions, /v1/rag/ingest, and /health endpoints.
 """
 
@@ -19,6 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import httpx
 
+from agent_router import AgentRouter
 from rag_service import RAGIngestionService
 from memory_service import MemoryService
 
@@ -30,9 +32,7 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 # Configuration
-MAX_SERVE_URL = os.getenv("MAX_SERVE_URL", "http://localhost:8080")
-MAX_SERVE_HEALTH_URL = f"{MAX_SERVE_URL}/health"
-MAX_SERVE_GENERATE_URL = f"{MAX_SERVE_URL}/generate"
+AGENT_ROUTER_CONFIG = os.getenv("AGENT_ROUTER_CONFIG", "configs/agent-router.yaml")
 
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
@@ -44,9 +44,9 @@ REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 
 # Create FastAPI app
 app = FastAPI(
-    title="OpenAI-Compatible API for MAX Serve",
-    description="OpenAI-compatible chat completions API backed by MAX Serve with Llama 3.3 8B Instruct",
-    version="1.0.0"
+    title="OpenAI-Compatible API for MAX Serve with Agent Router",
+    description="Multi-model API with intelligent routing: Llama 3.3 8B (general), Qwen 2.5 Coder 7B (code), DeepSeek R1 7B (reasoning)",
+    version="2.0.0"
 )
 
 # Add CORS middleware
@@ -258,9 +258,20 @@ class MetricsStore:
 
 metrics = MetricsStore()
 
-# Initialize RAG service (lazy loading)
+# Initialize services (lazy loading)
+agent_router = None
 rag_service = None
 memory_service = None
+
+
+def get_agent_router() -> AgentRouter:
+    """Get or initialize Agent Router."""
+    global agent_router
+    if agent_router is None:
+        logger.info("Initializing Agent Router...")
+        agent_router = AgentRouter(config_path=AGENT_ROUTER_CONFIG)
+        logger.info("Agent Router initialized")
+    return agent_router
 
 
 def get_rag_service() -> RAGIngestionService:
@@ -324,49 +335,54 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
-async def call_max_serve(prompt: str, params: Dict[str, Any]) -> tuple[str, int, int]:
-    """Call MAX Serve API and return response text and token counts."""
+async def generate_with_router(
+    messages: List[ChatMessage],
+    prompt: str,
+    params: Dict[str, Any]
+) -> tuple[str, int, int, Dict[str, Any]]:
+    """Generate response using AgentRouter with automatic model selection and fallback."""
     
-    payload = {
-        "prompt": prompt,
-        "max_tokens": params.get("max_tokens", 2048),
-        "temperature": params.get("temperature", 0.7),
-        "top_p": params.get("top_p", 0.9),
-        "stop": params.get("stop", ["<|eot_id|>", "<|end_of_text|>"]),
-    }
+    router = get_agent_router()
     
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        try:
-            response = await client.post(MAX_SERVE_GENERATE_URL, json=payload)
-            response.raise_for_status()
-            
-            result = response.json()
-            generated_text = result.get("text", "")
-            
-            # Clean up the response
-            generated_text = generated_text.strip()
-            
-            # Estimate tokens
-            prompt_tokens = estimate_tokens(prompt)
-            completion_tokens = estimate_tokens(generated_text)
-            
-            return generated_text, prompt_tokens, completion_tokens
-            
-        except httpx.HTTPError as e:
-            logger.error(f"MAX Serve API error: {e}")
-            raise HTTPException(status_code=503, detail=f"MAX Serve error: {str(e)}")
+    messages_dict = [{"role": msg.role, "content": msg.content} for msg in messages]
+    
+    result = await router.generate(
+        messages=messages_dict,
+        prompt=prompt,
+        max_tokens=params.get("max_tokens"),
+        temperature=params.get("temperature"),
+        top_p=params.get("top_p"),
+        stop=params.get("stop")
+    )
+    
+    if not result['success']:
+        error_msg = result.get('error', 'Generation failed')
+        logger.error(f"Router generation failed: {error_msg}")
+        raise HTTPException(status_code=503, detail=f"Generation error: {error_msg}")
+    
+    generated_text = result['text'].strip()
+    metadata = result.get('metadata', {})
+    
+    prompt_tokens = estimate_tokens(prompt)
+    completion_tokens = estimate_tokens(generated_text)
+    
+    return generated_text, prompt_tokens, completion_tokens, metadata
 
 
 @app.get("/")
 async def root():
     """Root endpoint."""
+    router = get_agent_router()
     return {
-        "message": "OpenAI-Compatible API for MAX Serve with RAG and Memory",
-        "version": "1.0.0",
+        "message": "OpenAI-Compatible API for MAX Serve with Multi-Model Routing",
+        "version": "2.0.0",
+        "models": router.list_models(),
         "endpoints": {
             "chat": "/v1/chat/completions",
+            "models": "/v1/models",
             "health": "/health",
             "metrics": "/metrics",
+            "router_info": "/router/info",
             "rag_ingest": "/v1/rag/ingest",
             "rag_ingest_batch": "/v1/rag/ingest/batch",
             "rag_search": "/v1/rag/search",
@@ -377,33 +393,32 @@ async def root():
             "memory_search": "GET /memory/search",
             "memory_forget": "DELETE /memory/forget/{memory_id}",
             "memory_stats": "GET /memory/stats"
-        }
+        },
+        "prometheus_metrics": "http://localhost:8001/metrics"
     }
 
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Health check endpoint with multi-model status."""
     
-    # Check MAX Serve health
-    max_serve_status = "unknown"
-    try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
-            response = await client.get(MAX_SERVE_HEALTH_URL)
-            if response.status_code == 200:
-                max_serve_status = "healthy"
-            else:
-                max_serve_status = "unhealthy"
-    except Exception as e:
-        logger.warning(f"MAX Serve health check failed: {e}")
-        max_serve_status = "unreachable"
+    router = get_agent_router()
+    models_info = router.list_models()
     
-    return HealthResponse(
-        status="healthy" if max_serve_status == "healthy" else "degraded",
-        timestamp=datetime.utcnow().isoformat(),
-        model="llama-3.3-8b-instruct",
-        max_serve_status=max_serve_status
-    )
+    all_healthy = all(model['health_status'] for model in models_info.values())
+    
+    return {
+        "status": "healthy" if all_healthy else "degraded",
+        "timestamp": datetime.utcnow().isoformat(),
+        "models": {
+            model_id: {
+                "name": info['name'],
+                "status": "healthy" if info['health_status'] else "unhealthy",
+                "endpoint": info['endpoint']
+            }
+            for model_id, info in models_info.items()
+        }
+    }
 
 
 @app.get("/metrics")
@@ -418,7 +433,8 @@ async def get_metrics():
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest, raw_request: Request):
     """
-    OpenAI-compatible chat completions endpoint.
+    OpenAI-compatible chat completions endpoint with intelligent routing.
+    Automatically selects the best model based on intent classification.
     """
     start_time = time.time()
     
@@ -434,7 +450,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         prompt = format_chat_prompt(request.messages)
         logger.info(f"Processing chat completion request with {len(request.messages)} messages")
         
-        # Call MAX Serve
+        # Call Agent Router
         params = {
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
@@ -442,34 +458,48 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             "stop": request.stop or ["<|eot_id|>", "<|end_of_text|>"],
         }
         
-        generated_text, prompt_tokens, completion_tokens = await call_max_serve(prompt, params)
+        generated_text, prompt_tokens, completion_tokens, routing_metadata = await generate_with_router(
+            messages=request.messages,
+            prompt=prompt,
+            params=params
+        )
         
         # Calculate latency
         latency_ms = (time.time() - start_time) * 1000
         metrics.record_request(latency_ms)
         
-        # Build response
-        response = ChatCompletionResponse(
-            id=f"chatcmpl-{uuid.uuid4().hex[:24]}",
-            created=int(time.time()),
-            model=request.model,
-            choices=[
-                ChatCompletionChoice(
-                    index=0,
-                    message=ChatMessage(role="assistant", content=generated_text),
-                    finish_reason="stop"
-                )
+        # Build response with routing metadata
+        response_data = {
+            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+            "object": "chat.completion",
+            "created": int(time.time()),
+            "model": routing_metadata.get('model_name', request.model),
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": generated_text
+                    },
+                    "finish_reason": "stop"
+                }
             ],
-            usage=ChatCompletionUsage(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=prompt_tokens + completion_tokens
-            )
+            "usage": {
+                "prompt_tokens": prompt_tokens,
+                "completion_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens
+            },
+            "x-routing-metadata": routing_metadata
+        }
+        
+        logger.info(
+            f"Request completed in {latency_ms:.2f}ms "
+            f"[model={routing_metadata.get('model_id')}, "
+            f"intent={routing_metadata.get('intent')}, "
+            f"fallback={routing_metadata.get('fallback_used')}]"
         )
         
-        logger.info(f"Request completed in {latency_ms:.2f}ms")
-        
-        return response
+        return response_data
         
     except HTTPException:
         metrics.record_request((time.time() - start_time) * 1000, error=True)
@@ -480,22 +510,52 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/v1/models")
+@app.get("/v1/models")
 async def list_models():
     """List available models (OpenAI-compatible)."""
+    router = get_agent_router()
+    models_info = router.list_models()
+    
     return {
         "object": "list",
         "data": [
             {
-                "id": "llama-3.3-8b-instruct",
+                "id": info['name'],
                 "object": "model",
                 "created": int(time.time()),
                 "owned_by": "modular",
                 "permission": [],
-                "root": "llama-3.3-8b-instruct",
+                "root": info['name'],
                 "parent": None,
+                "description": info['description'],
+                "capabilities": info['capabilities'],
+                "max_tokens": info['max_tokens'],
+                "health_status": info['health_status']
             }
+            for model_id, info in models_info.items()
         ]
+    }
+
+
+@app.get("/router/info")
+async def router_info():
+    """Get router configuration and status."""
+    router = get_agent_router()
+    models_info = router.list_models()
+    
+    return {
+        "models": models_info,
+        "routing_strategy": {
+            "code": router.routing_config.primary_model.get("code"),
+            "reasoning": router.routing_config.primary_model.get("reasoning"),
+            "general": router.routing_config.primary_model.get("general")
+        },
+        "fallback_chains": router.routing_config.fallback_chains,
+        "health_check": {
+            "enabled": router.health_check_enabled,
+            "interval_seconds": router.health_check_interval
+        },
+        "prometheus_metrics": "http://localhost:8001/metrics"
     }
 
 
@@ -719,7 +779,11 @@ async def rag_query(request: RAGQueryRequest):
         }
         
         generation_start = time.time()
-        generated_text, prompt_tokens, completion_tokens = await call_max_serve(prompt, params)
+        generated_text, prompt_tokens, completion_tokens, routing_metadata = await generate_with_router(
+            messages=messages_list,
+            prompt=prompt,
+            params=params
+        )
         generation_time_ms = (time.time() - generation_start) * 1000
         
         retrieval_stats["generation_time_ms"] = round(generation_time_ms, 2)
@@ -895,9 +959,27 @@ async def memory_stats():
         raise HTTPException(status_code=500, detail=f"Memory stats error: {str(e)}")
 
 
+@app.on_event("startup")
+async def startup_event():
+    """Initialize services on startup."""
+    logger.info("Starting up API server...")
+    router = get_agent_router()
+    await router.start_health_checks()
+    logger.info("Agent Router health checks started")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown."""
+    logger.info("Shutting down API server...")
+    if agent_router:
+        await agent_router.stop_health_checks()
+    logger.info("Agent Router health checks stopped")
+
+
 if __name__ == "__main__":
-    logger.info("Starting OpenAI-compatible API server...")
-    logger.info(f"MAX Serve URL: {MAX_SERVE_URL}")
+    logger.info("Starting OpenAI-compatible API server with Agent Router...")
+    logger.info(f"Agent Router Config: {AGENT_ROUTER_CONFIG}")
     
     uvicorn.run(
         app,

@@ -1,0 +1,129 @@
+# Agent Router Configuration
+# Defines intent classification, model selection, and fallback chains
+
+# Model definitions
+models:
+  llama:
+    name: "llama-3.3-8b-instruct"
+    endpoint: "http://max-serve-llama:8080"
+    description: "General purpose conversational model"
+    capabilities: ["general", "chat", "qa"]
+    max_tokens: 2048
+    temperature: 0.7
+    
+  qwen-coder:
+    name: "qwen2.5-coder-7b-instruct"
+    endpoint: "http://max-serve-qwen:8081"
+    description: "Specialized coding and programming model"
+    capabilities: ["code", "programming", "debugging"]
+    max_tokens: 4096
+    temperature: 0.2
+    
+  deepseek-r1:
+    name: "deepseek-r1-distill-qwen-7b"
+    endpoint: "http://max-serve-deepseek:8082"
+    description: "Advanced reasoning and problem-solving model"
+    capabilities: ["reasoning", "math", "logic", "analysis"]
+    max_tokens: 4096
+    temperature: 0.3
+
+# Intent classification rules
+intent_classifier:
+  # Keywords for code intent
+  code_keywords:
+    - "code"
+    - "programming"
+    - "function"
+    - "class"
+    - "debug"
+    - "error"
+    - "syntax"
+    - "compile"
+    - "implement"
+    - "refactor"
+    - "algorithm"
+    - "python"
+    - "javascript"
+    - "java"
+    - "c++"
+    - "golang"
+    - "rust"
+    - "typescript"
+    - "sql"
+    - "api"
+    - "library"
+    - "framework"
+    - "git"
+    - "docker"
+    - "kubernetes"
+  
+  # Keywords for reasoning intent
+  reasoning_keywords:
+    - "reasoning"
+    - "reason"
+    - "analyze"
+    - "analysis"
+    - "think"
+    - "logic"
+    - "prove"
+    - "math"
+    - "calculate"
+    - "solve"
+    - "problem"
+    - "equation"
+    - "theorem"
+    - "proof"
+    - "derive"
+    - "explain"
+    - "why"
+    - "how"
+    - "compare"
+    - "evaluate"
+    - "assess"
+  
+  # Confidence thresholds
+  thresholds:
+    high: 0.7    # High confidence threshold
+    medium: 0.4  # Medium confidence threshold
+    low: 0.2     # Low confidence threshold
+
+# Routing strategy
+routing:
+  # Primary model selection based on intent
+  primary_model:
+    code: "qwen-coder"
+    reasoning: "deepseek-r1"
+    general: "llama"
+  
+  # Fallback chains (try these models in order if primary fails)
+  fallback_chains:
+    qwen-coder: ["llama", "deepseek-r1"]
+    deepseek-r1: ["llama", "qwen-coder"]
+    llama: ["qwen-coder", "deepseek-r1"]
+  
+  # Timeout settings (in seconds)
+  timeouts:
+    request: 300
+    health_check: 5
+  
+  # Retry settings
+  retry:
+    max_attempts: 2
+    backoff_factor: 1.5
+
+# Health check settings
+health_check:
+  enabled: true
+  interval_seconds: 30
+  unhealthy_threshold: 3  # Mark unhealthy after 3 consecutive failures
+  healthy_threshold: 2    # Mark healthy after 2 consecutive successes
+
+# Metrics settings
+metrics:
+  enabled: true
+  prometheus_port: 8001
+  labels:
+    - model
+    - intent
+    - fallback
+    - status
