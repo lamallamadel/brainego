@@ -45,6 +45,9 @@ neo4j==5.15.0
 # NLP for NER
 spacy==3.7.2
 
+# PostgreSQL for feedback storage
+psycopg2-binary==2.9.9
+
 # Data Collection Pipeline Dependencies
 rq==1.15.1
 requests==2.31.0

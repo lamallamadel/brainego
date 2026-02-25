@@ -24,6 +24,7 @@ from agent_router import AgentRouter
 from rag_service import RAGIngestionService
 from memory_service import MemoryService
 from graph_service import GraphService
+from feedback_service import FeedbackService
 
 # Configure logging
 logging.basicConfig(
@@ -46,6 +47,12 @@ REDIS_DB = int(os.getenv("REDIS_DB", "0"))
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "neo4j_password")
+
+POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
+POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
+POSTGRES_DB = os.getenv("POSTGRES_DB", "ai_platform")
+POSTGRES_USER = os.getenv("POSTGRES_USER", "ai_user")
+POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "ai_password")
 
 # Create FastAPI app
 app = FastAPI(
@@ -314,6 +321,77 @@ class GraphStatsResponse(BaseModel):
     relationships_by_type: Dict[str, int]
 
 
+class FeedbackRequest(BaseModel):
+    query: str = Field(..., description="Original user query")
+    response: str = Field(..., description="Model response")
+    model: str = Field(..., description="Model identifier")
+    rating: int = Field(..., description="Feedback rating: 1 (thumbs-up) or -1 (thumbs-down)")
+    memory_used: int = Field(0, description="Memory used in bytes")
+    tools_called: Optional[List[str]] = Field(None, description="List of tools/functions called")
+    user_id: Optional[str] = Field(None, description="User identifier")
+    session_id: Optional[str] = Field(None, description="Session identifier")
+    intent: Optional[str] = Field(None, description="Detected intent (code, reasoning, general)")
+    project: Optional[str] = Field(None, description="Project identifier")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
+
+
+class FeedbackResponse(BaseModel):
+    status: str
+    feedback_id: str
+    id: int
+    timestamp: str
+    rating: int
+    model: str
+
+
+class FeedbackUpdateRequest(BaseModel):
+    rating: Optional[int] = Field(None, description="Updated rating (1 or -1)")
+    intent: Optional[str] = Field(None, description="Updated intent")
+    project: Optional[str] = Field(None, description="Updated project")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata to merge")
+
+
+class ModelAccuracyResponse(BaseModel):
+    model: str
+    intent: Optional[str]
+    project: Optional[str]
+    total_feedback: int
+    positive_feedback: int
+    negative_feedback: int
+    accuracy_percentage: float
+    last_updated: str
+
+
+class FeedbackStatsResponse(BaseModel):
+    total_feedback: int
+    positive_count: int
+    negative_count: int
+    positive_percentage: float
+    avg_memory_used: int
+    unique_users: int
+    unique_sessions: int
+    days: int
+    filters: Dict[str, Optional[str]]
+
+
+class FinetuningExportRequest(BaseModel):
+    output_path: str = Field(..., description="Output file path")
+    start_date: Optional[str] = Field(None, description="Start date (ISO format)")
+    end_date: Optional[str] = Field(None, description="End date (ISO format)")
+    format: str = Field("jsonl", description="Export format (jsonl)")
+
+
+class FinetuningExportResponse(BaseModel):
+    status: str
+    output_path: str
+    total_samples: int
+    positive_samples: int
+    negative_samples: int
+    total_weight: float
+    start_date: Optional[str]
+    end_date: Optional[str]
+
+
 # Metrics storage
 class MetricsStore:
     def __init__(self):
@@ -364,6 +442,7 @@ agent_router = None
 rag_service = None
 memory_service = None
 graph_service = None
+feedback_service = None
 
 
 def get_agent_router() -> AgentRouter:
@@ -435,6 +514,22 @@ def get_graph_service() -> GraphService:
         )
         logger.info("Graph Service initialized")
     return graph_service
+
+
+def get_feedback_service() -> FeedbackService:
+    """Get or initialize Feedback service."""
+    global feedback_service
+    if feedback_service is None:
+        logger.info("Initializing Feedback Service...")
+        feedback_service = FeedbackService(
+            db_host=POSTGRES_HOST,
+            db_port=POSTGRES_PORT,
+            db_name=POSTGRES_DB,
+            db_user=POSTGRES_USER,
+            db_password=POSTGRES_PASSWORD
+        )
+        logger.info("Feedback Service initialized")
+    return feedback_service
 
 
 def format_chat_prompt(messages: List[ChatMessage]) -> str:
@@ -525,7 +620,14 @@ async def root():
             "graph_query": "POST /graph/query",
             "graph_neighbors": "GET /graph/neighbors/{entity}",
             "graph_search": "POST /graph/search",
-            "graph_stats": "GET /graph/stats"
+            "graph_stats": "GET /graph/stats",
+            "feedback_add": "POST /v1/feedback",
+            "feedback_get": "GET /v1/feedback/{feedback_id}",
+            "feedback_update": "PUT /v1/feedback/{feedback_id}",
+            "feedback_delete": "DELETE /v1/feedback/{feedback_id}",
+            "feedback_accuracy": "GET /v1/feedback/accuracy",
+            "feedback_stats": "GET /v1/feedback/stats",
+            "feedback_export": "POST /v1/feedback/export/finetuning"
         },
         "prometheus_metrics": "http://localhost:8001/metrics"
     }
@@ -1538,6 +1640,315 @@ async def graph_stats():
         raise HTTPException(status_code=500, detail=f"Graph stats error: {str(e)}")
 
 
+@app.post("/v1/feedback", response_model=FeedbackResponse)
+async def add_feedback(request: FeedbackRequest):
+    """
+    Submit feedback for a model response (thumbs-up/down).
+    
+    This endpoint:
+    1. Stores feedback in PostgreSQL with full context
+    2. Tracks query, response, model, rating, memory usage, and tools called
+    3. Auto-updates accuracy metrics by model, intent, and project
+    4. Enables fine-tuning dataset export with weighted samples
+    
+    Ratings:
+    - 1: Thumbs-up (positive feedback, 2.0x weight in fine-tuning)
+    - -1: Thumbs-down (negative feedback, 0.5x weight in fine-tuning)
+    
+    Args:
+        query: Original user query
+        response: Model's response
+        model: Model identifier (e.g., "llama-3.3-8b-instruct")
+        rating: Feedback rating (1 or -1)
+        memory_used: Memory usage in bytes (optional)
+        tools_called: List of tools/functions used (optional)
+        user_id: User identifier (optional)
+        session_id: Session identifier (optional)
+        intent: Detected intent like "code", "reasoning", "general" (optional)
+        project: Project identifier (optional)
+        metadata: Additional metadata (optional)
+    
+    Returns:
+        Feedback ID, timestamp, and status
+    """
+    try:
+        service = get_feedback_service()
+        result = service.add_feedback(
+            query=request.query,
+            response=request.response,
+            model=request.model,
+            rating=request.rating,
+            memory_used=request.memory_used,
+            tools_called=request.tools_called,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            intent=request.intent,
+            project=request.project,
+            metadata=request.metadata
+        )
+        logger.info(f"Feedback added: {result['feedback_id']} [rating={request.rating}]")
+        return FeedbackResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error adding feedback: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Feedback error: {str(e)}")
+
+
+@app.get("/v1/feedback/{feedback_id}")
+async def get_feedback(feedback_id: str):
+    """
+    Retrieve feedback by ID.
+    
+    Args:
+        feedback_id: Feedback identifier
+    
+    Returns:
+        Complete feedback record with all metadata
+    """
+    try:
+        service = get_feedback_service()
+        result = service.get_feedback(feedback_id)
+        
+        if result is None:
+            raise HTTPException(status_code=404, detail=f"Feedback not found: {feedback_id}")
+        
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving feedback: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Feedback retrieval error: {str(e)}")
+
+
+@app.put("/v1/feedback/{feedback_id}")
+async def update_feedback(feedback_id: str, request: FeedbackUpdateRequest):
+    """
+    Update existing feedback.
+    
+    Args:
+        feedback_id: Feedback identifier
+        rating: Updated rating (1 or -1)
+        intent: Updated intent
+        project: Updated project
+        metadata: Additional metadata to merge
+    
+    Returns:
+        Update status
+    """
+    try:
+        service = get_feedback_service()
+        result = service.update_feedback(
+            feedback_id=feedback_id,
+            rating=request.rating,
+            intent=request.intent,
+            project=request.project,
+            metadata=request.metadata
+        )
+        logger.info(f"Feedback updated: {feedback_id}")
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error updating feedback: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Feedback update error: {str(e)}")
+
+
+@app.delete("/v1/feedback/{feedback_id}")
+async def delete_feedback(feedback_id: str):
+    """
+    Delete feedback by ID.
+    
+    Args:
+        feedback_id: Feedback identifier
+    
+    Returns:
+        Deletion status
+    """
+    try:
+        service = get_feedback_service()
+        result = service.delete_feedback(feedback_id)
+        logger.info(f"Feedback deleted: {feedback_id}")
+        return result
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error deleting feedback: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Feedback deletion error: {str(e)}")
+
+
+@app.get("/v1/feedback/accuracy", response_model=List[ModelAccuracyResponse])
+async def get_model_accuracy(
+    model: Optional[str] = None,
+    intent: Optional[str] = None,
+    project: Optional[str] = None
+):
+    """
+    Get per-model accuracy metrics by intent and project.
+    
+    This endpoint returns accuracy percentages calculated from feedback ratings:
+    - Accuracy = (positive_feedback / total_feedback) * 100
+    - Metrics are aggregated by model, intent, and project combinations
+    - Auto-updated via PostgreSQL triggers on feedback insertion
+    
+    Args:
+        model: Filter by specific model (optional)
+        intent: Filter by intent (e.g., "code", "reasoning", "general") (optional)
+        project: Filter by project (optional)
+    
+    Returns:
+        List of accuracy metrics with breakdown by model/intent/project
+    
+    Example:
+        GET /v1/feedback/accuracy?model=llama-3.3-8b-instruct&intent=code
+    """
+    try:
+        service = get_feedback_service()
+        results = service.get_model_accuracy(
+            model=model,
+            intent=intent,
+            project=project
+        )
+        
+        formatted_results = []
+        for r in results:
+            formatted_results.append(
+                ModelAccuracyResponse(
+                    model=r["model"],
+                    intent=r["intent"],
+                    project=r["project"],
+                    total_feedback=r["total_feedback"],
+                    positive_feedback=r["positive_feedback"],
+                    negative_feedback=r["negative_feedback"],
+                    accuracy_percentage=float(r["accuracy_percentage"] or 0),
+                    last_updated=r["last_updated"].isoformat() if r["last_updated"] else None
+                )
+            )
+        
+        logger.info(f"Accuracy metrics retrieved: {len(formatted_results)} entries")
+        return formatted_results
+    except Exception as e:
+        logger.error(f"Error retrieving accuracy metrics: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Accuracy metrics error: {str(e)}")
+
+
+@app.get("/v1/feedback/stats", response_model=FeedbackStatsResponse)
+async def get_feedback_stats(
+    model: Optional[str] = None,
+    intent: Optional[str] = None,
+    project: Optional[str] = None,
+    days: int = 7
+):
+    """
+    Get feedback statistics for a time period.
+    
+    Args:
+        model: Filter by model (optional)
+        intent: Filter by intent (optional)
+        project: Filter by project (optional)
+        days: Number of days to look back (default: 7)
+    
+    Returns:
+        Aggregated statistics including:
+        - Total feedback count
+        - Positive/negative counts and percentages
+        - Average memory usage
+        - Unique users and sessions
+    
+    Example:
+        GET /v1/feedback/stats?model=qwen-2.5-coder-7b&intent=code&days=30
+    """
+    try:
+        service = get_feedback_service()
+        stats = service.get_feedback_stats(
+            model=model,
+            intent=intent,
+            project=project,
+            days=days
+        )
+        logger.info(f"Feedback stats retrieved for {days} days")
+        return FeedbackStatsResponse(**stats)
+    except Exception as e:
+        logger.error(f"Error retrieving feedback stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Feedback stats error: {str(e)}")
+
+
+@app.post("/v1/feedback/export/finetuning", response_model=FinetuningExportResponse)
+async def export_finetuning_dataset(request: FinetuningExportRequest):
+    """
+    Export weekly fine-tuning dataset with weighted samples.
+    
+    This endpoint:
+    1. Extracts feedback from specified time range (default: last 7 days)
+    2. Applies weights based on feedback rating:
+       - Positive feedback (thumbs-up): 2.0x weight
+       - Negative feedback (thumbs-down): 0.5x weight
+    3. Exports to JSONL format suitable for fine-tuning
+    
+    Output format (per line):
+    {
+        "messages": [
+            {"role": "user", "content": "..."},
+            {"role": "assistant", "content": "..."}
+        ],
+        "weight": 2.0,
+        "metadata": {
+            "model": "...",
+            "rating": 1,
+            "timestamp": "...",
+            "intent": "...",
+            "project": "..."
+        }
+    }
+    
+    Args:
+        output_path: Path to output JSONL file
+        start_date: Start date in ISO format (optional, default: 7 days ago)
+        end_date: End date in ISO format (optional, default: now)
+        format: Export format (default: "jsonl")
+    
+    Returns:
+        Export statistics including sample counts and weights
+    
+    Example:
+        POST /v1/feedback/export/finetuning
+        {
+            "output_path": "/tmp/finetuning_data.jsonl",
+            "start_date": "2025-01-01T00:00:00Z",
+            "end_date": "2025-01-08T00:00:00Z"
+        }
+    """
+    try:
+        service = get_feedback_service()
+        
+        start_date = None
+        end_date = None
+        
+        if request.start_date:
+            start_date = datetime.fromisoformat(request.start_date.replace('Z', '+00:00'))
+        
+        if request.end_date:
+            end_date = datetime.fromisoformat(request.end_date.replace('Z', '+00:00'))
+        
+        result = service.export_finetuning_dataset(
+            output_path=request.output_path,
+            start_date=start_date,
+            end_date=end_date,
+            format=request.format
+        )
+        
+        logger.info(
+            f"Fine-tuning dataset exported: {result['total_samples']} samples, "
+            f"total weight: {result['total_weight']}"
+        )
+        return FinetuningExportResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error exporting fine-tuning dataset: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Export error: {str(e)}")
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
@@ -1557,6 +1968,9 @@ async def shutdown_event():
     if graph_service:
         graph_service.close()
     logger.info("Graph Service closed")
+    if feedback_service:
+        feedback_service.close()
+    logger.info("Feedback Service closed")
 
 
 if __name__ == "__main__":
