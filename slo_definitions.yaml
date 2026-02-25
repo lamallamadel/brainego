@@ -1,0 +1,219 @@
+# Service Level Objectives (SLOs) for Production System
+# Based on: 99.5% availability, P99 latency < 2s, zero data loss
+
+slo_targets:
+  # Availability SLO
+  availability:
+    target: 99.5
+    description: "System availability percentage"
+    measurement_window: "30 days"
+    calculation: "(successful_requests / total_requests) * 100"
+    alerts:
+      - threshold: 99.0
+        severity: "warning"
+        message: "Availability dropped below 99%"
+      - threshold: 98.0
+        severity: "critical"
+        message: "Availability dropped below 98%"
+
+  # Latency SLOs
+  latency:
+    p50:
+      target: 500
+      unit: "ms"
+      description: "50th percentile latency"
+      measurement_window: "1 hour"
+      alerts:
+        - threshold: 1000
+          severity: "warning"
+    
+    p95:
+      target: 1500
+      unit: "ms"
+      description: "95th percentile latency"
+      measurement_window: "1 hour"
+      alerts:
+        - threshold: 2000
+          severity: "warning"
+    
+    p99:
+      target: 2000
+      unit: "ms"
+      description: "99th percentile latency (PRIMARY SLO)"
+      measurement_window: "1 hour"
+      alerts:
+        - threshold: 2000
+          severity: "warning"
+          message: "P99 latency approaching SLO threshold"
+        - threshold: 2500
+          severity: "critical"
+          message: "P99 latency exceeded SLO"
+
+  # Data Loss SLO
+  data_loss:
+    target: 0
+    description: "Zero data loss requirement"
+    measurement_window: "continuous"
+    verification:
+      - method: "backup_validation"
+        frequency: "daily"
+      - method: "restore_testing"
+        frequency: "weekly"
+      - method: "data_integrity_checks"
+        frequency: "hourly"
+    alerts:
+      - threshold: 1
+        severity: "critical"
+        message: "DATA LOSS DETECTED - Immediate action required"
+
+  # Error Rate SLO
+  error_rate:
+    target: 0.5
+    unit: "percent"
+    description: "Maximum error rate (complements availability)"
+    measurement_window: "5 minutes"
+    calculation: "(failed_requests / total_requests) * 100"
+    alerts:
+      - threshold: 1.0
+        severity: "warning"
+        message: "Error rate above 1%"
+      - threshold: 2.0
+        severity: "critical"
+        message: "Error rate above 2%"
+
+# Service-specific SLOs
+service_slos:
+  # Chat API
+  chat_api:
+    availability: 99.5
+    p99_latency: 2000
+    error_rate: 0.5
+    throughput_min: 20  # requests per second
+    
+  # RAG Service
+  rag_service:
+    availability: 99.5
+    p99_latency: 2000
+    error_rate: 0.5
+    query_latency_p99: 1800
+    ingest_latency_p99: 2000
+    
+  # MCP Gateway
+  mcp_gateway:
+    availability: 99.5
+    p99_latency: 2000
+    error_rate: 0.5
+    operation_timeout: 30000  # 30 seconds for long operations
+
+  # Data Stores
+  postgresql:
+    availability: 99.9
+    query_latency_p99: 100
+    connection_pool_utilization: 80  # percent
+    
+  qdrant:
+    availability: 99.9
+    search_latency_p99: 200
+    insert_latency_p99: 500
+    
+  redis:
+    availability: 99.9
+    latency_p99: 10
+    memory_utilization: 80  # percent
+
+# Budget allocations
+error_budgets:
+  monthly:
+    description: "Error budget for 30-day window"
+    availability_target: 99.5
+    allowed_downtime: "3.6 hours"  # 0.5% of 30 days
+    allowed_failed_requests: "0.5%"
+    
+  weekly:
+    description: "Error budget for 7-day window"
+    availability_target: 99.5
+    allowed_downtime: "50.4 minutes"
+    allowed_failed_requests: "0.5%"
+
+# Monitoring and alerting
+monitoring:
+  metrics_collection:
+    interval: "15s"
+    retention: "90 days"
+    
+  health_checks:
+    interval: "30s"
+    timeout: "10s"
+    
+  alerting:
+    channels:
+      - type: "slack"
+        severity: ["warning", "critical"]
+      - type: "pagerduty"
+        severity: ["critical"]
+      - type: "email"
+        severity: ["warning", "critical"]
+    
+    escalation:
+      - level: 1
+        delay: "5 minutes"
+        recipients: ["on-call-engineer"]
+      - level: 2
+        delay: "15 minutes"
+        recipients: ["team-lead", "on-call-engineer"]
+      - level: 3
+        delay: "30 minutes"
+        recipients: ["engineering-manager", "team-lead", "on-call-engineer"]
+
+# Validation requirements
+validation:
+  load_testing:
+    frequency: "weekly"
+    duration: "15 minutes"
+    concurrent_users: 50
+    scenarios:
+      - chat: "50%"
+      - rag: "30%"
+      - mcp: "20%"
+    
+  chaos_engineering:
+    frequency: "bi-weekly"
+    experiments:
+      - "random_pod_kill"
+      - "cpu_saturation"
+      - "memory_pressure"
+      - "network_partition"
+    
+  security_audit:
+    frequency: "weekly"
+    scans:
+      - "trivy_image_scan"
+      - "penetration_testing"
+      - "vulnerability_assessment"
+    
+  backup_restore:
+    backup_frequency: "daily"
+    restore_testing: "weekly"
+    retention: "30 days"
+    verification: "automated"
+
+# Compliance requirements
+compliance:
+  data_protection:
+    encryption_at_rest: true
+    encryption_in_transit: true
+    key_rotation: "90 days"
+    
+  audit_logging:
+    enabled: true
+    retention: "1 year"
+    events:
+      - "authentication"
+      - "authorization"
+      - "data_access"
+      - "configuration_changes"
+    
+  disaster_recovery:
+    rpo: "1 hour"  # Recovery Point Objective
+    rto: "4 hours"  # Recovery Time Objective
+    backup_locations: "multi-region"

@@ -1,0 +1,19 @@
+# Production Validation Dependencies
+
+# Load Testing
+locust>=2.17.0
+requests>=2.31.0
+
+# Chaos Engineering
+docker>=7.0.0
+
+# Security Audit (Trivy installed separately)
+# See: https://aquasecurity.github.io/trivy/latest/getting-started/installation/
+
+# Backup/Restore Testing
+psycopg2-binary>=2.9.9
+qdrant-client>=1.7.0
+redis>=5.0.1
+
+# Common
+pyyaml>=6.0.1

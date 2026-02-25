@@ -191,3 +191,14 @@ incident_*.log
 incident_reports/
 validation_reports/
 dr_test_log.txt
+
+# Production Validation Results
+k6_results.json
+locust_results.json
+locust_report.html
+chaos_report.json
+security_audit_report.json
+trivy_scan_results.json
+backup_restore_report.json
+production_validation_report.json
+*_validation_report.json
