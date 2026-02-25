@@ -98,3 +98,8 @@ grafana-data/
 
 # Prometheus
 prometheus-data/
+
+# Migration artifacts
+migration_work/
+migration_*.log
+migration_metadata.json
