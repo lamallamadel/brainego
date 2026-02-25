@@ -7,3 +7,9 @@ httpx==0.25.1
 # Optional dependencies for enhanced functionality
 python-multipart==0.0.6
 python-json-logger==2.0.7
+
+# RAG Dependencies
+qdrant-client==1.7.0
+sentence-transformers==2.2.2
+torch==2.1.0
+tiktoken==0.5.1

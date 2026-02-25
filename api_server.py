@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 OpenAI-compatible API server for MAX Serve with Llama 3.3 8B Instruct.
-Exposes /v1/chat/completions and /health endpoints.
+Exposes /v1/chat/completions, /v1/rag/ingest, and /health endpoints.
 """
 
 import os
@@ -19,6 +19,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import httpx
 
+from rag_service import RAGIngestionService
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -30,6 +32,10 @@ logger = logging.getLogger(__name__)
 MAX_SERVE_URL = os.getenv("MAX_SERVE_URL", "http://localhost:8080")
 MAX_SERVE_HEALTH_URL = f"{MAX_SERVE_URL}/health"
 MAX_SERVE_GENERATE_URL = f"{MAX_SERVE_URL}/generate"
+
+QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
+QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
+QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "documents")
 
 # Create FastAPI app
 app = FastAPI(
@@ -96,6 +102,48 @@ class HealthResponse(BaseModel):
     max_serve_status: str
 
 
+class RAGIngestRequest(BaseModel):
+    text: str = Field(..., description="Text content to ingest")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Optional metadata for the document")
+
+
+class RAGIngestBatchRequest(BaseModel):
+    documents: List[Dict[str, Any]] = Field(..., description="List of documents to ingest")
+
+
+class RAGIngestResponse(BaseModel):
+    status: str
+    document_id: str
+    chunks_created: int
+    points_stored: int
+    point_ids: List[str]
+    metadata: Dict[str, Any]
+
+
+class RAGIngestBatchResponse(BaseModel):
+    status: str
+    documents_processed: int
+    total_chunks: int
+    total_points: int
+    results: List[Dict[str, Any]]
+
+
+class RAGSearchRequest(BaseModel):
+    query: str = Field(..., description="Search query text")
+    limit: int = Field(10, ge=1, le=100, description="Maximum number of results")
+    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+
+
+class RAGSearchResponse(BaseModel):
+    results: List[Dict[str, Any]]
+    query: str
+    limit: int
+
+
+class RAGStatsResponse(BaseModel):
+    collection_info: Dict[str, Any]
+
+
 # Metrics storage
 class MetricsStore:
     def __init__(self):
@@ -140,6 +188,25 @@ class MetricsStore:
 
 
 metrics = MetricsStore()
+
+# Initialize RAG service (lazy loading)
+rag_service = None
+
+
+def get_rag_service() -> RAGIngestionService:
+    """Get or initialize RAG service."""
+    global rag_service
+    if rag_service is None:
+        logger.info("Initializing RAG Ingestion Service...")
+        rag_service = RAGIngestionService(
+            qdrant_host=QDRANT_HOST,
+            qdrant_port=QDRANT_PORT,
+            collection_name=QDRANT_COLLECTION,
+            chunk_size=1000,
+            chunk_overlap=100
+        )
+        logger.info("RAG Ingestion Service initialized")
+    return rag_service
 
 
 def format_chat_prompt(messages: List[ChatMessage]) -> str:
@@ -205,12 +272,17 @@ async def call_max_serve(prompt: str, params: Dict[str, Any]) -> tuple[str, int,
 async def root():
     """Root endpoint."""
     return {
-        "message": "OpenAI-Compatible API for MAX Serve",
+        "message": "OpenAI-Compatible API for MAX Serve with RAG",
         "version": "1.0.0",
         "endpoints": {
             "chat": "/v1/chat/completions",
             "health": "/health",
-            "metrics": "/metrics"
+            "metrics": "/metrics",
+            "rag_ingest": "/v1/rag/ingest",
+            "rag_ingest_batch": "/v1/rag/ingest/batch",
+            "rag_search": "/v1/rag/search",
+            "rag_delete": "/v1/rag/documents/{document_id}",
+            "rag_stats": "/v1/rag/stats"
         }
     }
 
@@ -331,6 +403,124 @@ async def list_models():
             }
         ]
     }
+
+
+@app.post("/v1/rag/ingest", response_model=RAGIngestResponse)
+async def rag_ingest(request: RAGIngestRequest):
+    """
+    Ingest a document into the RAG system.
+    
+    The document will be:
+    1. Chunked into 1000-character segments with 100-character overlap
+    2. Tagged with provided metadata
+    3. Embedded using Nomic Embed v1.5
+    4. Stored in Qdrant vector database
+    """
+    try:
+        service = get_rag_service()
+        result = service.ingest_document(
+            text=request.text,
+            metadata=request.metadata
+        )
+        logger.info(f"Successfully ingested document: {result['document_id']}")
+        return RAGIngestResponse(**result)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error ingesting document: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Ingestion error: {str(e)}")
+
+
+@app.post("/v1/rag/ingest/batch", response_model=RAGIngestBatchResponse)
+async def rag_ingest_batch(request: RAGIngestBatchRequest):
+    """
+    Ingest multiple documents into the RAG system in batch.
+    
+    Each document should have:
+    - text: Document content
+    - metadata: Optional metadata dictionary
+    """
+    try:
+        service = get_rag_service()
+        result = service.ingest_documents_batch(documents=request.documents)
+        logger.info(f"Successfully ingested {result['documents_processed']} documents")
+        return RAGIngestBatchResponse(**result)
+    except Exception as e:
+        logger.error(f"Error in batch ingestion: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Batch ingestion error: {str(e)}")
+
+
+@app.post("/v1/rag/search", response_model=RAGSearchResponse)
+async def rag_search(request: RAGSearchRequest):
+    """
+    Search for relevant documents in the RAG system.
+    
+    Args:
+        query: Search query text
+        limit: Maximum number of results (1-100)
+        filters: Optional metadata filters
+    
+    Returns:
+        List of relevant document chunks with similarity scores
+    """
+    try:
+        service = get_rag_service()
+        results = service.search_documents(
+            query=request.query,
+            limit=request.limit,
+            filters=request.filters
+        )
+        logger.info(f"Search completed: {len(results)} results for query: {request.query[:50]}...")
+        return RAGSearchResponse(
+            results=results,
+            query=request.query,
+            limit=request.limit
+        )
+    except Exception as e:
+        logger.error(f"Error searching documents: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+
+
+@app.delete("/v1/rag/documents/{document_id}")
+async def rag_delete_document(document_id: str):
+    """
+    Delete a document and all its chunks from the RAG system.
+    
+    Args:
+        document_id: ID of the document to delete
+    """
+    try:
+        service = get_rag_service()
+        service.delete_document(document_id)
+        logger.info(f"Successfully deleted document: {document_id}")
+        return {
+            "status": "success",
+            "document_id": document_id,
+            "message": "Document deleted successfully"
+        }
+    except Exception as e:
+        logger.error(f"Error deleting document: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Delete error: {str(e)}")
+
+
+@app.get("/v1/rag/stats", response_model=RAGStatsResponse)
+async def rag_stats():
+    """
+    Get RAG system statistics.
+    
+    Returns collection information including:
+    - Collection name
+    - Number of vectors
+    - Number of points
+    - Status
+    """
+    try:
+        service = get_rag_service()
+        stats = service.get_stats()
+        return RAGStatsResponse(collection_info=stats)
+    except Exception as e:
+        logger.error(f"Error getting RAG stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Stats error: {str(e)}")
 
 
 if __name__ == "__main__":

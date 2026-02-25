@@ -32,6 +32,11 @@ models/*.safetensors
 models/*.pt
 models/*.pth
 
+# Sentence Transformers cache
+.cache/
+sentence-transformers/
+transformers/
+
 # Logs
 logs/
 *.log
