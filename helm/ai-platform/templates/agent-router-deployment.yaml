@@ -1,0 +1,80 @@
+{{- if .Values.agentRouter.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-router
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: agent-router
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.agentRouter.service.type }}
+  ports:
+    - port: {{ .Values.agentRouter.service.port }}
+      targetPort: {{ .Values.agentRouter.service.targetPort }}
+      protocol: TCP
+      name: http
+    - port: {{ .Values.agentRouter.service.metricsPort }}
+      targetPort: {{ .Values.agentRouter.service.metricsPort }}
+      protocol: TCP
+      name: metrics
+  selector:
+    app.kubernetes.io/name: agent-router
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-router
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: agent-router
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.agentRouter.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agent-router
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agent-router
+        app.kubernetes.io/component: api
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: agent-router
+          image: "{{ .Values.agentRouter.image.repository }}:{{ .Values.agentRouter.image.tag }}"
+          imagePullPolicy: {{ .Values.agentRouter.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.agentRouter.service.targetPort }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.agentRouter.service.metricsPort }}
+              protocol: TCP
+          env:
+            {{- toYaml .Values.agentRouter.env | nindent 12 }}
+          {{- if .Values.agentRouter.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.agentRouter.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.agentRouter.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.agentRouter.readinessProbe | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.agentRouter.resources | nindent 12 }}
+          volumeMounts:
+            - name: configs
+              mountPath: /app/configs
+              readOnly: true
+      volumes:
+        - name: configs
+          configMap:
+            name: agent-router-config
+{{- end }}

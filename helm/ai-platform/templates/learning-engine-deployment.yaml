@@ -1,0 +1,165 @@
+{{- if .Values.learningEngine.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: learning-engine
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: learning-engine
+    app.kubernetes.io/component: training
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.learningEngine.service.type }}
+  ports:
+    - port: {{ .Values.learningEngine.service.port }}
+      targetPort: {{ .Values.learningEngine.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: learning-engine
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: learning-engine
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: learning-engine
+    app.kubernetes.io/component: training
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.learningEngine.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: learning-engine
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: learning-engine
+        app.kubernetes.io/component: training
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: learning-engine
+          image: "{{ .Values.learningEngine.image.repository }}:{{ .Values.learningEngine.image.tag }}"
+          imagePullPolicy: {{ .Values.learningEngine.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.learningEngine.service.targetPort }}
+              protocol: TCP
+          command:
+            {{- toYaml .Values.learningEngine.command | nindent 12 }}
+          env:
+            {{- toYaml .Values.learningEngine.env | nindent 12 }}
+          {{- if .Values.learningEngine.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.learningEngine.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.learningEngine.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.learningEngine.readinessProbe | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.learningEngine.resources | nindent 12 }}
+          volumeMounts:
+            - name: configs
+              mountPath: /app/configs
+              readOnly: true
+            {{- if .Values.learningEngine.persistence.models.enabled }}
+            - name: models
+              mountPath: {{ .Values.learningEngine.persistence.models.mountPath }}
+            {{- end }}
+            {{- if .Values.learningEngine.persistence.loraAdapters.enabled }}
+            - name: lora-adapters
+              mountPath: {{ .Values.learningEngine.persistence.loraAdapters.mountPath }}
+            {{- end }}
+            {{- if .Values.learningEngine.persistence.fisherMatrices.enabled }}
+            - name: fisher-matrices
+              mountPath: {{ .Values.learningEngine.persistence.fisherMatrices.mountPath }}
+            {{- end }}
+      volumes:
+        - name: configs
+          configMap:
+            name: agent-router-config
+        {{- if .Values.learningEngine.persistence.models.enabled }}
+        - name: models
+          persistentVolumeClaim:
+            {{- if .Values.learningEngine.persistence.models.existingClaim }}
+            claimName: {{ .Values.learningEngine.persistence.models.existingClaim }}
+            {{- else }}
+            claimName: learning-engine-models
+            {{- end }}
+        {{- end }}
+        {{- if .Values.learningEngine.persistence.loraAdapters.enabled }}
+        - name: lora-adapters
+          persistentVolumeClaim:
+            {{- if .Values.learningEngine.persistence.loraAdapters.existingClaim }}
+            claimName: {{ .Values.learningEngine.persistence.loraAdapters.existingClaim }}
+            {{- else }}
+            claimName: learning-engine-lora-adapters
+            {{- end }}
+        {{- end }}
+        {{- if .Values.learningEngine.persistence.fisherMatrices.enabled }}
+        - name: fisher-matrices
+          persistentVolumeClaim:
+            {{- if .Values.learningEngine.persistence.fisherMatrices.existingClaim }}
+            claimName: {{ .Values.learningEngine.persistence.fisherMatrices.existingClaim }}
+            {{- else }}
+            claimName: learning-engine-fisher-matrices
+            {{- end }}
+        {{- end }}
+---
+{{- if and .Values.learningEngine.persistence.models.enabled (not .Values.learningEngine.persistence.models.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: learning-engine-models
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.learningEngine.persistence.models.storageClass }}
+  storageClassName: {{ .Values.learningEngine.persistence.models.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.learningEngine.persistence.models.size }}
+{{- end }}
+---
+{{- if and .Values.learningEngine.persistence.loraAdapters.enabled (not .Values.learningEngine.persistence.loraAdapters.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: learning-engine-lora-adapters
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.learningEngine.persistence.loraAdapters.storageClass }}
+  storageClassName: {{ .Values.learningEngine.persistence.loraAdapters.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.learningEngine.persistence.loraAdapters.size }}
+{{- end }}
+---
+{{- if and .Values.learningEngine.persistence.fisherMatrices.enabled (not .Values.learningEngine.persistence.fisherMatrices.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: learning-engine-fisher-matrices
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.learningEngine.persistence.fisherMatrices.storageClass }}
+  storageClassName: {{ .Values.learningEngine.persistence.fisherMatrices.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.learningEngine.persistence.fisherMatrices.size }}
+{{- end }}
+{{- end }}

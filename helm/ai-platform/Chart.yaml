@@ -1,0 +1,20 @@
+apiVersion: v2
+name: ai-platform
+description: A comprehensive AI platform with MAX Serve, Agent Router, RAG, Memory, and Graph services
+type: application
+version: 1.0.0
+appVersion: "2.0.0"
+keywords:
+  - ai
+  - llm
+  - max-serve
+  - rag
+  - knowledge-graph
+  - memory
+maintainers:
+  - name: AI Platform Team
+    email: team@ai-platform.example.com
+sources:
+  - https://github.com/modular/max-serve
+  - https://github.com/neo4j/neo4j
+  - https://qdrant.tech/

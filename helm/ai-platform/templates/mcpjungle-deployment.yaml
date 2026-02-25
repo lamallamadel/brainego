@@ -1,0 +1,103 @@
+{{- if .Values.mcpjungle.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: mcpjungle
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: mcpjungle
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.mcpjungle.service.type }}
+  ports:
+    - port: {{ .Values.mcpjungle.service.port }}
+      targetPort: {{ .Values.mcpjungle.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: mcpjungle
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mcpjungle
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: mcpjungle
+    app.kubernetes.io/component: gateway
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.mcpjungle.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mcpjungle
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mcpjungle
+        app.kubernetes.io/component: gateway
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mcpjungle
+          image: "{{ .Values.mcpjungle.image.repository }}:{{ .Values.mcpjungle.image.tag }}"
+          imagePullPolicy: {{ .Values.mcpjungle.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.mcpjungle.service.targetPort }}
+              protocol: TCP
+          env:
+            {{- toYaml .Values.mcpjungle.env | nindent 12 }}
+          {{- if .Values.mcpjungle.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.mcpjungle.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.mcpjungle.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.mcpjungle.readinessProbe | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.mcpjungle.resources | nindent 12 }}
+          volumeMounts:
+            - name: configs
+              mountPath: /app/configs
+              readOnly: true
+            {{- if .Values.mcpjungle.persistence.workspace.enabled }}
+            - name: workspace
+              mountPath: {{ .Values.mcpjungle.persistence.workspace.mountPath }}
+            {{- end }}
+      volumes:
+        - name: configs
+          configMap:
+            name: mcp-config
+        {{- if .Values.mcpjungle.persistence.workspace.enabled }}
+        - name: workspace
+          persistentVolumeClaim:
+            {{- if .Values.mcpjungle.persistence.workspace.existingClaim }}
+            claimName: {{ .Values.mcpjungle.persistence.workspace.existingClaim }}
+            {{- else }}
+            claimName: mcpjungle-workspace
+            {{- end }}
+        {{- end }}
+---
+{{- if and .Values.mcpjungle.persistence.workspace.enabled (not .Values.mcpjungle.persistence.workspace.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: mcpjungle-workspace
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.mcpjungle.persistence.workspace.storageClass }}
+  storageClassName: {{ .Values.mcpjungle.persistence.workspace.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.mcpjungle.persistence.workspace.size }}
+{{- end }}
+{{- end }}

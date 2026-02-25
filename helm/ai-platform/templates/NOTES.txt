@@ -1,0 +1,140 @@
+Thank you for installing {{ .Chart.Name }}!
+
+Your release is named {{ .Release.Name }}.
+
+To learn more about the release, try:
+
+  $ helm status {{ .Release.Name }} -n {{ .Values.namespace.name }}
+  $ helm get all {{ .Release.Name }} -n {{ .Values.namespace.name }}
+
+=======================================================================
+AI PLATFORM DEPLOYMENT SUMMARY
+=======================================================================
+
+Namespace: {{ .Values.namespace.name }}
+
+SERVICES DEPLOYED:
+------------------
+
+{{- if .Values.maxServeLlama.enabled }}
+✓ MAX Serve Llama 3.3 8B (General Purpose)
+  - Endpoint: http://max-serve-llama:{{ .Values.maxServeLlama.service.port }}
+{{- end }}
+
+{{- if .Values.maxServeQwen.enabled }}
+✓ MAX Serve Qwen 2.5 Coder 7B (Code Generation)
+  - Endpoint: http://max-serve-qwen:{{ .Values.maxServeQwen.service.port }}
+{{- end }}
+
+{{- if .Values.maxServeDeepseek.enabled }}
+✓ MAX Serve DeepSeek R1 7B (Reasoning)
+  - Endpoint: http://max-serve-deepseek:{{ .Values.maxServeDeepseek.service.port }}
+{{- end }}
+
+{{- if .Values.agentRouter.enabled }}
+✓ Agent Router API
+  - Endpoint: http://agent-router:{{ .Values.agentRouter.service.port }}
+  - Metrics: http://agent-router:{{ .Values.agentRouter.service.metricsPort }}/metrics
+{{- end }}
+
+{{- if .Values.gateway.enabled }}
+✓ Gateway Service
+  - Type: {{ .Values.gateway.service.type }}
+  - Port: {{ .Values.gateway.service.port }}
+{{- end }}
+
+{{- if .Values.mcpjungle.enabled }}
+✓ MCPJungle Gateway
+  - Endpoint: http://mcpjungle:{{ .Values.mcpjungle.service.port }}
+{{- end }}
+
+{{- if .Values.learningEngine.enabled }}
+✓ Learning Engine
+  - Endpoint: http://learning-engine:{{ .Values.learningEngine.service.port }}
+{{- end }}
+
+{{- if .Values.mem0.enabled }}
+✓ Mem0 Memory Service
+  - Endpoint: http://mem0:{{ .Values.mem0.service.port }}
+{{- end }}
+
+DATA STORES:
+------------
+
+{{- if .Values.qdrant.enabled }}
+✓ Qdrant Vector Database
+  - HTTP: http://qdrant:{{ .Values.qdrant.service.port }}
+  - gRPC: http://qdrant:{{ .Values.qdrant.service.grpcPort }}
+{{- end }}
+
+{{- if .Values.redis.enabled }}
+✓ Redis Cache
+  - Endpoint: redis:{{ .Values.redis.service.port }}
+{{- end }}
+
+{{- if .Values.postgres.enabled }}
+✓ PostgreSQL Database
+  - Endpoint: postgres:{{ .Values.postgres.service.port }}
+  - Database: ai_platform
+{{- end }}
+
+{{- if .Values.neo4j.enabled }}
+✓ Neo4j Graph Database
+  - HTTP: http://neo4j:{{ .Values.neo4j.service.httpPort }}
+  - Bolt: bolt://neo4j:{{ .Values.neo4j.service.boltPort }}
+{{- end }}
+
+{{- if .Values.minio.enabled }}
+✓ MinIO Object Storage
+  - API: http://minio:{{ .Values.minio.service.apiPort }}
+  - Console: http://minio:{{ .Values.minio.service.consolePort }}
+{{- end }}
+
+MONITORING & OBSERVABILITY:
+---------------------------
+
+{{- if .Values.prometheus.enabled }}
+✓ Prometheus
+  - Endpoint: http://prometheus:{{ .Values.prometheus.service.port }}
+{{- end }}
+
+{{- if .Values.grafana.enabled }}
+✓ Grafana
+  - Type: {{ .Values.grafana.service.type }}
+  - Port: {{ .Values.grafana.service.port }}
+  - Username: admin
+{{- end }}
+
+{{- if .Values.jaeger.enabled }}
+✓ Jaeger Tracing
+  - UI: http://jaeger:{{ .Values.jaeger.service.queryPort }}
+  - OTLP gRPC: http://jaeger:{{ .Values.jaeger.service.otlpGrpcPort }}
+{{- end }}
+
+NEXT STEPS:
+-----------
+
+1. Check pod status:
+   kubectl get pods -n {{ .Values.namespace.name }}
+
+2. Access the Gateway service:
+   {{- if eq .Values.gateway.service.type "LoadBalancer" }}
+   kubectl get svc gateway -n {{ .Values.namespace.name }}
+   {{- else }}
+   kubectl port-forward svc/gateway {{ .Values.gateway.service.port }}:{{ .Values.gateway.service.port }} -n {{ .Values.namespace.name }}
+   {{- end }}
+
+3. Access Grafana dashboards:
+   {{- if eq .Values.grafana.service.type "LoadBalancer" }}
+   kubectl get svc grafana -n {{ .Values.namespace.name }}
+   {{- else }}
+   kubectl port-forward svc/grafana {{ .Values.grafana.service.port }}:{{ .Values.grafana.service.port }} -n {{ .Values.namespace.name }}
+   {{- end }}
+
+4. View logs:
+   kubectl logs -f deployment/agent-router -n {{ .Values.namespace.name }}
+
+5. Access Jaeger UI:
+   kubectl port-forward svc/jaeger {{ .Values.jaeger.service.queryPort }}:{{ .Values.jaeger.service.queryPort }} -n {{ .Values.namespace.name }}
+
+For more information, visit the documentation or check the AGENTS.md file.

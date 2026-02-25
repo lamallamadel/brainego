@@ -1,0 +1,1022 @@
+# Default values for ai-platform Helm chart
+
+# Global settings
+global:
+  namespace: ai-platform
+
+# Namespace configuration
+namespace:
+  create: true
+  name: ai-platform
+
+# Image pull secrets (if using private registries)
+imagePullSecrets: []
+
+# MAX Serve - Llama 3.3 8B (General Purpose)
+maxServeLlama:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: modular/max-serve
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8080
+    targetPort: 8080
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+      memory: 16Gi
+      cpu: 8
+    requests:
+      nvidia.com/gpu: 1
+      memory: 8Gi
+      cpu: 4
+  env:
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "all"
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"
+  args:
+    - max-serve
+    - --model-path
+    - /models/llama-3.3-8b-instruct-q4_k_m.gguf
+    - --host
+    - "0.0.0.0"
+    - --port
+    - "8080"
+    - --max-batch-size
+    - "32"
+    - --max-waiting-time
+    - "10"
+    - --max-tokens
+    - "2048"
+  persistence:
+    models:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      size: 50Gi
+      mountPath: /models
+    configs:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      size: 1Gi
+      mountPath: /configs
+    logs:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      size: 10Gi
+      mountPath: /logs
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# MAX Serve - Qwen 2.5 Coder 7B (Code Generation)
+maxServeQwen:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: modular/max-serve
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8081
+    targetPort: 8081
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+      memory: 16Gi
+      cpu: 8
+    requests:
+      nvidia.com/gpu: 1
+      memory: 8Gi
+      cpu: 4
+  env:
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "all"
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"
+  args:
+    - max-serve
+    - --model-path
+    - /models/qwen2.5-coder-7b-instruct-q4_k_m.gguf
+    - --host
+    - "0.0.0.0"
+    - --port
+    - "8081"
+    - --max-batch-size
+    - "32"
+    - --max-waiting-time
+    - "10"
+    - --max-tokens
+    - "4096"
+  persistence:
+    models:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      size: 50Gi
+      mountPath: /models
+    configs:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      size: 1Gi
+      mountPath: /configs
+    logs:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      size: 10Gi
+      mountPath: /logs
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8081
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8081
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# MAX Serve - DeepSeek R1 7B (Reasoning)
+maxServeDeepseek:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: modular/max-serve
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8082
+    targetPort: 8082
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+      memory: 16Gi
+      cpu: 8
+    requests:
+      nvidia.com/gpu: 1
+      memory: 8Gi
+      cpu: 4
+  env:
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "all"
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"
+  args:
+    - max-serve
+    - --model-path
+    - /models/deepseek-r1-distill-qwen-7b-q4_k_m.gguf
+    - --host
+    - "0.0.0.0"
+    - --port
+    - "8082"
+    - --max-batch-size
+    - "32"
+    - --max-waiting-time
+    - "10"
+    - --max-tokens
+    - "4096"
+  persistence:
+    models:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      size: 50Gi
+      mountPath: /models
+    configs:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      size: 1Gi
+      mountPath: /configs
+    logs:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      size: 10Gi
+      mountPath: /logs
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8082
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8082
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Agent Router API Server
+agentRouter:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: ai-platform/api-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+    metricsPort: 8001
+  resources:
+    limits:
+      memory: 4Gi
+      cpu: 2
+    requests:
+      memory: 2Gi
+      cpu: 1
+  env:
+    - name: AGENT_ROUTER_CONFIG
+      value: /app/configs/agent-router.yaml
+    - name: QDRANT_HOST
+      value: qdrant
+    - name: QDRANT_PORT
+      value: "6333"
+    - name: QDRANT_COLLECTION
+      value: documents
+    - name: REDIS_HOST
+      value: redis
+    - name: REDIS_PORT
+      value: "6379"
+    - name: REDIS_DB
+      value: "0"
+    - name: NEO4J_URI
+      value: bolt://neo4j:7687
+    - name: NEO4J_USER
+      value: neo4j
+    - name: NEO4J_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: neo4j-credentials
+          key: password
+    - name: POSTGRES_HOST
+      value: postgres
+    - name: POSTGRES_PORT
+      value: "5432"
+    - name: POSTGRES_DB
+      value: ai_platform
+    - name: POSTGRES_USER
+      value: ai_user
+    - name: POSTGRES_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: postgres-credentials
+          key: password
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Gateway Service
+gateway:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: ai-platform/gateway
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: LoadBalancer
+    port: 9002
+    targetPort: 9002
+  resources:
+    limits:
+      memory: 2Gi
+      cpu: 1
+    requests:
+      memory: 1Gi
+      cpu: 500m
+  env:
+    - name: AGENT_ROUTER_CONFIG
+      value: /app/configs/agent-router.yaml
+    - name: QDRANT_HOST
+      value: qdrant
+    - name: QDRANT_PORT
+      value: "6333"
+    - name: QDRANT_COLLECTION
+      value: documents
+    - name: REDIS_HOST
+      value: redis
+    - name: REDIS_PORT
+      value: "6379"
+    - name: REDIS_DB
+      value: "0"
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 9002
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 9002
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# MCPJungle Gateway
+mcpjungle:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ai-platform/mcpjungle
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 9100
+    targetPort: 9100
+  resources:
+    limits:
+      memory: 4Gi
+      cpu: 2
+    requests:
+      memory: 2Gi
+      cpu: 1
+  env:
+    - name: AGENT_ROUTER_CONFIG
+      value: /app/configs/agent-router.yaml
+    - name: QDRANT_HOST
+      value: qdrant
+    - name: QDRANT_PORT
+      value: "6333"
+    - name: QDRANT_COLLECTION
+      value: documents
+    - name: REDIS_HOST
+      value: redis
+    - name: REDIS_PORT
+      value: "6379"
+    - name: REDIS_DB
+      value: "0"
+    - name: ENABLE_TELEMETRY
+      value: "true"
+    - name: OTLP_ENDPOINT
+      value: http://jaeger:4317
+    - name: JAEGER_ENDPOINT
+      value: jaeger:6831
+    - name: MCP_SERVERS_CONFIG
+      value: /app/configs/mcp-servers.yaml
+    - name: MCP_ACL_CONFIG
+      value: /app/configs/mcp-acl.yaml
+  persistence:
+    workspace:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      size: 10Gi
+      mountPath: /workspace
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 9100
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 9100
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Learning Engine Service
+learningEngine:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ai-platform/api-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8003
+    targetPort: 8003
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+      memory: 16Gi
+      cpu: 8
+    requests:
+      nvidia.com/gpu: 1
+      memory: 8Gi
+      cpu: 4
+  env:
+    - name: LEARNING_ENGINE_HOST
+      value: "0.0.0.0"
+    - name: LEARNING_ENGINE_PORT
+      value: "8003"
+    - name: BASE_MODEL_PATH
+      value: /models/llama-3.3-8b-instruct-q4_k_m.gguf
+    - name: MODEL_NAME
+      value: meta-llama/Llama-3.3-8B-Instruct
+    - name: LORA_RANK
+      value: "16"
+    - name: LORA_ALPHA
+      value: "32"
+    - name: LORA_DROPOUT
+      value: "0.05"
+    - name: EWC_LAMBDA
+      value: "500.0"
+    - name: BATCH_SIZE
+      value: "4"
+    - name: LEARNING_RATE
+      value: "2e-4"
+    - name: NUM_TRAIN_EPOCHS
+      value: "3"
+    - name: MINIO_ENDPOINT
+      value: minio:9000
+    - name: MINIO_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: minio-credentials
+          key: accessKey
+    - name: MINIO_SECRET_KEY
+      valueFrom:
+        secretKeyRef:
+          name: minio-credentials
+          key: secretKey
+    - name: MINIO_BUCKET
+      value: lora-adapters
+    - name: POSTGRES_HOST
+      value: postgres
+    - name: POSTGRES_PORT
+      value: "5432"
+    - name: POSTGRES_DB
+      value: ai_platform
+    - name: POSTGRES_USER
+      value: ai_user
+    - name: POSTGRES_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: postgres-credentials
+          key: password
+    - name: AUTO_TRAIN_ENABLED
+      value: "true"
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "all"
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"
+  command:
+    - python
+    - learning_engine_service.py
+  persistence:
+    models:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      size: 50Gi
+      mountPath: /models
+    loraAdapters:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      size: 20Gi
+      mountPath: /lora_adapters
+    fisherMatrices:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      size: 10Gi
+      mountPath: /fisher_matrices
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8003
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8003
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Mem0 Service (Memory Management)
+mem0:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ai-platform/api-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8006
+    targetPort: 8006
+  resources:
+    limits:
+      memory: 2Gi
+      cpu: 1
+    requests:
+      memory: 1Gi
+      cpu: 500m
+  env:
+    - name: MEMORY_SERVICE_PORT
+      value: "8006"
+    - name: QDRANT_HOST
+      value: qdrant
+    - name: QDRANT_PORT
+      value: "6333"
+    - name: REDIS_HOST
+      value: redis
+    - name: REDIS_PORT
+      value: "6379"
+    - name: REDIS_DB
+      value: "0"
+
+# Qdrant Vector Database (StatefulSet)
+qdrant:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: qdrant/qdrant
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 6333
+    grpcPort: 6334
+  resources:
+    limits:
+      memory: 8Gi
+      cpu: 4
+    requests:
+      memory: 4Gi
+      cpu: 2
+  env:
+    - name: QDRANT__SERVICE__GRPC_PORT
+      value: "6334"
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 100Gi
+    mountPath: /qdrant/storage
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 6333
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 6333
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Redis Cache (StatefulSet)
+redis:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: redis
+    tag: 7-alpine
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 6379
+  resources:
+    limits:
+      memory: 4Gi
+      cpu: 2
+    requests:
+      memory: 2Gi
+      cpu: 1
+  args:
+    - redis-server
+    - --appendonly
+    - "yes"
+    - --maxmemory
+    - 2gb
+    - --maxmemory-policy
+    - allkeys-lru
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 10Gi
+    mountPath: /data
+  livenessProbe:
+    exec:
+      command:
+        - redis-cli
+        - ping
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    exec:
+      command:
+        - redis-cli
+        - ping
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# PostgreSQL Database (StatefulSet)
+postgres:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: postgres
+    tag: 15-alpine
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 5432
+  resources:
+    limits:
+      memory: 4Gi
+      cpu: 2
+    requests:
+      memory: 2Gi
+      cpu: 1
+  env:
+    - name: POSTGRES_DB
+      value: ai_platform
+    - name: POSTGRES_USER
+      value: ai_user
+    - name: POSTGRES_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: postgres-credentials
+          key: password
+    - name: PGDATA
+      value: /var/lib/postgresql/data/pgdata
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 50Gi
+    mountPath: /var/lib/postgresql/data
+  initScripts:
+    enabled: true
+    mountPath: /docker-entrypoint-initdb.d
+  livenessProbe:
+    exec:
+      command:
+        - /bin/sh
+        - -c
+        - pg_isready -U ai_user -d ai_platform
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    exec:
+      command:
+        - /bin/sh
+        - -c
+        - pg_isready -U ai_user -d ai_platform
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Neo4j Knowledge Graph (StatefulSet)
+neo4j:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: neo4j
+    tag: 5.15-community
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    httpPort: 7474
+    boltPort: 7687
+  resources:
+    limits:
+      memory: 8Gi
+      cpu: 4
+    requests:
+      memory: 4Gi
+      cpu: 2
+  env:
+    - name: NEO4J_AUTH
+      value: neo4j/neo4j_password
+    - name: NEO4J_dbms_memory_pagecache_size
+      value: 512M
+    - name: NEO4J_dbms_memory_heap_initial__size
+      value: 512M
+    - name: NEO4J_dbms_memory_heap_max__size
+      value: 1G
+    - name: NEO4J_dbms_security_procedures_unrestricted
+      value: apoc.*
+    - name: NEO4J_dbms_security_procedures_allowlist
+      value: apoc.*
+    - name: NEO4JLABS_PLUGINS
+      value: '["apoc"]'
+  persistence:
+    data:
+      enabled: true
+      storageClass: ""
+      size: 50Gi
+      mountPath: /data
+    logs:
+      enabled: true
+      storageClass: ""
+      size: 5Gi
+      mountPath: /logs
+    import:
+      enabled: true
+      storageClass: ""
+      size: 10Gi
+      mountPath: /var/lib/neo4j/import
+    plugins:
+      enabled: true
+      storageClass: ""
+      size: 1Gi
+      mountPath: /plugins
+  livenessProbe:
+    httpGet:
+      path: /
+      port: 7474
+    initialDelaySeconds: 40
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /
+      port: 7474
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# MinIO Object Storage (StatefulSet)
+minio:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: minio/minio
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    apiPort: 9000
+    consolePort: 9001
+  resources:
+    limits:
+      memory: 4Gi
+      cpu: 2
+    requests:
+      memory: 2Gi
+      cpu: 1
+  env:
+    - name: MINIO_ROOT_USER
+      valueFrom:
+        secretKeyRef:
+          name: minio-credentials
+          key: accessKey
+    - name: MINIO_ROOT_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: minio-credentials
+          key: secretKey
+  args:
+    - server
+    - /data
+    - --console-address
+    - ":9001"
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 100Gi
+    mountPath: /data
+  livenessProbe:
+    httpGet:
+      path: /minio/health/live
+      port: 9000
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /minio/health/live
+      port: 9000
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Jaeger Tracing
+jaeger:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: jaegertracing/all-in-one
+    tag: "1.52"
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    queryPort: 16686
+    collectorPort: 14268
+    collectorGrpcPort: 14250
+    otlpGrpcPort: 4317
+    otlpHttpPort: 4318
+    agentUdpPort: 6831
+  resources:
+    limits:
+      memory: 2Gi
+      cpu: 1
+    requests:
+      memory: 1Gi
+      cpu: 500m
+  env:
+    - name: COLLECTOR_OTLP_ENABLED
+      value: "true"
+    - name: SPAN_STORAGE_TYPE
+      value: badger
+    - name: BADGER_EPHEMERAL
+      value: "false"
+    - name: BADGER_DIRECTORY_VALUE
+      value: /badger/data
+    - name: BADGER_DIRECTORY_KEY
+      value: /badger/key
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 10Gi
+    mountPath: /badger
+
+# Prometheus Monitoring
+prometheus:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: prom/prometheus
+    tag: v2.48.0
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 9090
+  resources:
+    limits:
+      memory: 4Gi
+      cpu: 2
+    requests:
+      memory: 2Gi
+      cpu: 1
+  args:
+    - --config.file=/etc/prometheus/prometheus.yml
+    - --storage.tsdb.path=/prometheus
+    - --storage.tsdb.retention.time=90d
+    - --web.console.libraries=/usr/share/prometheus/console_libraries
+    - --web.console.templates=/usr/share/prometheus/consoles
+  persistence:
+    config:
+      enabled: true
+      storageClass: ""
+      size: 1Gi
+      mountPath: /etc/prometheus
+    data:
+      enabled: true
+      storageClass: ""
+      size: 50Gi
+      mountPath: /prometheus
+  livenessProbe:
+    httpGet:
+      path: /-/healthy
+      port: 9090
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /-/healthy
+      port: 9090
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Grafana Dashboards
+grafana:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: grafana/grafana
+    tag: 10.2.2
+    pullPolicy: IfNotPresent
+  service:
+    type: LoadBalancer
+    port: 3000
+  resources:
+    limits:
+      memory: 2Gi
+      cpu: 1
+    requests:
+      memory: 1Gi
+      cpu: 500m
+  env:
+    - name: GF_SECURITY_ADMIN_USER
+      value: admin
+    - name: GF_SECURITY_ADMIN_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: grafana-credentials
+          key: password
+    - name: GF_USERS_ALLOW_SIGN_UP
+      value: "false"
+    - name: GF_SERVER_ROOT_URL
+      value: http://localhost:3000
+    - name: GF_INSTALL_PLUGINS
+      value: grafana-postgresql-datasource
+  persistence:
+    data:
+      enabled: true
+      storageClass: ""
+      size: 10Gi
+      mountPath: /var/lib/grafana
+    provisioning:
+      enabled: true
+      storageClass: ""
+      size: 1Gi
+      mountPath: /etc/grafana/provisioning
+    dashboards:
+      enabled: true
+      storageClass: ""
+      size: 1Gi
+      mountPath: /var/lib/grafana/dashboards
+  livenessProbe:
+    httpGet:
+      path: /api/health
+      port: 3000
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /api/health
+      port: 3000
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Secrets (base64 encoded values)
+secrets:
+  postgres:
+    password: YWlfcGFzc3dvcmQ=  # ai_password
+  neo4j:
+    password: bmVvNGpfcGFzc3dvcmQ=  # neo4j_password
+  minio:
+    accessKey: bWluaW9hZG1pbg==  # minioadmin
+    secretKey: bWluaW9hZG1pbjEyMw==  # minioadmin123
+  grafana:
+    password: YWRtaW4=  # admin
+
+# ConfigMaps
+configMaps:
+  agentRouter:
+    enabled: true
+  mcpServers:
+    enabled: true
+  mcpAcl:
+    enabled: true
+  prometheus:
+    enabled: true
+  grafana:
+    enabled: true

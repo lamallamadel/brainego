@@ -1,0 +1,120 @@
+{{- if .Values.jaeger.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: jaeger
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/component: tracing
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.jaeger.service.type }}
+  ports:
+    - port: {{ .Values.jaeger.service.queryPort }}
+      targetPort: {{ .Values.jaeger.service.queryPort }}
+      protocol: TCP
+      name: query
+    - port: {{ .Values.jaeger.service.collectorPort }}
+      targetPort: {{ .Values.jaeger.service.collectorPort }}
+      protocol: TCP
+      name: collector
+    - port: {{ .Values.jaeger.service.collectorGrpcPort }}
+      targetPort: {{ .Values.jaeger.service.collectorGrpcPort }}
+      protocol: TCP
+      name: collector-grpc
+    - port: {{ .Values.jaeger.service.otlpGrpcPort }}
+      targetPort: {{ .Values.jaeger.service.otlpGrpcPort }}
+      protocol: TCP
+      name: otlp-grpc
+    - port: {{ .Values.jaeger.service.otlpHttpPort }}
+      targetPort: {{ .Values.jaeger.service.otlpHttpPort }}
+      protocol: TCP
+      name: otlp-http
+    - port: {{ .Values.jaeger.service.agentUdpPort }}
+      targetPort: {{ .Values.jaeger.service.agentUdpPort }}
+      protocol: UDP
+      name: agent-udp
+  selector:
+    app.kubernetes.io/name: jaeger
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jaeger
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/component: tracing
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.jaeger.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: jaeger
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: jaeger
+        app.kubernetes.io/component: tracing
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: jaeger
+          image: "{{ .Values.jaeger.image.repository }}:{{ .Values.jaeger.image.tag }}"
+          imagePullPolicy: {{ .Values.jaeger.image.pullPolicy }}
+          ports:
+            - name: query
+              containerPort: {{ .Values.jaeger.service.queryPort }}
+              protocol: TCP
+            - name: collector
+              containerPort: {{ .Values.jaeger.service.collectorPort }}
+              protocol: TCP
+            - name: collector-grpc
+              containerPort: {{ .Values.jaeger.service.collectorGrpcPort }}
+              protocol: TCP
+            - name: otlp-grpc
+              containerPort: {{ .Values.jaeger.service.otlpGrpcPort }}
+              protocol: TCP
+            - name: otlp-http
+              containerPort: {{ .Values.jaeger.service.otlpHttpPort }}
+              protocol: TCP
+            - name: agent-udp
+              containerPort: {{ .Values.jaeger.service.agentUdpPort }}
+              protocol: UDP
+          env:
+            {{- toYaml .Values.jaeger.env | nindent 12 }}
+          resources:
+            {{- toYaml .Values.jaeger.resources | nindent 12 }}
+          {{- if .Values.jaeger.persistence.enabled }}
+          volumeMounts:
+            - name: jaeger-data
+              mountPath: {{ .Values.jaeger.persistence.mountPath }}
+          {{- end }}
+      {{- if .Values.jaeger.persistence.enabled }}
+      volumes:
+        - name: jaeger-data
+          persistentVolumeClaim:
+            claimName: jaeger-data
+      {{- end }}
+---
+{{- if .Values.jaeger.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jaeger-data
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.jaeger.persistence.storageClass }}
+  storageClassName: {{ .Values.jaeger.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.jaeger.persistence.size }}
+{{- end }}
+{{- end }}

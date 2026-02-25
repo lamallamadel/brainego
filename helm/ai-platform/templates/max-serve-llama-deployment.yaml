@@ -1,0 +1,159 @@
+{{- if .Values.maxServeLlama.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: max-serve-llama
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-llama
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.maxServeLlama.service.type }}
+  ports:
+    - port: {{ .Values.maxServeLlama.service.port }}
+      targetPort: {{ .Values.maxServeLlama.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: max-serve-llama
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: max-serve-llama
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-llama
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.maxServeLlama.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: max-serve-llama
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: max-serve-llama
+        app.kubernetes.io/component: inference
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: max-serve-llama
+          image: "{{ .Values.maxServeLlama.image.repository }}:{{ .Values.maxServeLlama.image.tag }}"
+          imagePullPolicy: {{ .Values.maxServeLlama.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.maxServeLlama.service.targetPort }}
+              protocol: TCP
+          args:
+            {{- toYaml .Values.maxServeLlama.args | nindent 12 }}
+          env:
+            {{- toYaml .Values.maxServeLlama.env | nindent 12 }}
+          {{- if .Values.maxServeLlama.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.maxServeLlama.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.maxServeLlama.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.maxServeLlama.readinessProbe | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.maxServeLlama.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.maxServeLlama.persistence.models.enabled }}
+            - name: models
+              mountPath: {{ .Values.maxServeLlama.persistence.models.mountPath }}
+            {{- end }}
+            {{- if .Values.maxServeLlama.persistence.configs.enabled }}
+            - name: configs
+              mountPath: {{ .Values.maxServeLlama.persistence.configs.mountPath }}
+            {{- end }}
+            {{- if .Values.maxServeLlama.persistence.logs.enabled }}
+            - name: logs
+              mountPath: {{ .Values.maxServeLlama.persistence.logs.mountPath }}
+            {{- end }}
+      volumes:
+        {{- if .Values.maxServeLlama.persistence.models.enabled }}
+        - name: models
+          persistentVolumeClaim:
+            {{- if .Values.maxServeLlama.persistence.models.existingClaim }}
+            claimName: {{ .Values.maxServeLlama.persistence.models.existingClaim }}
+            {{- else }}
+            claimName: max-serve-llama-models
+            {{- end }}
+        {{- end }}
+        {{- if .Values.maxServeLlama.persistence.configs.enabled }}
+        - name: configs
+          persistentVolumeClaim:
+            {{- if .Values.maxServeLlama.persistence.configs.existingClaim }}
+            claimName: {{ .Values.maxServeLlama.persistence.configs.existingClaim }}
+            {{- else }}
+            claimName: max-serve-llama-configs
+            {{- end }}
+        {{- end }}
+        {{- if .Values.maxServeLlama.persistence.logs.enabled }}
+        - name: logs
+          persistentVolumeClaim:
+            {{- if .Values.maxServeLlama.persistence.logs.existingClaim }}
+            claimName: {{ .Values.maxServeLlama.persistence.logs.existingClaim }}
+            {{- else }}
+            claimName: max-serve-llama-logs
+            {{- end }}
+        {{- end }}
+---
+{{- if and .Values.maxServeLlama.persistence.models.enabled (not .Values.maxServeLlama.persistence.models.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: max-serve-llama-models
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.maxServeLlama.persistence.models.storageClass }}
+  storageClassName: {{ .Values.maxServeLlama.persistence.models.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.maxServeLlama.persistence.models.size }}
+{{- end }}
+---
+{{- if and .Values.maxServeLlama.persistence.configs.enabled (not .Values.maxServeLlama.persistence.configs.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: max-serve-llama-configs
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.maxServeLlama.persistence.configs.storageClass }}
+  storageClassName: {{ .Values.maxServeLlama.persistence.configs.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.maxServeLlama.persistence.configs.size }}
+{{- end }}
+---
+{{- if and .Values.maxServeLlama.persistence.logs.enabled (not .Values.maxServeLlama.persistence.logs.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: max-serve-llama-logs
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.maxServeLlama.persistence.logs.storageClass }}
+  storageClassName: {{ .Values.maxServeLlama.persistence.logs.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.maxServeLlama.persistence.logs.size }}
+{{- end }}
+{{- end }}

@@ -1,0 +1,159 @@
+{{- if .Values.maxServeQwen.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: max-serve-qwen
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-qwen
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.maxServeQwen.service.type }}
+  ports:
+    - port: {{ .Values.maxServeQwen.service.port }}
+      targetPort: {{ .Values.maxServeQwen.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: max-serve-qwen
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: max-serve-qwen
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-qwen
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.maxServeQwen.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: max-serve-qwen
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: max-serve-qwen
+        app.kubernetes.io/component: inference
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: max-serve-qwen
+          image: "{{ .Values.maxServeQwen.image.repository }}:{{ .Values.maxServeQwen.image.tag }}"
+          imagePullPolicy: {{ .Values.maxServeQwen.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.maxServeQwen.service.targetPort }}
+              protocol: TCP
+          args:
+            {{- toYaml .Values.maxServeQwen.args | nindent 12 }}
+          env:
+            {{- toYaml .Values.maxServeQwen.env | nindent 12 }}
+          {{- if .Values.maxServeQwen.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.maxServeQwen.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.maxServeQwen.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.maxServeQwen.readinessProbe | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.maxServeQwen.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.maxServeQwen.persistence.models.enabled }}
+            - name: models
+              mountPath: {{ .Values.maxServeQwen.persistence.models.mountPath }}
+            {{- end }}
+            {{- if .Values.maxServeQwen.persistence.configs.enabled }}
+            - name: configs
+              mountPath: {{ .Values.maxServeQwen.persistence.configs.mountPath }}
+            {{- end }}
+            {{- if .Values.maxServeQwen.persistence.logs.enabled }}
+            - name: logs
+              mountPath: {{ .Values.maxServeQwen.persistence.logs.mountPath }}
+            {{- end }}
+      volumes:
+        {{- if .Values.maxServeQwen.persistence.models.enabled }}
+        - name: models
+          persistentVolumeClaim:
+            {{- if .Values.maxServeQwen.persistence.models.existingClaim }}
+            claimName: {{ .Values.maxServeQwen.persistence.models.existingClaim }}
+            {{- else }}
+            claimName: max-serve-qwen-models
+            {{- end }}
+        {{- end }}
+        {{- if .Values.maxServeQwen.persistence.configs.enabled }}
+        - name: configs
+          persistentVolumeClaim:
+            {{- if .Values.maxServeQwen.persistence.configs.existingClaim }}
+            claimName: {{ .Values.maxServeQwen.persistence.configs.existingClaim }}
+            {{- else }}
+            claimName: max-serve-qwen-configs
+            {{- end }}
+        {{- end }}
+        {{- if .Values.maxServeQwen.persistence.logs.enabled }}
+        - name: logs
+          persistentVolumeClaim:
+            {{- if .Values.maxServeQwen.persistence.logs.existingClaim }}
+            claimName: {{ .Values.maxServeQwen.persistence.logs.existingClaim }}
+            {{- else }}
+            claimName: max-serve-qwen-logs
+            {{- end }}
+        {{- end }}
+---
+{{- if and .Values.maxServeQwen.persistence.models.enabled (not .Values.maxServeQwen.persistence.models.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: max-serve-qwen-models
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.maxServeQwen.persistence.models.storageClass }}
+  storageClassName: {{ .Values.maxServeQwen.persistence.models.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.maxServeQwen.persistence.models.size }}
+{{- end }}
+---
+{{- if and .Values.maxServeQwen.persistence.configs.enabled (not .Values.maxServeQwen.persistence.configs.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: max-serve-qwen-configs
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.maxServeQwen.persistence.configs.storageClass }}
+  storageClassName: {{ .Values.maxServeQwen.persistence.configs.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.maxServeQwen.persistence.configs.size }}
+{{- end }}
+---
+{{- if and .Values.maxServeQwen.persistence.logs.enabled (not .Values.maxServeQwen.persistence.logs.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: max-serve-qwen-logs
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.maxServeQwen.persistence.logs.storageClass }}
+  storageClassName: {{ .Values.maxServeQwen.persistence.logs.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.maxServeQwen.persistence.logs.size }}
+{{- end }}
+{{- end }}

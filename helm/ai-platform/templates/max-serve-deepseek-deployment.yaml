@@ -1,0 +1,159 @@
+{{- if .Values.maxServeDeepseek.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: max-serve-deepseek
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-deepseek
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.maxServeDeepseek.service.type }}
+  ports:
+    - port: {{ .Values.maxServeDeepseek.service.port }}
+      targetPort: {{ .Values.maxServeDeepseek.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: max-serve-deepseek
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: max-serve-deepseek
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-deepseek
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.maxServeDeepseek.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: max-serve-deepseek
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: max-serve-deepseek
+        app.kubernetes.io/component: inference
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: max-serve-deepseek
+          image: "{{ .Values.maxServeDeepseek.image.repository }}:{{ .Values.maxServeDeepseek.image.tag }}"
+          imagePullPolicy: {{ .Values.maxServeDeepseek.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.maxServeDeepseek.service.targetPort }}
+              protocol: TCP
+          args:
+            {{- toYaml .Values.maxServeDeepseek.args | nindent 12 }}
+          env:
+            {{- toYaml .Values.maxServeDeepseek.env | nindent 12 }}
+          {{- if .Values.maxServeDeepseek.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.maxServeDeepseek.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.maxServeDeepseek.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.maxServeDeepseek.readinessProbe | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.maxServeDeepseek.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.maxServeDeepseek.persistence.models.enabled }}
+            - name: models
+              mountPath: {{ .Values.maxServeDeepseek.persistence.models.mountPath }}
+            {{- end }}
+            {{- if .Values.maxServeDeepseek.persistence.configs.enabled }}
+            - name: configs
+              mountPath: {{ .Values.maxServeDeepseek.persistence.configs.mountPath }}
+            {{- end }}
+            {{- if .Values.maxServeDeepseek.persistence.logs.enabled }}
+            - name: logs
+              mountPath: {{ .Values.maxServeDeepseek.persistence.logs.mountPath }}
+            {{- end }}
+      volumes:
+        {{- if .Values.maxServeDeepseek.persistence.models.enabled }}
+        - name: models
+          persistentVolumeClaim:
+            {{- if .Values.maxServeDeepseek.persistence.models.existingClaim }}
+            claimName: {{ .Values.maxServeDeepseek.persistence.models.existingClaim }}
+            {{- else }}
+            claimName: max-serve-deepseek-models
+            {{- end }}
+        {{- end }}
+        {{- if .Values.maxServeDeepseek.persistence.configs.enabled }}
+        - name: configs
+          persistentVolumeClaim:
+            {{- if .Values.maxServeDeepseek.persistence.configs.existingClaim }}
+            claimName: {{ .Values.maxServeDeepseek.persistence.configs.existingClaim }}
+            {{- else }}
+            claimName: max-serve-deepseek-configs
+            {{- end }}
+        {{- end }}
+        {{- if .Values.maxServeDeepseek.persistence.logs.enabled }}
+        - name: logs
+          persistentVolumeClaim:
+            {{- if .Values.maxServeDeepseek.persistence.logs.existingClaim }}
+            claimName: {{ .Values.maxServeDeepseek.persistence.logs.existingClaim }}
+            {{- else }}
+            claimName: max-serve-deepseek-logs
+            {{- end }}
+        {{- end }}
+---
+{{- if and .Values.maxServeDeepseek.persistence.models.enabled (not .Values.maxServeDeepseek.persistence.models.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: max-serve-deepseek-models
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.maxServeDeepseek.persistence.models.storageClass }}
+  storageClassName: {{ .Values.maxServeDeepseek.persistence.models.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.maxServeDeepseek.persistence.models.size }}
+{{- end }}
+---
+{{- if and .Values.maxServeDeepseek.persistence.configs.enabled (not .Values.maxServeDeepseek.persistence.configs.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: max-serve-deepseek-configs
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.maxServeDeepseek.persistence.configs.storageClass }}
+  storageClassName: {{ .Values.maxServeDeepseek.persistence.configs.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.maxServeDeepseek.persistence.configs.size }}
+{{- end }}
+---
+{{- if and .Values.maxServeDeepseek.persistence.logs.enabled (not .Values.maxServeDeepseek.persistence.logs.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: max-serve-deepseek-logs
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.maxServeDeepseek.persistence.logs.storageClass }}
+  storageClassName: {{ .Values.maxServeDeepseek.persistence.logs.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.maxServeDeepseek.persistence.logs.size }}
+{{- end }}
+{{- end }}

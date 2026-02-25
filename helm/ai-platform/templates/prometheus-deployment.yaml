@@ -1,0 +1,102 @@
+{{- if .Values.prometheus.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: prometheus
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.prometheus.service.type }}
+  ports:
+    - port: {{ .Values.prometheus.service.port }}
+      targetPort: {{ .Values.prometheus.service.port }}
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: prometheus
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: prometheus
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.prometheus.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: prometheus
+        app.kubernetes.io/component: monitoring
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: prometheus
+          image: "{{ .Values.prometheus.image.repository }}:{{ .Values.prometheus.image.tag }}"
+          imagePullPolicy: {{ .Values.prometheus.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.prometheus.service.port }}
+              protocol: TCP
+          args:
+            {{- toYaml .Values.prometheus.args | nindent 12 }}
+          {{- if .Values.prometheus.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.prometheus.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.prometheus.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.prometheus.readinessProbe | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.prometheus.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.prometheus.persistence.config.enabled }}
+            - name: prometheus-config
+              mountPath: {{ .Values.prometheus.persistence.config.mountPath }}
+            {{- end }}
+            {{- if .Values.prometheus.persistence.data.enabled }}
+            - name: prometheus-data
+              mountPath: {{ .Values.prometheus.persistence.data.mountPath }}
+            {{- end }}
+      volumes:
+        {{- if .Values.prometheus.persistence.config.enabled }}
+        - name: prometheus-config
+          configMap:
+            name: prometheus-config
+        {{- end }}
+        {{- if .Values.prometheus.persistence.data.enabled }}
+        - name: prometheus-data
+          persistentVolumeClaim:
+            claimName: prometheus-data
+        {{- end }}
+---
+{{- if .Values.prometheus.persistence.data.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: prometheus-data
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.prometheus.persistence.data.storageClass }}
+  storageClassName: {{ .Values.prometheus.persistence.data.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.prometheus.persistence.data.size }}
+{{- end }}
+{{- end }}

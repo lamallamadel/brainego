@@ -1,0 +1,57 @@
+{{- if .Values.mem0.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: mem0
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: mem0
+    app.kubernetes.io/component: memory
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.mem0.service.type }}
+  ports:
+    - port: {{ .Values.mem0.service.port }}
+      targetPort: {{ .Values.mem0.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: mem0
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mem0
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: mem0
+    app.kubernetes.io/component: memory
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.mem0.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mem0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mem0
+        app.kubernetes.io/component: memory
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: mem0
+          image: "{{ .Values.mem0.image.repository }}:{{ .Values.mem0.image.tag }}"
+          imagePullPolicy: {{ .Values.mem0.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.mem0.service.targetPort }}
+              protocol: TCP
+          env:
+            {{- toYaml .Values.mem0.env | nindent 12 }}
+          resources:
+            {{- toYaml .Values.mem0.resources | nindent 12 }}
+{{- end }}

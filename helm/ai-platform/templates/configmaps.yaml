@@ -1,0 +1,321 @@
+{{- if .Values.configMaps.agentRouter.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-router-config
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: agent-router-config
+    app.kubernetes.io/component: configuration
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  agent-router.yaml: |
+    models:
+      llama-3.3-8b:
+        name: llama-3.3-8b-instruct
+        endpoint: http://max-serve-llama:8080
+        capabilities: ["general", "conversation", "qa"]
+        description: "Llama 3.3 8B - General purpose"
+        priority: 2
+        max_tokens: 2048
+        timeout: 30
+      qwen-2.5-coder:
+        name: qwen-2.5-coder-7b-instruct
+        endpoint: http://max-serve-qwen:8081
+        capabilities: ["code", "programming", "debug"]
+        description: "Qwen 2.5 Coder 7B - Code generation"
+        priority: 1
+        max_tokens: 4096
+        timeout: 45
+      deepseek-r1:
+        name: deepseek-r1-distill-qwen-7b
+        endpoint: http://max-serve-deepseek:8082
+        capabilities: ["reasoning", "analysis", "math"]
+        description: "DeepSeek R1 7B - Advanced reasoning"
+        priority: 1
+        max_tokens: 4096
+        timeout: 45
+    
+    routing:
+      intent_classifier:
+        enabled: true
+        keywords:
+          code: ["code", "function", "class", "debug", "error", "syntax", "implement"]
+          reasoning: ["why", "explain", "reason", "analyze", "compare", "evaluate"]
+          general: ["hello", "help", "what", "how", "tell"]
+      
+      primary_model:
+        code: qwen-2.5-coder
+        reasoning: deepseek-r1
+        general: llama-3.3-8b
+      
+      fallback_chains:
+        qwen-2.5-coder: ["deepseek-r1", "llama-3.3-8b"]
+        deepseek-r1: ["llama-3.3-8b", "qwen-2.5-coder"]
+        llama-3.3-8b: ["qwen-2.5-coder", "deepseek-r1"]
+    
+    health_check:
+      enabled: true
+      interval_seconds: 30
+      timeout_seconds: 5
+      unhealthy_threshold: 3
+{{- end }}
+---
+{{- if .Values.configMaps.mcpServers.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcp-config
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: mcp-config
+    app.kubernetes.io/component: configuration
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  mcp-servers.yaml: |
+    servers:
+      filesystem:
+        command: npx
+        args:
+          - -y
+          - "@modelcontextprotocol/server-filesystem"
+          - /workspace
+        transport: stdio
+        enabled: true
+      
+      github:
+        command: npx
+        args:
+          - -y
+          - "@modelcontextprotocol/server-github"
+        env:
+          GITHUB_TOKEN: "${GITHUB_TOKEN}"
+        transport: stdio
+        enabled: true
+      
+      brave-search:
+        command: npx
+        args:
+          - -y
+          - "@modelcontextprotocol/server-brave-search"
+        env:
+          BRAVE_API_KEY: "${BRAVE_API_KEY}"
+        transport: stdio
+        enabled: false
+  
+  mcp-acl.yaml: |
+    acl:
+      default_policy: deny
+      
+      roles:
+        admin:
+          permissions:
+            - filesystem:*
+            - github:*
+            - brave-search:*
+        
+        developer:
+          permissions:
+            - filesystem:read
+            - filesystem:write
+            - github:read
+            - github:create_pull_request
+        
+        viewer:
+          permissions:
+            - filesystem:read
+            - github:read
+      
+      users:
+        default:
+          role: developer
+{{- end }}
+---
+{{- if .Values.configMaps.prometheus.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus-config
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: prometheus-config
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  prometheus.yml: |
+    global:
+      scrape_interval: 15s
+      evaluation_interval: 15s
+    
+    scrape_configs:
+      - job_name: 'agent-router'
+        static_configs:
+          - targets: ['agent-router:8001']
+      
+      - job_name: 'max-serve-llama'
+        static_configs:
+          - targets: ['max-serve-llama:8080']
+      
+      - job_name: 'max-serve-qwen'
+        static_configs:
+          - targets: ['max-serve-qwen:8081']
+      
+      - job_name: 'max-serve-deepseek'
+        static_configs:
+          - targets: ['max-serve-deepseek:8082']
+      
+      - job_name: 'learning-engine'
+        static_configs:
+          - targets: ['learning-engine:8003']
+      
+      - job_name: 'postgres'
+        static_configs:
+          - targets: ['postgres:5432']
+      
+      - job_name: 'redis'
+        static_configs:
+          - targets: ['redis:6379']
+{{- end }}
+---
+{{- if .Values.configMaps.grafana.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-provisioning
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: grafana-provisioning
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus:9090
+        isDefault: true
+        editable: true
+      
+      - name: PostgreSQL
+        type: postgres
+        access: proxy
+        url: postgres:5432
+        database: ai_platform
+        user: ai_user
+        secureJsonData:
+          password: ai_password
+        jsonData:
+          sslmode: disable
+        editable: true
+  
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: 'AI Platform Dashboards'
+        orgId: 1
+        folder: ''
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 10
+        allowUiUpdates: true
+        options:
+          path: /var/lib/grafana/dashboards
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: grafana-dashboards
+    app.kubernetes.io/component: monitoring
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  ai-platform-overview.json: |
+    {
+      "dashboard": {
+        "title": "AI Platform Overview",
+        "panels": [],
+        "schemaVersion": 16,
+        "version": 0
+      }
+    }
+{{- end }}
+---
+{{- if .Values.postgres.initScripts.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init-scripts
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: postgres-init-scripts
+    app.kubernetes.io/component: database
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  init.sql: |
+    -- Create feedback table
+    CREATE TABLE IF NOT EXISTS feedback (
+        id SERIAL PRIMARY KEY,
+        feedback_id VARCHAR(255) UNIQUE NOT NULL,
+        query TEXT NOT NULL,
+        response TEXT NOT NULL,
+        model VARCHAR(255) NOT NULL,
+        rating INTEGER NOT NULL CHECK (rating IN (1, -1)),
+        memory_used INTEGER DEFAULT 0,
+        tools_called TEXT[],
+        user_id VARCHAR(255),
+        session_id VARCHAR(255),
+        intent VARCHAR(100),
+        project VARCHAR(255),
+        metadata JSONB,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_feedback_model ON feedback(model);
+    CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(rating);
+    CREATE INDEX IF NOT EXISTS idx_feedback_intent ON feedback(intent);
+    CREATE INDEX IF NOT EXISTS idx_feedback_project ON feedback(project);
+    CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at);
+    
+    -- Create model_accuracy table
+    CREATE TABLE IF NOT EXISTS model_accuracy (
+        id SERIAL PRIMARY KEY,
+        model VARCHAR(255) NOT NULL,
+        intent VARCHAR(100),
+        project VARCHAR(255),
+        total_feedback INTEGER DEFAULT 0,
+        positive_feedback INTEGER DEFAULT 0,
+        negative_feedback INTEGER DEFAULT 0,
+        accuracy_percentage DECIMAL(5,2) DEFAULT 0.0,
+        last_updated TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(model, intent, project)
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_model_accuracy_model ON model_accuracy(model);
+    CREATE INDEX IF NOT EXISTS idx_model_accuracy_intent ON model_accuracy(intent);
+    
+    -- Create lora_adapters table
+    CREATE TABLE IF NOT EXISTS lora_adapters (
+        id SERIAL PRIMARY KEY,
+        adapter_name VARCHAR(255) UNIQUE NOT NULL,
+        base_model VARCHAR(255) NOT NULL,
+        training_data_size INTEGER,
+        training_epochs INTEGER,
+        lora_rank INTEGER,
+        lora_alpha INTEGER,
+        lora_dropout DECIMAL(5,4),
+        training_loss DECIMAL(10,6),
+        validation_loss DECIMAL(10,6),
+        storage_path TEXT,
+        metadata JSONB,
+        created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+        updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_lora_adapters_base_model ON lora_adapters(base_model);
+    CREATE INDEX IF NOT EXISTS idx_lora_adapters_created_at ON lora_adapters(created_at);
+{{- end }}
