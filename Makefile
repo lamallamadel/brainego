@@ -1,4 +1,4 @@
-.PHONY: help install download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status
+.PHONY: help install download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status grafana grafana-start grafana-stop grafana-ui drift drift-start drift-stop drift-logs drift-check drift-metrics
 
 help:
 	@echo "MAX Serve + Llama 3.3 8B Infrastructure"
@@ -61,6 +61,20 @@ help:
 	@echo "  make learning-train   - Trigger training job"
 	@echo "  make learning-status  - Check training status"
 	@echo "  make learning-adapters- List all adapters"
+	@echo ""
+	@echo "Grafana & Monitoring commands:"
+	@echo "  make grafana          - Start Prometheus and Grafana"
+	@echo "  make grafana-start    - Start Grafana and Prometheus"
+	@echo "  make grafana-stop     - Stop Grafana and Prometheus"
+	@echo "  make grafana-ui       - Open Grafana dashboards"
+	@echo ""
+	@echo "Drift Monitor commands:"
+	@echo "  make drift            - Start drift monitor service"
+	@echo "  make drift-start      - Start drift monitor"
+	@echo "  make drift-stop       - Stop drift monitor"
+	@echo "  make drift-logs       - View drift monitor logs"
+	@echo "  make drift-check      - Trigger manual drift check"
+	@echo "  make drift-metrics    - View drift metrics"
 
 install:
 	pip install -r requirements.txt
@@ -270,3 +284,68 @@ learning-status:
 learning-adapters:
 	@echo "Listing adapters..."
 	@python learning_engine_cli.py list-adapters
+
+grafana:
+	@echo "Starting Prometheus and Grafana..."
+	@docker compose up -d prometheus grafana
+	@echo ""
+	@echo "Grafana started on http://localhost:3000"
+	@echo "Prometheus started on http://localhost:9090"
+	@echo ""
+	@echo "Default login: admin / admin"
+	@echo "Dashboards: make grafana-ui"
+
+grafana-start:
+	@echo "Starting Grafana and Prometheus..."
+	@docker compose up -d prometheus grafana
+	@echo "Grafana: http://localhost:3000"
+	@echo "Prometheus: http://localhost:9090"
+
+grafana-stop:
+	@echo "Stopping Grafana and Prometheus..."
+	@docker compose stop prometheus grafana
+
+grafana-ui:
+	@echo "Opening Grafana dashboards..."
+	@echo ""
+	@echo "Grafana UI: http://localhost:3000"
+	@echo "Default login: admin / admin"
+	@echo ""
+	@echo "Available dashboards:"
+	@echo "  - Drift Overview:        http://localhost:3000/d/drift-overview"
+	@echo "  - KL Divergence:         http://localhost:3000/d/drift-kl-divergence"
+	@echo "  - PSI Trends:            http://localhost:3000/d/drift-psi-trends"
+	@echo "  - Accuracy Tracking:     http://localhost:3000/d/drift-accuracy-tracking"
+	@echo "  - LoRA Version Tracking: http://localhost:3000/d/lora-version-tracking"
+	@echo ""
+	@command -v open >/dev/null 2>&1 && open http://localhost:3000/d/drift-overview || echo "Open http://localhost:3000 in your browser"
+
+drift:
+	@echo "Starting drift monitor..."
+	@docker compose up -d drift-monitor postgres
+	@echo ""
+	@echo "Drift Monitor started on http://localhost:8004"
+	@echo ""
+	@echo "Check drift: make drift-check"
+	@echo "View logs: make drift-logs"
+
+drift-start:
+	@echo "Starting drift monitor..."
+	@docker compose up -d drift-monitor
+	@echo "Drift Monitor: http://localhost:8004"
+
+drift-stop:
+	@echo "Stopping drift monitor..."
+	@docker compose stop drift-monitor
+
+drift-logs:
+	@echo "Viewing drift monitor logs..."
+	@docker compose logs -f drift-monitor
+
+drift-check:
+	@echo "Triggering manual drift check..."
+	@curl -s -X POST http://localhost:8004/drift/check | python -m json.tool || echo "Drift monitor not responding"
+
+drift-metrics:
+	@echo "Fetching drift metrics..."
+	@curl -s http://localhost:8004/drift/metrics?days=7 | python -m json.tool || echo "Drift monitor not responding"

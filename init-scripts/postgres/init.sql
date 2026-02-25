@@ -165,3 +165,56 @@ GRANT ALL PRIVILEGES ON TABLE drift_metrics TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE drift_metrics_id_seq TO ai_user;
 GRANT ALL PRIVILEGES ON TABLE finetuning_triggers TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE finetuning_triggers_id_seq TO ai_user;
+
+-- LoRA adapter version tracking
+CREATE TABLE IF NOT EXISTS lora_adapters (
+    id SERIAL PRIMARY KEY,
+    version VARCHAR(50) UNIQUE NOT NULL,
+    training_job_id VARCHAR(255),
+    base_model VARCHAR(255) NOT NULL,
+    rank INTEGER NOT NULL,
+    alpha INTEGER NOT NULL,
+    dropout FLOAT NOT NULL,
+    num_epochs INTEGER,
+    learning_rate FLOAT,
+    batch_size INTEGER,
+    num_samples INTEGER,
+    training_loss FLOAT,
+    validation_loss FLOAT,
+    training_time_seconds INTEGER,
+    minio_path TEXT,
+    metadata JSONB DEFAULT '{}'::JSONB,
+    is_active BOOLEAN DEFAULT false,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    deployed_at TIMESTAMP WITH TIME ZONE,
+    deactivated_at TIMESTAMP WITH TIME ZONE
+);
+
+-- Create indexes for lora_adapters
+CREATE INDEX IF NOT EXISTS idx_lora_adapters_version ON lora_adapters(version);
+CREATE INDEX IF NOT EXISTS idx_lora_adapters_is_active ON lora_adapters(is_active);
+CREATE INDEX IF NOT EXISTS idx_lora_adapters_created_at ON lora_adapters(created_at);
+CREATE INDEX IF NOT EXISTS idx_lora_adapters_training_job_id ON lora_adapters(training_job_id);
+
+-- LoRA adapter performance metrics
+CREATE TABLE IF NOT EXISTS lora_performance (
+    id SERIAL PRIMARY KEY,
+    adapter_version VARCHAR(50) NOT NULL,
+    metric_name VARCHAR(100) NOT NULL,
+    metric_value FLOAT NOT NULL,
+    sample_count INTEGER,
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB DEFAULT '{}'::JSONB,
+    FOREIGN KEY (adapter_version) REFERENCES lora_adapters(version) ON DELETE CASCADE
+);
+
+-- Create indexes for lora_performance
+CREATE INDEX IF NOT EXISTS idx_lora_performance_adapter_version ON lora_performance(adapter_version);
+CREATE INDEX IF NOT EXISTS idx_lora_performance_metric_name ON lora_performance(metric_name);
+CREATE INDEX IF NOT EXISTS idx_lora_performance_timestamp ON lora_performance(timestamp);
+
+-- Grant permissions for LoRA tracking tables
+GRANT ALL PRIVILEGES ON TABLE lora_adapters TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE lora_adapters_id_seq TO ai_user;
+GRANT ALL PRIVILEGES ON TABLE lora_performance TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE lora_performance_id_seq TO ai_user;

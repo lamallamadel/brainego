@@ -26,9 +26,10 @@ import httpx
 from scipy.stats import entropy
 from scipy.special import kl_div
 from sentence_transformers import SentenceTransformer
+from prometheus_client import Counter, Gauge, Histogram, generate_latest, CONTENT_TYPE_LATEST
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 logging.basicConfig(
@@ -36,6 +37,48 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+
+# Prometheus metrics
+drift_checks_total = Counter(
+    'drift_checks_total',
+    'Total number of drift checks performed',
+    ['status']
+)
+drift_detected_total = Counter(
+    'drift_detected_total',
+    'Total number of drift detections',
+    ['severity']
+)
+kl_divergence_gauge = Gauge(
+    'drift_kl_divergence',
+    'Current KL Divergence value'
+)
+psi_gauge = Gauge(
+    'drift_psi',
+    'Current PSI (Population Stability Index) value'
+)
+baseline_accuracy_gauge = Gauge(
+    'drift_baseline_accuracy',
+    'Baseline accuracy from previous window'
+)
+current_accuracy_gauge = Gauge(
+    'drift_current_accuracy',
+    'Current accuracy from current window'
+)
+combined_drift_score_gauge = Gauge(
+    'drift_combined_score',
+    'Combined drift score'
+)
+finetuning_triggers_total = Counter(
+    'finetuning_triggers_total',
+    'Total number of fine-tuning triggers',
+    ['trigger_type']
+)
+drift_check_duration = Histogram(
+    'drift_check_duration_seconds',
+    'Duration of drift check operations'
+)
 
 
 class DriftMonitorConfig(BaseModel):
@@ -466,6 +509,9 @@ class DriftMonitor:
                     # Store trigger record
                     self.store_finetuning_trigger(drift_metrics, result)
                     
+                    # Update Prometheus metrics
+                    finetuning_triggers_total.labels(trigger_type='automatic').inc()
+                    
                     logger.info(f"Fine-tuning triggered: {result.get('job_id')}")
                     
                     # Send success alert
@@ -570,6 +616,8 @@ class DriftMonitor:
         logger.info("Running Drift Detection Check")
         logger.info("=" * 60)
         
+        start_time = asyncio.get_event_loop().time()
+        
         try:
             # Get baseline data (previous window)
             baseline_data = self.get_feedback_data(
@@ -589,6 +637,7 @@ class DriftMonitor:
             # Check minimum sample requirements
             if len(baseline_data) < self.config.min_samples or len(current_data) < self.config.min_samples:
                 logger.warning(f"Insufficient samples for drift detection")
+                drift_checks_total.labels(status='skipped').inc()
                 return {
                     "status": "skipped",
                     "reason": "insufficient_samples",
@@ -680,6 +729,17 @@ class DriftMonitor:
                 drift_detected, severity
             )
             
+            # Update Prometheus metrics
+            kl_divergence_gauge.set(kl_divergence)
+            psi_gauge.set(psi)
+            baseline_accuracy_gauge.set(baseline_accuracy)
+            current_accuracy_gauge.set(current_accuracy)
+            combined_drift_score_gauge.set(combined_drift_score)
+            drift_checks_total.labels(status='success').inc()
+            
+            if drift_detected and severity:
+                drift_detected_total.labels(severity=severity).inc()
+            
             # Send alerts if drift detected
             if drift_detected and severity:
                 message = (
@@ -696,6 +756,10 @@ class DriftMonitor:
                     logger.info(f"Drift score {combined_drift_score:.4f} exceeds threshold {self.config.min_drift_score}")
                     await self.trigger_finetuning(metrics)
             
+            # Record duration
+            duration = asyncio.get_event_loop().time() - start_time
+            drift_check_duration.observe(duration)
+            
             return {
                 "status": "success",
                 "drift_detected": drift_detected,
@@ -708,6 +772,7 @@ class DriftMonitor:
         
         except Exception as e:
             logger.error(f"Drift check failed: {e}", exc_info=True)
+            drift_checks_total.labels(status='error').inc()
             return {
                 "status": "error",
                 "error": str(e),
@@ -974,6 +1039,7 @@ async def manual_trigger_finetuning():
         success = await drift_monitor.trigger_finetuning(metrics)
         
         if success:
+            finetuning_triggers_total.labels(trigger_type='manual').inc()
             return {
                 "status": "success",
                 "message": "Fine-tuning triggered successfully",
@@ -987,6 +1053,12 @@ async def manual_trigger_finetuning():
     except Exception as e:
         logger.error(f"Manual fine-tuning trigger failed: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/metrics")
+async def metrics():
+    """Prometheus metrics endpoint"""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 if __name__ == "__main__":

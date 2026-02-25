@@ -92,3 +92,9 @@ meta_weights/
 maml_checkpoints/
 meta_weights_*.pt
 maml_*.pt
+
+# Grafana
+grafana-data/
+
+# Prometheus
+prometheus-data/

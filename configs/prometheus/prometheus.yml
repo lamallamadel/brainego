@@ -1,0 +1,31 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  scrape_timeout: 10s
+
+scrape_configs:
+  # Drift Monitor Metrics
+  - job_name: 'drift-monitor'
+    static_configs:
+      - targets: ['drift-monitor:8004']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Learning Engine Metrics (if available)
+  - job_name: 'learning-engine'
+    static_configs:
+      - targets: ['learning-engine:8003']
+    metrics_path: '/metrics'
+    scrape_interval: 60s
+
+  # API Server Metrics (if available)
+  - job_name: 'api-server'
+    static_configs:
+      - targets: ['api-server:8000']
+    metrics_path: '/metrics'
+    scrape_interval: 30s
+
+  # Prometheus self-monitoring
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
