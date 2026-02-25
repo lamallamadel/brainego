@@ -1,0 +1,773 @@
+{{- if .Values.rbac.enabled -}}
+# Gateway Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: gateway-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: gateway-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.gateway.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.gateway.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.gateway.automountServiceAccountToken | default true }}
+---
+# Gateway Role (least-privilege)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: gateway-role
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: gateway-role
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["agent-router-config"]
+    verbs: ["get", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["gateway-api-keys"]
+    verbs: ["get"]
+---
+# Gateway RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: gateway-rolebinding
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: gateway-rolebinding
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: ServiceAccount
+    name: gateway-sa
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: gateway-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# Agent Router Service Account
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: agent-router-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: agent-router-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.agentRouter.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.agentRouter.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.agentRouter.automountServiceAccountToken | default true }}
+---
+# Agent Router Role (least-privilege)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-router-role
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: agent-router-role
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["agent-router-config"]
+    verbs: ["get", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["postgres-credentials", "neo4j-credentials"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["endpoints"]
+    verbs: ["get", "list"]
+---
+# Agent Router RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-router-rolebinding
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: agent-router-rolebinding
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: ServiceAccount
+    name: agent-router-sa
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: agent-router-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# MCPJungle Service Account
+{{- if .Values.mcpjungle.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mcpjungle-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: mcpjungle-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.mcpjungle.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.mcpjungle.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.mcpjungle.automountServiceAccountToken | default true }}
+---
+# MCPJungle Role (least-privilege)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mcpjungle-role
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: mcpjungle-role
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["agent-router-config", "mcp-servers-config", "mcp-acl-config"]
+    verbs: ["get", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["mcpjungle-credentials", "github-token", "notion-api-key"]
+    verbs: ["get"]
+---
+# MCPJungle RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mcpjungle-rolebinding
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: mcpjungle-rolebinding
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: ServiceAccount
+    name: mcpjungle-sa
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: mcpjungle-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
+# MAX Serve Llama Service Account
+{{- if .Values.maxServeLlama.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: max-serve-llama-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-llama-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.maxServeLlama.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.maxServeLlama.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.maxServeLlama.automountServiceAccountToken | default false }}
+---
+# MAX Serve Llama Role (minimal permissions)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: max-serve-llama-role
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-llama-role
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["max-serve-config"]
+    verbs: ["get"]
+---
+# MAX Serve Llama RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: max-serve-llama-rolebinding
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-llama-rolebinding
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: ServiceAccount
+    name: max-serve-llama-sa
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: max-serve-llama-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
+# MAX Serve Qwen Service Account
+{{- if .Values.maxServeQwen.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: max-serve-qwen-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-qwen-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.maxServeQwen.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.maxServeQwen.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.maxServeQwen.automountServiceAccountToken | default false }}
+---
+# MAX Serve Qwen Role (minimal permissions)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: max-serve-qwen-role
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-qwen-role
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["max-serve-config"]
+    verbs: ["get"]
+---
+# MAX Serve Qwen RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: max-serve-qwen-rolebinding
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-qwen-rolebinding
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: ServiceAccount
+    name: max-serve-qwen-sa
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: max-serve-qwen-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
+# MAX Serve DeepSeek Service Account
+{{- if .Values.maxServeDeepseek.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: max-serve-deepseek-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-deepseek-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.maxServeDeepseek.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.maxServeDeepseek.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.maxServeDeepseek.automountServiceAccountToken | default false }}
+---
+# MAX Serve DeepSeek Role (minimal permissions)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: max-serve-deepseek-role
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-deepseek-role
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["max-serve-config"]
+    verbs: ["get"]
+---
+# MAX Serve DeepSeek RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: max-serve-deepseek-rolebinding
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-deepseek-rolebinding
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: ServiceAccount
+    name: max-serve-deepseek-sa
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: max-serve-deepseek-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
+# Learning Engine Service Account
+{{- if .Values.learningEngine.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: learning-engine-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: learning-engine-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.learningEngine.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.learningEngine.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.learningEngine.automountServiceAccountToken | default true }}
+---
+# Learning Engine Role (least-privilege)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: learning-engine-role
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: learning-engine-role
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["learning-engine-config"]
+    verbs: ["get", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["postgres-credentials", "minio-credentials"]
+    verbs: ["get"]
+---
+# Learning Engine RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: learning-engine-rolebinding
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: learning-engine-rolebinding
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: ServiceAccount
+    name: learning-engine-sa
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: learning-engine-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
+# Mem0 Service Account
+{{- if .Values.mem0.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: mem0-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: mem0-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.mem0.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.mem0.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.mem0.automountServiceAccountToken | default true }}
+---
+# Mem0 Role (least-privilege)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: mem0-role
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: mem0-role
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["mem0-config"]
+    verbs: ["get", "watch"]
+---
+# Mem0 RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: mem0-rolebinding
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: mem0-rolebinding
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: ServiceAccount
+    name: mem0-sa
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: mem0-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
+# Database Service Accounts (read-only access by default)
+# PostgreSQL Service Account
+{{- if .Values.postgres.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: postgres-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: postgres-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.postgres.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.postgres.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.postgres.automountServiceAccountToken | default false }}
+---
+# PostgreSQL Role (minimal permissions)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: postgres-role
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: postgres-role
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["postgres-init-scripts"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["postgres-credentials"]
+    verbs: ["get"]
+---
+# PostgreSQL RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: postgres-rolebinding
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: postgres-rolebinding
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: ServiceAccount
+    name: postgres-sa
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: postgres-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
+# Redis Service Account
+{{- if .Values.redis.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: redis-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: redis-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.redis.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.redis.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.redis.automountServiceAccountToken | default false }}
+{{- end }}
+---
+# Qdrant Service Account
+{{- if .Values.qdrant.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: qdrant-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: qdrant-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.qdrant.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.qdrant.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.qdrant.automountServiceAccountToken | default false }}
+{{- end }}
+---
+# Neo4j Service Account
+{{- if .Values.neo4j.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: neo4j-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: neo4j-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.neo4j.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.neo4j.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.neo4j.automountServiceAccountToken | default false }}
+---
+# Neo4j Role (minimal permissions)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: neo4j-role
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: neo4j-role
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["neo4j-credentials"]
+    verbs: ["get"]
+---
+# Neo4j RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: neo4j-rolebinding
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: neo4j-rolebinding
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: ServiceAccount
+    name: neo4j-sa
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: neo4j-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
+# MinIO Service Account
+{{- if .Values.minio.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: minio-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: minio-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.minio.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.minio.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.minio.automountServiceAccountToken | default false }}
+---
+# MinIO Role (minimal permissions)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: minio-role
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: minio-role
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["minio-credentials"]
+    verbs: ["get"]
+---
+# MinIO RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: minio-rolebinding
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: minio-rolebinding
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: ServiceAccount
+    name: minio-sa
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: minio-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
+# Monitoring Service Accounts
+# Prometheus Service Account
+{{- if .Values.prometheus.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: prometheus-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: prometheus-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.prometheus.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.prometheus.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.prometheus.automountServiceAccountToken | default true }}
+---
+# Prometheus Role (service discovery)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: prometheus-role
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: prometheus-role
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["services", "endpoints", "pods"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get"]
+---
+# Prometheus RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: prometheus-rolebinding
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: prometheus-rolebinding
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: ServiceAccount
+    name: prometheus-sa
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: prometheus-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
+# Grafana Service Account
+{{- if .Values.grafana.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: grafana-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: grafana-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.grafana.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.grafana.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.grafana.automountServiceAccountToken | default true }}
+---
+# Grafana Role (least-privilege)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: grafana-role
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: grafana-role
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["grafana-credentials"]
+    verbs: ["get"]
+---
+# Grafana RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: grafana-rolebinding
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: grafana-rolebinding
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: ServiceAccount
+    name: grafana-sa
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: grafana-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
+# Jaeger Service Account
+{{- if .Values.jaeger.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jaeger-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: jaeger-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.jaeger.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.jaeger.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.jaeger.automountServiceAccountToken | default false }}
+{{- end }}
+{{- end }}

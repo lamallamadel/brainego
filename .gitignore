@@ -115,3 +115,63 @@ kong-deployment-info.txt
 
 # Kong Configuration (may contain secrets)
 *.b64
+
+# Kubernetes Security - Additional Sensitive Files
+# IMPORTANT: Never commit sensitive security data!
+**/encryption-config.yaml
+**/secrets-*.yaml
+**/*-credentials.yaml
+**/*-secret.yaml
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.truststore
+
+# Security - Helm values with secrets
+values-production.yaml
+values-*.secret.yaml
+values.secret.yaml
+**/values-override.yaml
+**/values-custom.yaml
+
+# Security - Environment files with credentials
+.env.production
+.env.*.production
+**/*.env.secret
+
+# Security - Keys and tokens
+**/*-token.txt
+**/*-key.txt
+**/*-password.txt
+**/*-apikey.txt
+jwt-*.key
+oauth-*.secret
+
+# Security - Encryption keys
+encryption-*.key
+kms-*.json
+*.privatekey
+
+# Security - RBAC tokens
+sa-token-*
+service-account-*.json
+
+# Security - TLS/SSL certificates
+tls-*.yaml
+ssl-*.yaml
+*.ca-bundle
+ca-certificates/
+
+# Security - Kubernetes config files
+kubeconfig
+*.kubeconfig
+.kube/config
+
+# Security - etcd backups
+etcd-backup/
+*.etcd
+
+# Security - Secrets backups
+secrets-backup/
+*.secret.bak

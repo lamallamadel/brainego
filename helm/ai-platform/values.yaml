@@ -12,6 +12,85 @@ namespace:
 # Image pull secrets (if using private registries)
 imagePullSecrets: []
 
+# Network Policies Configuration
+networkPolicies:
+  enabled: true
+  # Default deny all traffic (namespace isolation)
+  defaultDeny: true
+  # Allow DNS access from all pods
+  allowDNS: true
+
+# RBAC Configuration
+rbac:
+  enabled: true
+  # Service Accounts per pod with least-privilege principle
+  serviceAccounts:
+    gateway:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
+        # iam.gke.io/gcp-service-account: gateway-sa@project.iam.gserviceaccount.com
+    agentRouter:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
+    mcpjungle:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
+    maxServeLlama:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    maxServeQwen:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    maxServeDeepseek:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    learningEngine:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
+    mem0:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
+    postgres:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    redis:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    qdrant:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    neo4j:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    minio:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    prometheus:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
+    grafana:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
+    jaeger:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+
 # MAX Serve - Llama 3.3 8B (General Purpose)
 maxServeLlama:
   enabled: true
@@ -1111,18 +1190,103 @@ grafana:
     timeoutSeconds: 5
 
 # Secrets (base64 encoded values)
+# IMPORTANT: Replace these default values with strong, randomly generated secrets in production
 secrets:
+  # Enable immutable secrets (prevents accidental modification)
+  immutable: false
+  
+  # Secrets Encryption at Rest Configuration
+  encryption:
+    enabled: true
+    # Provider: aescbc, aesgcm, kms, secretbox
+    provider: aesgcm
+    
+    # AES-CBC configuration
+    aescbc:
+      key: ""  # Generate with: head -c 32 /dev/urandom | base64
+    
+    # AES-GCM configuration (recommended)
+    aesgcm:
+      key: ""  # Generate with: head -c 32 /dev/urandom | base64
+    
+    # KMS provider configuration (for cloud environments)
+    kms:
+      enabled: false
+      name: ""  # e.g., "aws-kms", "azure-kv", "gcp-kms"
+      endpoint: ""  # e.g., "unix:///var/run/kmsplugin/socket.sock"
+      cacheSize: 1000
+      timeout: "3s"
+    
+    # Secretbox configuration
+    secretbox:
+      key: ""  # Generate with: head -c 32 /dev/urandom | base64
+    
+    # Labels and annotations for encrypted secrets
+    labels:
+      encryption: "enabled"
+    annotations:
+      encryption-provider: "aesgcm"
+      rotation-date: "2024-01-01"
+    
+    # Application-level encryption keys
+    applicationKeys:
+      enabled: false
+      dataEncryptionKey: ""  # Generate with: head -c 32 /dev/urandom | base64
+      keyEncryptionKey: ""  # Generate with: head -c 32 /dev/urandom | base64
+  
+  # PostgreSQL credentials
   postgres:
-    password: YWlfcGFzc3dvcmQ=  # ai_password
+    username: YWlfdXNlcg==  # ai_user
+    password: YWlfcGFzc3dvcmQ=  # ai_password (CHANGE IN PRODUCTION)
+    database: YWlfcGxhdGZvcm0=  # ai_platform
+  
+  # Neo4j credentials
   neo4j:
-    password: bmVvNGpfcGFzc3dvcmQ=  # neo4j_password
+    username: bmVvNGo=  # neo4j
+    password: bmVvNGpfcGFzc3dvcmQ=  # neo4j_password (CHANGE IN PRODUCTION)
+  
+  # MinIO credentials
   minio:
-    accessKey: bWluaW9hZG1pbg==  # minioadmin
-    secretKey: bWluaW9hZG1pbjEyMw==  # minioadmin123
+    accessKey: bWluaW9hZG1pbg==  # minioadmin (CHANGE IN PRODUCTION)
+    secretKey: bWluaW9hZG1pbjEyMw==  # minioadmin123 (CHANGE IN PRODUCTION)
+  
+  # Grafana credentials
   grafana:
-    password: YWRtaW4=  # admin
+    username: YWRtaW4=  # admin
+    password: YWRtaW4=  # admin (CHANGE IN PRODUCTION)
+  
+  # Gateway API keys
+  gateway:
+    apiKeys: ""  # Comma-separated base64 encoded API keys
+  
+  # MCPJungle credentials
+  mcpjungle:
+    apiKeys: ""  # Comma-separated base64 encoded API keys
+    githubToken: ""  # Base64 encoded GitHub personal access token
+    notionApiKey: ""  # Base64 encoded Notion API key
+  
+  # Redis credentials (optional)
+  redis:
+    enabled: false
+    password: ""  # Base64 encoded password
+  
+  # Qdrant credentials (optional)
+  qdrant:
+    enabled: false
+    apiKey: ""  # Base64 encoded API key
+  
+  # Kong credentials
   kong:
-    postgresPassword: a29uZ19wYXNzd29yZA==  # kong_password
+    postgresUsername: a29uZw==  # kong
+    postgresPassword: a29uZ19wYXNzd29yZA==  # kong_password (CHANGE IN PRODUCTION)
+    postgresDatabase: a29uZw==  # kong
+
+# TLS Configuration
+tls:
+  enabled: false
+  certificate: ""  # Base64 encoded certificate
+  privateKey: ""  # Base64 encoded private key
+  caCertificate: ""  # Base64 encoded CA certificate
 
 # ConfigMaps
 configMaps:

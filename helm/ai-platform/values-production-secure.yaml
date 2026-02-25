@@ -1,0 +1,538 @@
+# Production-Ready Secure Configuration for AI Platform
+# This file contains security-hardened settings for production deployment
+# 
+# IMPORTANT: Update all credentials and keys before deploying to production!
+#
+# Usage:
+#   helm install ai-platform ./helm/ai-platform \
+#     --namespace ai-platform \
+#     --create-namespace \
+#     --values values-production-secure.yaml
+
+# Namespace configuration
+namespace:
+  create: true
+  name: ai-platform
+
+# Network Policies - ENABLED (namespace isolation)
+networkPolicies:
+  enabled: true
+  defaultDeny: true
+  allowDNS: true
+
+# RBAC - ENABLED (least-privilege principle)
+rbac:
+  enabled: true
+  serviceAccounts:
+    gateway:
+      create: true
+      automountServiceAccountToken: true
+      annotations:
+        # For cloud provider IAM integration
+        # iam.gke.io/gcp-service-account: gateway-sa@project.iam.gserviceaccount.com
+        # eks.amazonaws.com/role-arn: arn:aws:iam::ACCOUNT-ID:role/gateway-role
+    agentRouter:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
+    mcpjungle:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
+    maxServeLlama:
+      create: true
+      automountServiceAccountToken: false  # Inference services don't need K8s API access
+      annotations: {}
+    maxServeQwen:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    maxServeDeepseek:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    learningEngine:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
+    mem0:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
+    postgres:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    redis:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    qdrant:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    neo4j:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    minio:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+    prometheus:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
+    grafana:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
+    jaeger:
+      create: true
+      automountServiceAccountToken: false
+      annotations: {}
+
+# Secrets - ENCRYPTED at rest
+# CRITICAL: Generate strong, random values for production!
+secrets:
+  immutable: true  # Prevent accidental modification
+  
+  encryption:
+    enabled: true
+    provider: aesgcm  # or: kms (recommended for production)
+    
+    # AES-GCM configuration (generate key: head -c 32 /dev/urandom | base64)
+    aesgcm:
+      key: ""  # REQUIRED: Set this to a strong random key
+    
+    # For cloud environments, use KMS provider instead
+    kms:
+      enabled: false
+      # Uncomment and configure for AWS/Azure/GCP
+      # name: "aws-kms"  # or "azure-kv", "gcp-kms"
+      # endpoint: "unix:///var/run/kmsplugin/socket.sock"
+      # cacheSize: 5000
+      # timeout: "3s"
+    
+    labels:
+      encryption: "enabled"
+      environment: "production"
+    annotations:
+      encryption-provider: "aesgcm"
+      rotation-date: "2024-01-01"  # Update when rotating keys
+    
+    applicationKeys:
+      enabled: true
+      dataEncryptionKey: ""  # REQUIRED: Application-level encryption key
+      keyEncryptionKey: ""   # REQUIRED: Key encryption key
+  
+  # Database credentials
+  # CRITICAL: Change all default passwords!
+  postgres:
+    username: ""  # Base64 encoded username
+    password: ""  # Base64 encoded password - CHANGE THIS!
+    database: ""  # Base64 encoded database name
+  
+  neo4j:
+    username: ""  # Base64 encoded username
+    password: ""  # Base64 encoded password - CHANGE THIS!
+  
+  minio:
+    accessKey: ""  # Base64 encoded access key - CHANGE THIS!
+    secretKey: ""  # Base64 encoded secret key - CHANGE THIS!
+  
+  grafana:
+    username: ""  # Base64 encoded username
+    password: ""  # Base64 encoded password - CHANGE THIS!
+  
+  # API credentials
+  gateway:
+    apiKeys: ""  # Base64 encoded comma-separated API keys
+  
+  mcpjungle:
+    apiKeys: ""      # Base64 encoded API keys
+    githubToken: ""  # Base64 encoded GitHub token
+    notionApiKey: "" # Base64 encoded Notion API key
+  
+  # Optional: Enable if using Redis with password
+  redis:
+    enabled: true
+    password: ""  # Base64 encoded password - CHANGE THIS!
+  
+  # Optional: Enable if using Qdrant with API key
+  qdrant:
+    enabled: true
+    apiKey: ""  # Base64 encoded API key - CHANGE THIS!
+  
+  kong:
+    postgresUsername: ""  # Base64 encoded username
+    postgresPassword: ""  # Base64 encoded password - CHANGE THIS!
+    postgresDatabase: ""  # Base64 encoded database
+
+# TLS Configuration - ENABLED
+tls:
+  enabled: true
+  certificate: ""     # Base64 encoded TLS certificate
+  privateKey: ""      # Base64 encoded private key
+  caCertificate: ""   # Base64 encoded CA certificate
+
+# Gateway - Production configuration
+gateway:
+  enabled: true
+  replicaCount: 3  # Increased for HA
+  image:
+    repository: ai-platform/gateway
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP  # Use ClusterIP with Ingress
+    port: 9002
+    targetPort: 9002
+  resources:
+    limits:
+      memory: 2Gi
+      cpu: 1
+    requests:
+      memory: 1Gi
+      cpu: 500m
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2  # Maintain at least 2 pods during disruptions
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - gateway
+          topologyKey: kubernetes.io/hostname
+
+# Agent Router - Production configuration
+agentRouter:
+  enabled: true
+  replicaCount: 3  # Increased for HA
+  image:
+    repository: ai-platform/api-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+    metricsPort: 8001
+  resources:
+    limits:
+      memory: 4Gi
+      cpu: 2
+    requests:
+      memory: 2Gi
+      cpu: 1
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+
+# MAX Serve - Production configuration with autoscaling
+maxServeLlama:
+  enabled: true
+  replicaCount: 2  # Base replicas
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+      memory: 16Gi
+      cpu: 8
+    requests:
+      nvidia.com/gpu: 1
+      memory: 8Gi
+      cpu: 4
+
+maxServeQwen:
+  enabled: true
+  replicaCount: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+
+maxServeDeepseek:
+  enabled: true
+  replicaCount: 2
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+
+# PostgreSQL - Production configuration
+postgres:
+  enabled: true
+  replicaCount: 1  # Consider using external HA PostgreSQL in production
+  resources:
+    limits:
+      memory: 8Gi
+      cpu: 4
+    requests:
+      memory: 4Gi
+      cpu: 2
+  persistence:
+    enabled: true
+    storageClass: "fast-ssd"  # Use fast storage class
+    size: 100Gi  # Increased for production
+
+# Redis - Production configuration
+redis:
+  enabled: true
+  replicaCount: 1  # Consider using Redis Sentinel/Cluster for HA
+  resources:
+    limits:
+      memory: 4Gi
+      cpu: 2
+    requests:
+      memory: 2Gi
+      cpu: 1
+  persistence:
+    enabled: true
+    storageClass: "fast-ssd"
+    size: 20Gi
+  args:
+    - redis-server
+    - --appendonly
+    - "yes"
+    - --maxmemory
+    - 3gb
+    - --maxmemory-policy
+    - allkeys-lru
+    - --requirepass
+    - "$(REDIS_PASSWORD)"  # Password protection enabled
+
+# Qdrant - Production configuration
+qdrant:
+  enabled: true
+  replicaCount: 1
+  resources:
+    limits:
+      memory: 16Gi
+      cpu: 8
+    requests:
+      memory: 8Gi
+      cpu: 4
+  persistence:
+    enabled: true
+    storageClass: "fast-ssd"
+    size: 200Gi
+
+# Neo4j - Production configuration
+neo4j:
+  enabled: true
+  resources:
+    limits:
+      memory: 16Gi
+      cpu: 8
+    requests:
+      memory: 8Gi
+      cpu: 4
+  persistence:
+    data:
+      enabled: true
+      storageClass: "fast-ssd"
+      size: 100Gi
+
+# MinIO - Production configuration
+minio:
+  enabled: true
+  resources:
+    limits:
+      memory: 8Gi
+      cpu: 4
+    requests:
+      memory: 4Gi
+      cpu: 2
+  persistence:
+    enabled: true
+    storageClass: "fast-ssd"
+    size: 200Gi
+
+# Prometheus - Production configuration
+prometheus:
+  enabled: true
+  resources:
+    limits:
+      memory: 8Gi
+      cpu: 4
+    requests:
+      memory: 4Gi
+      cpu: 2
+  persistence:
+    data:
+      enabled: true
+      storageClass: "fast-ssd"
+      size: 100Gi
+  args:
+    - --config.file=/etc/prometheus/prometheus.yml
+    - --storage.tsdb.path=/prometheus
+    - --storage.tsdb.retention.time=90d  # 90 days retention
+    - --web.console.libraries=/usr/share/prometheus/console_libraries
+    - --web.console.templates=/usr/share/prometheus/consoles
+    - --web.enable-lifecycle  # Enable reload via API
+
+# Grafana - Production configuration
+grafana:
+  enabled: true
+  service:
+    type: ClusterIP  # Use with Ingress
+    port: 3000
+  resources:
+    limits:
+      memory: 2Gi
+      cpu: 1
+    requests:
+      memory: 1Gi
+      cpu: 500m
+  persistence:
+    data:
+      enabled: true
+      storageClass: "fast-ssd"
+      size: 20Gi
+
+# Kong Ingress - Production configuration
+kong:
+  enabled: true
+  
+  oauth2:
+    provisionKey: ""  # CHANGE THIS!
+    tokenExpiration: 3600
+    refreshTokenTtl: 1209600
+    adminClientId: ""  # CHANGE THIS!
+    adminClientSecret: ""  # CHANGE THIS!
+    redirectUri: "https://your-domain.com/auth/callback"  # UPDATE THIS!
+  
+  jwt:
+    maximumExpiration: 86400
+    privateKey: ""  # Base64 encoded RSA private key
+    publicKey: ""   # Base64 encoded RSA public key
+  
+  rateLimiting:
+    redisDatabase: 1
+    perIp:
+      minute: 100
+    perUser:
+      hour: 1000
+    perWorkspace:
+      day: 10000
+  
+  tokenBudget:
+    dailyLimit: 1000000
+    redisDatabase: 2
+  
+  auditLog:
+    enabled: true
+    httpEndpoint: "http://logging-service:8080/audit"
+  
+  ingress:
+    enabled: true
+    host: "api.your-domain.com"  # UPDATE THIS!
+    className: kong
+  
+  proxy:
+    enabled: true
+    type: LoadBalancer
+    tls:
+      enabled: true
+
+# cert-manager - For automatic TLS certificate management
+certManager:
+  enabled: true
+  email: "admin@your-domain.com"  # UPDATE THIS!
+  installCRDs: true
+
+# Image pull secrets (for private registries)
+imagePullSecrets:
+  - name: docker-registry-secret
+
+# Additional security configurations
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+containerSecurityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+      - ALL
+
+# Monitoring and logging
+monitoring:
+  enabled: true
+  prometheusOperator: true
+  grafanaDashboards: true
+  alertmanager:
+    enabled: true
+    config: |
+      global:
+        resolve_timeout: 5m
+      route:
+        group_by: ['alertname', 'cluster', 'service']
+        group_wait: 10s
+        group_interval: 10s
+        repeat_interval: 12h
+        receiver: 'default'
+      receivers:
+        - name: 'default'
+          webhook_configs:
+            - url: 'http://alertmanager-webhook:5001/'
+
+# Backup and disaster recovery
+backup:
+  enabled: true
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  retention: 30  # Keep 30 days of backups
+  storageClass: "backup-storage"
+
+# Compliance and audit
+compliance:
+  pci: false
+  hipaa: false
+  sox: false
+  gdpr: true
+  auditLogging: true
+
+# Resource quotas for the namespace
+resourceQuotas:
+  enabled: true
+  hard:
+    requests.cpu: "100"
+    requests.memory: "200Gi"
+    requests.storage: "1Ti"
+    persistentvolumeclaims: "50"
+    services.loadbalancers: "5"
+
+# Network policy exceptions (if needed)
+networkPolicyExceptions:
+  enabled: false
+  # Add specific exceptions here if needed
+  # Example:
+  # - fromNamespace: monitoring
+  #   toPods: [gateway, agent-router]
+
+# Notes:
+# 1. Generate encryption keys: head -c 32 /dev/urandom | base64
+# 2. Generate passwords: openssl rand -base64 32
+# 3. Update all domain names and email addresses
+# 4. Configure cloud provider IAM roles for service accounts
+# 5. Set up external secrets management (e.g., HashiCorp Vault)
+# 6. Configure backup storage and retention policies
+# 7. Set up monitoring alerts and notifications
+# 8. Review and test disaster recovery procedures
+# 9. Perform security audit before production deployment
+# 10. Document all configuration changes

@@ -42,6 +42,9 @@ spec:
         prometheus.io/port: "{{ .Values.maxServeLlama.service.targetPort }}"
         prometheus.io/path: "/metrics"
     spec:
+      {{- if .Values.rbac.enabled }}
+      serviceAccountName: max-serve-llama-sa
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -50,10 +53,24 @@ spec:
       affinity:
         {{- toYaml .Values.maxServeLlama.affinity | nindent 8 }}
       {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: max-serve-llama
           image: "{{ .Values.maxServeLlama.image.repository }}:{{ .Values.maxServeLlama.image.tag }}"
           imagePullPolicy: {{ .Values.maxServeLlama.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
           ports:
             - name: http
               containerPort: {{ .Values.maxServeLlama.service.targetPort }}

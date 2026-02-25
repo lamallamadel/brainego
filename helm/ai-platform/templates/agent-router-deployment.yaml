@@ -42,6 +42,9 @@ spec:
         app.kubernetes.io/name: agent-router
         app.kubernetes.io/component: api
     spec:
+      {{- if .Values.rbac.enabled }}
+      serviceAccountName: agent-router-sa
+      {{- end }}
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
@@ -50,10 +53,24 @@ spec:
       affinity:
         {{- toYaml .Values.agentRouter.affinity | nindent 8 }}
       {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
       containers:
         - name: agent-router
           image: "{{ .Values.agentRouter.image.repository }}:{{ .Values.agentRouter.image.tag }}"
           imagePullPolicy: {{ .Values.agentRouter.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
           ports:
             - name: http
               containerPort: {{ .Values.agentRouter.service.targetPort }}
