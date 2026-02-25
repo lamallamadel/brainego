@@ -51,6 +51,12 @@ workspace/
 # Jaeger/Tracing data
 jaeger-data/
 
+# Neo4j data
+neo4j-data/
+neo4j-logs/
+neo4j-import/
+neo4j-plugins/
+
 # IDE
 .vscode/
 .idea/

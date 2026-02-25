@@ -1,4 +1,4 @@
-.PHONY: help install download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui
+.PHONY: help install download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-ui neo4j-logs
 
 help:
 	@echo "MAX Serve + Llama 3.3 8B Infrastructure"
@@ -37,6 +37,12 @@ help:
 	@echo "  make mcpjungle-test  - Run MCPJungle tests"
 	@echo "  make mcpjungle-health- Check MCPJungle health"
 	@echo "  make jaeger-ui       - Open Jaeger UI for tracing"
+	@echo ""
+	@echo "Knowledge Graph commands:"
+	@echo "  make graph-test      - Run knowledge graph tests"
+	@echo "  make graph-example   - Run graph usage examples"
+	@echo "  make graph-ui        - Open Neo4j Browser UI"
+	@echo "  make neo4j-logs      - View Neo4j logs"
 
 install:
 	pip install -r requirements.txt
@@ -157,3 +163,22 @@ jaeger-ui:
 	@echo "Opening Jaeger UI..."
 	@echo "Jaeger UI: http://localhost:16686"
 	@command -v open >/dev/null 2>&1 && open http://localhost:16686 || echo "Open http://localhost:16686 in your browser"
+
+graph-test:
+	@echo "Running knowledge graph tests..."
+	@python test_graph.py
+
+graph-example:
+	@echo "Running graph usage examples..."
+	@python examples/graph_example.py
+
+graph-ui:
+	@echo "Opening Neo4j Browser..."
+	@echo "Neo4j Browser: http://localhost:7474"
+	@echo "Username: neo4j"
+	@echo "Password: neo4j_password"
+	@command -v open >/dev/null 2>&1 && open http://localhost:7474 || echo "Open http://localhost:7474 in your browser"
+
+neo4j-logs:
+	@echo "Viewing Neo4j logs..."
+	@docker compose logs -f neo4j

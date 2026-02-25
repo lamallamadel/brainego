@@ -6,8 +6,15 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Download SpaCy model for NER
+RUN python -m spacy download en_core_web_sm
+
 # Copy application code
 COPY api_server.py .
+COPY agent_router.py .
+COPY rag_service.py .
+COPY memory_service.py .
+COPY graph_service.py .
 
 # Expose port
 EXPOSE 8000

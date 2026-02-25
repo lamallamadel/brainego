@@ -38,3 +38,9 @@ opentelemetry-exporter-jaeger==1.21.0
 # JWT for authentication
 pyjwt==2.8.0
 cryptography==41.0.7
+
+# Graph Database (Neo4j)
+neo4j==5.15.0
+
+# NLP for NER
+spacy==3.7.2

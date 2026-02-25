@@ -23,6 +23,7 @@ import httpx
 from agent_router import AgentRouter
 from rag_service import RAGIngestionService
 from memory_service import MemoryService
+from graph_service import GraphService
 
 # Configure logging
 logging.basicConfig(
@@ -41,6 +42,10 @@ QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "documents")
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_DB = int(os.getenv("REDIS_DB", "0"))
+
+NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
+NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
+NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "neo4j_password")
 
 # Create FastAPI app
 app = FastAPI(
@@ -213,6 +218,59 @@ class MemoryStatsResponse(BaseModel):
     distance_metric: str
 
 
+class GraphProcessRequest(BaseModel):
+    text: str = Field(..., description="Text to process for entity and relation extraction")
+    document_id: Optional[str] = Field(None, description="Optional document identifier")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Optional metadata")
+
+
+class GraphProcessResponse(BaseModel):
+    status: str
+    document_id: str
+    entities_extracted: int
+    entities_added: int
+    relations_extracted: int
+    relations_added: int
+    relations_by_method: Dict[str, int]
+
+
+class GraphQueryRequest(BaseModel):
+    query: str = Field(..., description="Cypher query to execute")
+    parameters: Optional[Dict[str, Any]] = Field(None, description="Query parameters")
+
+
+class GraphQueryResponse(BaseModel):
+    status: str
+    results: List[Dict[str, Any]]
+    count: int
+
+
+class GraphNeighborsResponse(BaseModel):
+    entity: str
+    entity_type: Optional[str]
+    neighbors_count: int
+    neighbors: List[Dict[str, Any]]
+
+
+class GraphSearchRequest(BaseModel):
+    search_text: str = Field(..., description="Text to search for entities")
+    entity_types: Optional[List[str]] = Field(None, description="Filter by entity types")
+    limit: int = Field(20, ge=1, le=100, description="Maximum results")
+
+
+class GraphSearchResponse(BaseModel):
+    search_text: str
+    results: List[Dict[str, Any]]
+    count: int
+
+
+class GraphStatsResponse(BaseModel):
+    total_nodes: int
+    total_relationships: int
+    nodes_by_type: Dict[str, int]
+    relationships_by_type: Dict[str, int]
+
+
 # Metrics storage
 class MetricsStore:
     def __init__(self):
@@ -262,6 +320,7 @@ metrics = MetricsStore()
 agent_router = None
 rag_service = None
 memory_service = None
+graph_service = None
 
 
 def get_agent_router() -> AgentRouter:
@@ -307,6 +366,22 @@ def get_memory_service() -> MemoryService:
         )
         logger.info("Memory Service initialized")
     return memory_service
+
+
+def get_graph_service() -> GraphService:
+    """Get or initialize Graph service."""
+    global graph_service
+    if graph_service is None:
+        logger.info("Initializing Graph Service...")
+        graph_service = GraphService(
+            neo4j_uri=NEO4J_URI,
+            neo4j_user=NEO4J_USER,
+            neo4j_password=NEO4J_PASSWORD,
+            embedding_model="sentence-transformers/all-MiniLM-L6-v2",
+            spacy_model="en_core_web_sm"
+        )
+        logger.info("Graph Service initialized")
+    return graph_service
 
 
 def format_chat_prompt(messages: List[ChatMessage]) -> str:
@@ -392,7 +467,12 @@ async def root():
             "memory_add": "POST /memory/add",
             "memory_search": "GET /memory/search",
             "memory_forget": "DELETE /memory/forget/{memory_id}",
-            "memory_stats": "GET /memory/stats"
+            "memory_stats": "GET /memory/stats",
+            "graph_process": "POST /graph/process",
+            "graph_query": "POST /graph/query",
+            "graph_neighbors": "GET /graph/neighbors/{entity}",
+            "graph_search": "POST /graph/search",
+            "graph_stats": "GET /graph/stats"
         },
         "prometheus_metrics": "http://localhost:8001/metrics"
     }
@@ -959,6 +1039,206 @@ async def memory_stats():
         raise HTTPException(status_code=500, detail=f"Memory stats error: {str(e)}")
 
 
+@app.post("/graph/process", response_model=GraphProcessResponse)
+async def graph_process(request: GraphProcessRequest):
+    """
+    Process text to extract entities and relations, add to knowledge graph.
+    
+    This endpoint:
+    1. Extracts named entities using SpaCy NER pipeline
+    2. Identifies relations through:
+       - Co-occurrence analysis (entities appearing in same context)
+       - Explicit pattern matching (e.g., "X works on Y")
+    3. Adds entities as nodes to Neo4j graph
+    4. Creates relationships between entities
+    5. Links to source document if provided
+    
+    Entity Types: Project, Person, Concept, Document, Problem, Lesson
+    Relation Types: WORKS_ON, RELATES_TO, CAUSED_BY, SOLVED_BY, LEARNED_FROM
+    
+    Args:
+        text: Input text for processing
+        document_id: Optional document identifier
+        metadata: Optional metadata (e.g., title, author, date)
+    
+    Returns:
+        Processing statistics including entities and relations extracted/added
+    """
+    try:
+        service = get_graph_service()
+        result = service.process_document(
+            text=request.text,
+            document_id=request.document_id,
+            metadata=request.metadata
+        )
+        logger.info(f"Processed document: {result['document_id']}")
+        return GraphProcessResponse(**result)
+    except Exception as e:
+        logger.error(f"Error processing document for graph: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Graph processing error: {str(e)}")
+
+
+@app.post("/graph/query", response_model=GraphQueryResponse)
+async def graph_query(request: GraphQueryRequest):
+    """
+    Execute Cypher query on knowledge graph.
+    
+    Supports full Cypher query language for complex graph traversals.
+    
+    Example queries:
+    
+    1. Find all people working on a project:
+       MATCH (p:Person)-[:WORKS_ON]->(proj:Project {name: "Project X"})
+       RETURN p.name
+    
+    2. Find problems and their solutions:
+       MATCH (prob:Problem)-[:SOLVED_BY]->(sol)
+       RETURN prob.name, sol.name, labels(sol)[0] as solution_type
+    
+    3. Find lessons learned from projects:
+       MATCH (lesson:Lesson)-[:LEARNED_FROM]->(proj:Project)
+       RETURN lesson.name, proj.name
+    
+    4. Find related concepts:
+       MATCH (c1:Concept)-[:RELATES_TO*1..2]-(c2:Concept)
+       WHERE c1.name = "Machine Learning"
+       RETURN DISTINCT c2.name
+    
+    Args:
+        query: Cypher query string
+        parameters: Optional query parameters (use $param in query)
+    
+    Returns:
+        Query results as list of records
+    """
+    try:
+        service = get_graph_service()
+        results = service.query_graph(
+            query=request.query,
+            parameters=request.parameters
+        )
+        logger.info(f"Graph query executed: {len(results)} results")
+        return GraphQueryResponse(
+            status="success",
+            results=results,
+            count=len(results)
+        )
+    except Exception as e:
+        logger.error(f"Error executing graph query: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Graph query error: {str(e)}")
+
+
+@app.get("/graph/neighbors/{entity}", response_model=GraphNeighborsResponse)
+async def graph_neighbors(
+    entity: str,
+    entity_type: Optional[str] = None,
+    relation_types: Optional[str] = None,
+    max_depth: int = 1,
+    limit: int = 50
+):
+    """
+    Get neighbors of an entity in the knowledge graph.
+    
+    Returns entities connected to the specified entity within the given depth.
+    
+    Args:
+        entity: Name of the entity
+        entity_type: Optional entity type filter (Project, Person, Concept, etc.)
+        relation_types: Optional comma-separated relation types (e.g., "WORKS_ON,RELATES_TO")
+        max_depth: Maximum traversal depth (default: 1)
+        limit: Maximum number of neighbors to return (default: 50)
+    
+    Returns:
+        List of neighbors with their types, connecting relations, and distances
+    
+    Example:
+        GET /graph/neighbors/Alice?entity_type=Person&relation_types=WORKS_ON&max_depth=2
+    """
+    try:
+        service = get_graph_service()
+        
+        # Parse relation types if provided
+        rel_types_list = None
+        if relation_types:
+            rel_types_list = [rt.strip() for rt in relation_types.split(",")]
+        
+        result = service.get_neighbors(
+            entity_name=entity,
+            entity_type=entity_type,
+            relation_types=rel_types_list,
+            max_depth=max_depth,
+            limit=limit
+        )
+        
+        logger.info(f"Found {result['neighbors_count']} neighbors for {entity}")
+        return GraphNeighborsResponse(**result)
+    except Exception as e:
+        logger.error(f"Error getting neighbors: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Graph neighbors error: {str(e)}")
+
+
+@app.post("/graph/search", response_model=GraphSearchResponse)
+async def graph_search(request: GraphSearchRequest):
+    """
+    Search for entities in the knowledge graph using full-text search.
+    
+    Searches entity names and descriptions across all node types.
+    
+    Args:
+        search_text: Text to search for
+        entity_types: Optional list of entity types to filter by
+        limit: Maximum number of results (1-100)
+    
+    Returns:
+        List of matching entities with relevance scores
+    
+    Example:
+        POST /graph/search
+        {
+            "search_text": "machine learning",
+            "entity_types": ["Concept", "Project"],
+            "limit": 10
+        }
+    """
+    try:
+        service = get_graph_service()
+        results = service.search_entities(
+            search_text=request.search_text,
+            entity_types=request.entity_types,
+            limit=request.limit
+        )
+        logger.info(f"Graph search: {len(results)} results for '{request.search_text}'")
+        return GraphSearchResponse(
+            search_text=request.search_text,
+            results=results,
+            count=len(results)
+        )
+    except Exception as e:
+        logger.error(f"Error searching graph: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Graph search error: {str(e)}")
+
+
+@app.get("/graph/stats", response_model=GraphStatsResponse)
+async def graph_stats():
+    """
+    Get knowledge graph statistics.
+    
+    Returns:
+        - Total number of nodes
+        - Total number of relationships
+        - Breakdown by node type (Project, Person, Concept, etc.)
+        - Breakdown by relationship type (WORKS_ON, RELATES_TO, etc.)
+    """
+    try:
+        service = get_graph_service()
+        stats = service.get_graph_stats()
+        logger.info(f"Graph stats: {stats['total_nodes']} nodes, {stats['total_relationships']} relationships")
+        return GraphStatsResponse(**stats)
+    except Exception as e:
+        logger.error(f"Error getting graph stats: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Graph stats error: {str(e)}")
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
@@ -975,6 +1255,9 @@ async def shutdown_event():
     if agent_router:
         await agent_router.stop_health_checks()
     logger.info("Agent Router health checks stopped")
+    if graph_service:
+        graph_service.close()
+    logger.info("Graph Service closed")
 
 
 if __name__ == "__main__":
