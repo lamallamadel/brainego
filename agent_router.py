@@ -17,6 +17,8 @@ import yaml
 import httpx
 from prometheus_client import Counter, Histogram, Gauge, start_http_server
 
+from circuit_breaker import get_circuit_breaker, CircuitBreakerConfig, CircuitBreakerError
+
 logger = logging.getLogger(__name__)
 
 
@@ -179,9 +181,11 @@ class AgentRouter:
         self.metrics = PrometheusMetrics()
         self.health_check_enabled = False
         self.health_check_task = None
+        self.circuit_breakers: Dict[str, Any] = {}
         
         self._load_config()
         self._initialize_metrics()
+        self._initialize_circuit_breakers()
     
     def _load_config(self):
         """Load configuration from YAML file."""
@@ -237,6 +241,23 @@ class AgentRouter:
         for model_id in self.models.keys():
             self.metrics.model_health.labels(model=model_id).set(1)
             self.metrics.fallback_rate.labels(model=model_id).set(0)
+    
+    def _initialize_circuit_breakers(self):
+        """Initialize circuit breakers for each model."""
+        cb_config = CircuitBreakerConfig(
+            failure_threshold=3,
+            timeout_seconds=5.0,
+            recovery_timeout_seconds=30.0,
+            success_threshold=2
+        )
+        
+        for model_id in self.models.keys():
+            self.circuit_breakers[model_id] = get_circuit_breaker(
+                f"model_{model_id}",
+                cb_config
+            )
+        
+        logger.info(f"Initialized circuit breakers for {len(self.circuit_breakers)} models")
     
     async def start_health_checks(self):
         """Start periodic health checks for all models."""
@@ -498,12 +519,13 @@ class AgentRouter:
         stop: Optional[List[str]] = None
     ) -> Dict[str, Any]:
         """
-        Try generating with a specific model.
+        Try generating with a specific model using circuit breaker.
         
         Returns:
             Result dictionary with success flag
         """
         model = self.models[model_id]
+        circuit_breaker = self.circuit_breakers.get(model_id)
         
         # Check health status
         if not model.health_status:
@@ -526,35 +548,48 @@ class AgentRouter:
             'stop': stop or ['<|eot_id|>', '<|end_of_text|>']
         }
         
-        # Try with retries
+        # Try with retries and circuit breaker protection
         max_attempts = self.routing_config.retry['max_attempts']
         backoff_factor = self.routing_config.retry['backoff_factor']
         
+        async def make_request():
+            """Inner function for circuit breaker."""
+            generate_url = f"{model.endpoint}/generate"
+            async with httpx.AsyncClient() as client:
+                response = await client.post(generate_url, json=payload)
+                response.raise_for_status()
+                return response.json()
+        
         for attempt in range(max_attempts):
             try:
-                generate_url = f"{model.endpoint}/generate"
-                timeout = self.routing_config.timeouts['request']
+                # Use circuit breaker for the request
+                if circuit_breaker:
+                    result = await circuit_breaker.call(make_request)
+                else:
+                    result = await make_request()
                 
-                async with httpx.AsyncClient(timeout=timeout) as client:
-                    response = await client.post(generate_url, json=payload)
-                    response.raise_for_status()
-                    
-                    result = response.json()
-                    
-                    # Success
-                    self.metrics.requests_total.labels(
-                        model=model_id,
-                        intent=intent.value,
-                        status='success'
-                    ).inc()
-                    
-                    return {
-                        'success': True,
-                        'text': result.get('text', ''),
-                        'model_id': model_id
-                    }
+                # Success
+                self.metrics.requests_total.labels(
+                    model=model_id,
+                    intent=intent.value,
+                    status='success'
+                ).inc()
+                
+                return {
+                    'success': True,
+                    'text': result.get('text', ''),
+                    'model_id': model_id
+                }
             
-            except httpx.HTTPError as e:
+            except CircuitBreakerError as e:
+                logger.warning(f"Circuit breaker open for {model_id}: {e}")
+                self.metrics.errors_total.labels(
+                    model=model_id,
+                    error_type='circuit_breaker_open'
+                ).inc()
+                return {'success': False, 'error': 'Circuit breaker open'}
+            
+            except (httpx.HTTPError, asyncio.TimeoutError) as e:
                 error_type = type(e).__name__
                 self.metrics.errors_total.labels(
                     model=model_id,

@@ -14,6 +14,7 @@ from typing import List, Dict, Optional, Any
 from datetime import datetime
 
 import uvicorn
+import signal
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,6 +26,7 @@ from rag_service import RAGIngestionService
 from memory_service import MemoryService
 from graph_service import GraphService
 from feedback_service import FeedbackService
+from circuit_breaker import get_all_circuit_breaker_stats
 
 # Configure logging
 logging.basicConfig(
@@ -444,6 +446,9 @@ memory_service = None
 graph_service = None
 feedback_service = None
 
+# Graceful shutdown flag
+shutdown_in_progress = False
+
 
 def get_agent_router() -> AgentRouter:
     """Get or initialize Agent Router."""
@@ -661,6 +666,15 @@ async def get_metrics():
     """Get performance metrics."""
     return {
         "metrics": metrics.get_stats(),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+@app.get("/circuit-breakers")
+async def get_circuit_breakers():
+    """Get circuit breaker statistics."""
+    return {
+        "circuit_breakers": get_all_circuit_breaker_stats(),
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -1960,17 +1974,42 @@ async def startup_event():
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cleanup on shutdown."""
-    logger.info("Shutting down API server...")
+    """Cleanup on shutdown with graceful termination."""
+    global shutdown_in_progress
+    shutdown_in_progress = True
+    
+    logger.info("Shutting down API server gracefully...")
+    
+    # Wait for in-flight requests to complete (up to 30 seconds)
+    logger.info("Waiting for in-flight requests to complete...")
+    await asyncio.sleep(5)  # Give pending requests time to finish
+    
+    # Stop health checks
     if agent_router:
         await agent_router.stop_health_checks()
-    logger.info("Agent Router health checks stopped")
+        logger.info("Agent Router health checks stopped")
+    
+    # Close database connections
     if graph_service:
         graph_service.close()
-    logger.info("Graph Service closed")
+        logger.info("Graph Service closed")
+    
     if feedback_service:
         feedback_service.close()
-    logger.info("Feedback Service closed")
+        logger.info("Feedback Service closed")
+    
+    logger.info("API server shutdown complete")
+
+
+def handle_sigterm(signum, frame):
+    """Handle SIGTERM for graceful shutdown."""
+    logger.info("Received SIGTERM signal, initiating graceful shutdown...")
+    raise KeyboardInterrupt
+
+
+# Register signal handlers for graceful shutdown
+signal.signal(signal.SIGTERM, handle_sigterm)
+signal.signal(signal.SIGINT, handle_sigterm)
 
 
 if __name__ == "__main__":

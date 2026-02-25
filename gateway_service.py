@@ -15,6 +15,8 @@ import time
 import json
 import uuid
 import logging
+import signal
+import asyncio
 from typing import List, Dict, Optional, Any, Annotated
 from datetime import datetime
 
@@ -28,6 +30,7 @@ import httpx
 
 from rag_service import RAGIngestionService
 from memory_service import MemoryService
+from circuit_breaker import get_circuit_breaker, CircuitBreakerConfig, CircuitBreakerError, get_all_circuit_breaker_stats
 
 # Configure logging
 logging.basicConfig(
@@ -227,6 +230,20 @@ metrics = MetricsStore()
 rag_service = None
 memory_service = None
 
+# Circuit breaker for MAX Serve
+max_serve_breaker = get_circuit_breaker(
+    "max_serve_gateway",
+    CircuitBreakerConfig(
+        failure_threshold=3,
+        timeout_seconds=5.0,
+        recovery_timeout_seconds=30.0,
+        success_threshold=2
+    )
+)
+
+# Graceful shutdown flag
+shutdown_in_progress = False
+
 
 def get_rag_service() -> RAGIngestionService:
     """Get or initialize RAG service."""
@@ -290,7 +307,7 @@ def estimate_tokens(text: str) -> int:
 
 
 async def call_max_serve(prompt: str, params: Dict[str, Any]) -> tuple[str, int, int]:
-    """Call MAX Serve API and return response text and token counts."""
+    """Call MAX Serve API with circuit breaker protection."""
     
     payload = {
         "prompt": prompt,
@@ -300,26 +317,32 @@ async def call_max_serve(prompt: str, params: Dict[str, Any]) -> tuple[str, int,
         "stop": params.get("stop", ["<|eot_id|>", "<|end_of_text|>"]),
     }
     
-    async with httpx.AsyncClient(timeout=300.0) as client:
-        try:
+    async def make_request():
+        """Inner function for circuit breaker."""
+        async with httpx.AsyncClient() as client:
             response = await client.post(MAX_SERVE_GENERATE_URL, json=payload)
             response.raise_for_status()
             
             result = response.json()
-            generated_text = result.get("text", "")
-            
-            # Clean up the response
-            generated_text = generated_text.strip()
+            generated_text = result.get("text", "").strip()
             
             # Estimate tokens
             prompt_tokens = estimate_tokens(prompt)
             completion_tokens = estimate_tokens(generated_text)
             
             return generated_text, prompt_tokens, completion_tokens
-            
-        except httpx.HTTPError as e:
-            logger.error(f"MAX Serve API error: {e}")
-            raise HTTPException(status_code=503, detail=f"MAX Serve error: {str(e)}")
+    
+    try:
+        return await max_serve_breaker.call(make_request)
+    except CircuitBreakerError as e:
+        logger.error(f"Circuit breaker open for MAX Serve: {e}")
+        raise HTTPException(status_code=503, detail="MAX Serve temporarily unavailable (circuit breaker open)")
+    except httpx.HTTPError as e:
+        logger.error(f"MAX Serve API error: {e}")
+        raise HTTPException(status_code=503, detail=f"MAX Serve error: {str(e)}")
+    except Exception as e:
+        logger.error(f"Unexpected error calling MAX Serve: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 # Endpoints
@@ -399,6 +422,15 @@ async def get_metrics(auth: Dict[str, Any] = Depends(verify_api_key)):
     """Get performance metrics. Requires authentication."""
     return {
         "metrics": metrics.get_stats(),
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+
+@app.get("/circuit-breakers")
+async def get_circuit_breakers_stats(auth: Dict[str, Any] = Depends(verify_api_key)):
+    """Get circuit breaker statistics. Requires authentication."""
+    return {
+        "circuit_breakers": get_all_circuit_breaker_stats(),
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -714,6 +746,32 @@ async def http_exception_handler(request: Request, exc: HTTPException):
         status_code=exc.status_code,
         content={"detail": exc.detail, "type": "authentication_error" if exc.status_code == 401 else "error"}
     )
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Graceful shutdown handler."""
+    global shutdown_in_progress
+    shutdown_in_progress = True
+    
+    logger.info("Shutting down Gateway gracefully...")
+    
+    # Wait for in-flight requests
+    logger.info("Waiting for in-flight requests to complete...")
+    await asyncio.sleep(5)
+    
+    logger.info("Gateway shutdown complete")
+
+
+def handle_sigterm(signum, frame):
+    """Handle SIGTERM for graceful shutdown."""
+    logger.info("Received SIGTERM signal, initiating graceful shutdown...")
+    raise KeyboardInterrupt
+
+
+# Register signal handlers
+signal.signal(signal.SIGTERM, handle_sigterm)
+signal.signal(signal.SIGINT, handle_sigterm)
 
 
 if __name__ == "__main__":
