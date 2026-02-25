@@ -1,0 +1,27 @@
+# Docker Compose
+.env
+docker-compose.override.yml
+
+# Application directories
+models/
+logs/
+init-scripts/
+
+# Data directories (volumes)
+data/
+storage/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+*.tmp
+*.log
