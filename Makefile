@@ -1,4 +1,4 @@
-.PHONY: help install download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-ui neo4j-logs
+.PHONY: help install download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status
 
 help:
 	@echo "MAX Serve + Llama 3.3 8B Infrastructure"
@@ -51,6 +51,16 @@ help:
 	@echo "  make datacollection-logs  - View data collection logs"
 	@echo "  make datacollection-test  - Run data collection tests"
 	@echo "  make datacollection-stats - Get collection statistics"
+	@echo ""
+	@echo "Learning Engine commands:"
+	@echo "  make learning         - Build and start learning engine"
+	@echo "  make learning-start   - Start learning engine"
+	@echo "  make learning-stop    - Stop learning engine"
+	@echo "  make learning-logs    - View learning engine logs"
+	@echo "  make learning-test    - Run learning engine tests"
+	@echo "  make learning-train   - Trigger training job"
+	@echo "  make learning-status  - Check training status"
+	@echo "  make learning-adapters- List all adapters"
 
 install:
 	pip install -r requirements.txt
@@ -221,3 +231,42 @@ datacollection-test:
 datacollection-stats:
 	@echo "Fetching collection statistics..."
 	@curl -s http://localhost:8002/stats | python -m json.tool || echo "Data collection service not responding"
+
+learning:
+	@echo "Building and starting learning engine..."
+	@docker compose build learning-engine
+	@docker compose up -d learning-engine postgres minio
+	@echo ""
+	@echo "Learning Engine started on http://localhost:8003"
+	@echo ""
+	@echo "Test with: make learning-test"
+	@echo "View logs: make learning-logs"
+
+learning-start:
+	@echo "Starting learning engine..."
+	@docker compose up -d learning-engine
+	@echo "Learning Engine started on http://localhost:8003"
+
+learning-stop:
+	@echo "Stopping learning engine..."
+	@docker compose stop learning-engine
+
+learning-logs:
+	@echo "Viewing learning engine logs..."
+	@docker compose logs -f learning-engine
+
+learning-test:
+	@echo "Running learning engine tests..."
+	@python test_learning_engine.py
+
+learning-train:
+	@echo "Triggering training job..."
+	@python learning_engine_cli.py train --days 7 --force
+
+learning-status:
+	@echo "Checking training status..."
+	@python learning_engine_cli.py status
+
+learning-adapters:
+	@echo "Listing adapters..."
+	@python learning_engine_cli.py list-adapters

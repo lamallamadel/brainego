@@ -172,7 +172,7 @@ services:
     networks:
       - ai-platform-net
     ports:
-      - "9000:9000"
+      - "9002:9002"
     volumes:
       - ./configs:/app/configs:ro
     environment:
@@ -196,7 +196,7 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:9002/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -453,6 +453,65 @@ services:
       data-collection:
         condition: service_healthy
     command: python worker_service.py
+
+  learning-engine:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: learning-engine
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "8003:8003"
+    volumes:
+      - ./models:/models
+      - ./configs:/app/configs:ro
+      - ./lora_adapters:/lora_adapters
+      - ./fisher_matrices:/fisher_matrices
+    environment:
+      - LEARNING_ENGINE_HOST=0.0.0.0
+      - LEARNING_ENGINE_PORT=8003
+      - BASE_MODEL_PATH=/models/llama-3.3-8b-instruct-q4_k_m.gguf
+      - MODEL_NAME=meta-llama/Llama-3.3-8B-Instruct
+      - LORA_RANK=16
+      - LORA_ALPHA=32
+      - LORA_DROPOUT=0.05
+      - EWC_LAMBDA=500.0
+      - BATCH_SIZE=4
+      - LEARNING_RATE=2e-4
+      - NUM_TRAIN_EPOCHS=3
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin123
+      - MINIO_BUCKET=lora-adapters
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=ai_platform
+      - POSTGRES_USER=ai_user
+      - POSTGRES_PASSWORD=ai_password
+      - AUTO_TRAIN_ENABLED=true
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: python learning_engine_service.py
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
 
 networks:
   ai-platform-net:

@@ -1,0 +1,54 @@
+# Learning Engine Configuration
+# Continuous learning with LoRA fine-tuning and EWC regularization
+
+model:
+  name: "meta-llama/Llama-3.3-8B-Instruct"
+  base_path: "/models/llama-3.3-8b-instruct-q4_k_m.gguf"
+
+lora:
+  rank: 16
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "v_proj"
+    - "k_proj"
+    - "o_proj"
+
+ewc:
+  lambda_min: 100.0
+  lambda_max: 1000.0
+  lambda_default: 500.0
+  description: "EWC regularization prevents catastrophic forgetting"
+
+training:
+  batch_size: 4
+  gradient_accumulation_steps: 4
+  learning_rate: 2.0e-4
+  num_train_epochs: 3
+  max_seq_length: 2048
+  warmup_steps: 10
+  min_samples: 100
+  description: "Training hyperparameters optimized for LoRA fine-tuning"
+
+storage:
+  endpoint: "minio:9000"
+  access_key: "minioadmin"
+  secret_key: "minioadmin123"
+  bucket: "lora-adapters"
+  secure: false
+
+scheduler:
+  enabled: true
+  cron: "0 2 * * 1"  # Every Monday at 2 AM
+  description: "Automatic weekly fine-tuning schedule"
+
+fisher:
+  num_samples: 1000
+  output_dir: "/fisher_matrices"
+  description: "Fisher Information Matrix calculation settings"
+
+versioning:
+  initial_version: "v1.0"
+  format: "vX.Y"
+  description: "Adapter version format (e.g., v1.0, v1.1, v2.0)"

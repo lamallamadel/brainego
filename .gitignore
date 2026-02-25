@@ -79,3 +79,10 @@ temp/
 dump.rdb
 celerybeat-schedule
 celerybeat.pid
+
+# Learning Engine
+lora_adapters/
+lora_checkpoints/
+fisher_matrices/
+*.tar.gz
+adapter_*.tar.gz
