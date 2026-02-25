@@ -181,3 +181,13 @@ etcd-backup/
 # Security - Secrets backups
 secrets-backup/
 *.secret.bak
+
+# Backup System
+backups/
+*.snapshot
+*.dump
+validation_report_*.txt
+incident_*.log
+incident_reports/
+validation_reports/
+dr_test_log.txt

@@ -801,6 +801,47 @@ services:
               count: all
               capabilities: [gpu, utility]
 
+  # Automated Backup Service
+  backup-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: backup-service
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./backups:/backups
+    environment:
+      - BACKUP_SCHEDULE=0 2 * * *
+      - BACKUP_RETENTION_DAYS=30
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin123
+      - BACKUP_BUCKET=backups
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - NEO4J_HOST=neo4j
+      - NEO4J_PORT=7687
+      - NEO4J_USER=neo4j
+      - NEO4J_PASSWORD=neo4j_password
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=ai_platform
+      - POSTGRES_USER=ai_user
+      - POSTGRES_PASSWORD=ai_password
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      neo4j:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    command: python backup_service.py
+
 networks:
   ai-platform-net:
     driver: bridge
