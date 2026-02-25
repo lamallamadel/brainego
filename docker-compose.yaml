@@ -513,6 +513,41 @@ services:
       retries: 3
       start_period: 30s
 
+  drift-monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: drift-monitor
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "8004:8004"
+    volumes:
+      - ./configs:/app/configs:ro
+    environment:
+      - DRIFT_MONITOR_HOST=0.0.0.0
+      - DRIFT_MONITOR_PORT=8004
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=ai_platform
+      - POSTGRES_USER=ai_user
+      - POSTGRES_PASSWORD=ai_password
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - LEARNING_ENGINE_URL=http://learning-engine:8003
+    depends_on:
+      postgres:
+        condition: service_healthy
+      learning-engine:
+        condition: service_healthy
+    command: python drift_monitor.py
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8004/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
 networks:
   ai-platform-net:
     driver: bridge

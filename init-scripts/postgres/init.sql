@@ -127,3 +127,41 @@ GRANT ALL PRIVILEGES ON SEQUENCE feedback_id_seq TO ai_user;
 GRANT SELECT ON model_accuracy_by_intent TO ai_user;
 GRANT EXECUTE ON FUNCTION get_weekly_finetuning_dataset TO ai_user;
 GRANT EXECUTE ON FUNCTION refresh_model_accuracy TO ai_user;
+
+-- Drift monitoring tables
+-- Create drift_metrics table for tracking drift detection results
+CREATE TABLE IF NOT EXISTS drift_metrics (
+    id SERIAL PRIMARY KEY,
+    kl_divergence FLOAT NOT NULL,
+    psi FLOAT NOT NULL,
+    baseline_accuracy FLOAT NOT NULL,
+    current_accuracy FLOAT NOT NULL,
+    drift_detected BOOLEAN NOT NULL,
+    severity VARCHAR(20),
+    timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for drift_metrics
+CREATE INDEX IF NOT EXISTS idx_drift_metrics_timestamp ON drift_metrics(timestamp);
+CREATE INDEX IF NOT EXISTS idx_drift_metrics_drift_detected ON drift_metrics(drift_detected);
+CREATE INDEX IF NOT EXISTS idx_drift_metrics_severity ON drift_metrics(severity);
+
+-- Create finetuning_triggers table for tracking automatic fine-tuning triggers
+CREATE TABLE IF NOT EXISTS finetuning_triggers (
+    id SERIAL PRIMARY KEY,
+    job_id VARCHAR(255),
+    drift_metrics JSONB,
+    trigger_timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create indexes for finetuning_triggers
+CREATE INDEX IF NOT EXISTS idx_finetuning_triggers_timestamp ON finetuning_triggers(trigger_timestamp);
+CREATE INDEX IF NOT EXISTS idx_finetuning_triggers_job_id ON finetuning_triggers(job_id);
+
+-- Grant permissions to ai_user for drift monitoring tables
+GRANT ALL PRIVILEGES ON TABLE drift_metrics TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE drift_metrics_id_seq TO ai_user;
+GRANT ALL PRIVILEGES ON TABLE finetuning_triggers TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE finetuning_triggers_id_seq TO ai_user;

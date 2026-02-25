@@ -1,0 +1,82 @@
+# Drift Monitor Configuration
+# Detects model drift using KL Divergence and PSI metrics
+
+service:
+  host: "0.0.0.0"
+  port: 8004
+
+# Drift detection thresholds
+thresholds:
+  kl_threshold: 0.1         # KL Divergence threshold for embedding distributions
+  psi_threshold: 0.2        # Population Stability Index threshold for intent distributions
+  accuracy_min: 0.75        # Minimum acceptable accuracy (75%)
+
+# Monitoring windows
+monitoring:
+  sliding_window_days: 7    # 7-day sliding window for comparison
+  check_interval_hours: 6   # Run drift checks every 6 hours
+  min_samples: 100          # Minimum samples required for drift detection
+
+# Embedding analysis
+embeddings:
+  model: "sentence-transformers/all-MiniLM-L6-v2"
+  batch_size: 32
+  dimension: 384            # Embedding dimension for MiniLM
+
+# Intent distribution tracking
+intents:
+  categories:
+    - "code"
+    - "reasoning"
+    - "general"
+    - "debug"
+    - "documentation"
+  min_samples_per_intent: 10
+
+# Alerting configuration
+alerts:
+  enabled: true
+  
+  # Slack alerting
+  slack:
+    enabled: true
+    webhook_url: "${SLACK_WEBHOOK_URL}"
+    channel: "#drift-alerts"
+    mention_users: []       # List of user IDs to mention on critical alerts
+  
+  # Alert severity levels
+  severity:
+    critical:               # Triggers immediate alert and fine-tuning
+      kl_multiplier: 2.0    # 2x threshold
+      psi_multiplier: 2.0
+      accuracy_delta: 0.15  # 15% drop
+    
+    warning:                # Triggers warning alert
+      kl_multiplier: 1.5    # 1.5x threshold
+      psi_multiplier: 1.5
+      accuracy_delta: 0.10  # 10% drop
+    
+    info:                   # Informational only
+      kl_multiplier: 1.0    # At threshold
+      psi_multiplier: 1.0
+      accuracy_delta: 0.05  # 5% drop
+
+# Fine-tuning trigger
+fine_tuning:
+  auto_trigger: true
+  learning_engine_url: "http://learning-engine:8003"
+  min_drift_score: 0.3      # Combined drift score threshold
+  cooldown_hours: 168       # Wait 7 days between auto-triggered fine-tuning
+
+# Database configuration
+database:
+  host: "postgres"
+  port: 5432
+  name: "ai_platform"
+  user: "ai_user"
+  password: "ai_password"
+
+# Drift metrics storage
+storage:
+  retention_days: 90        # Keep drift metrics for 90 days
+  aggregate_daily: true     # Aggregate old metrics daily
