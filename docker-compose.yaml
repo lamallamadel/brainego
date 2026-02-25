@@ -548,6 +548,62 @@ services:
       retries: 3
       start_period: 30s
 
+  maml-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: maml-service
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "8005:8005"
+    volumes:
+      - ./models:/models
+      - ./configs:/app/configs:ro
+    environment:
+      - MAML_SERVICE_HOST=0.0.0.0
+      - MAML_SERVICE_PORT=8005
+      - MODEL_NAME=meta-llama/Llama-3.3-8B-Instruct
+      - LORA_RANK=16
+      - LORA_ALPHA=32
+      - LORA_DROPOUT=0.05
+      - MAML_INNER_LR=1e-3
+      - MAML_OUTER_LR=1e-4
+      - MAML_INNER_STEPS=5
+      - MAML_OUTER_STEPS=100
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin123
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=ai_platform
+      - POSTGRES_USER=ai_user
+      - POSTGRES_PASSWORD=ai_password
+      - MAML_SCHEDULE_ENABLED=true
+      - MAML_CRON_SCHEDULE=0 2 1 * *
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=0
+    depends_on:
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    command: python maml_service.py
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8005/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
 networks:
   ai-platform-net:
     driver: bridge

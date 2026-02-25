@@ -86,3 +86,9 @@ lora_checkpoints/
 fisher_matrices/
 *.tar.gz
 adapter_*.tar.gz
+
+# MAML Meta-Learning
+meta_weights/
+maml_checkpoints/
+meta_weights_*.pt
+maml_*.pt
