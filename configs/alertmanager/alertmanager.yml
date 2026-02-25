@@ -1,0 +1,183 @@
+global:
+  resolve_timeout: 5m
+  slack_api_url: '${SLACK_WEBHOOK_URL}'
+
+# Templates for notifications
+templates:
+  - '/etc/alertmanager/templates/*.tmpl'
+
+# Route tree for alerts
+route:
+  receiver: 'slack-default'
+  group_by: ['alertname', 'cluster', 'component']
+  group_wait: 10s
+  group_interval: 5m
+  repeat_interval: 4h
+  
+  routes:
+    # Critical alerts - immediate notification
+    - match:
+        severity: critical
+      receiver: 'slack-critical'
+      group_wait: 5s
+      repeat_interval: 30m
+    
+    # GPU alerts
+    - match:
+        component: gpu
+      receiver: 'slack-gpu'
+      group_wait: 30s
+      repeat_interval: 1h
+    
+    # Drift alerts
+    - match:
+        component: drift-monitor
+      receiver: 'slack-drift'
+      group_wait: 10s
+      repeat_interval: 2h
+    
+    # Budget alerts
+    - match:
+        component: memory-budget
+      receiver: 'slack-budget'
+      group_wait: 10s
+      repeat_interval: 1h
+    
+    # Infrastructure alerts
+    - match:
+        component: infrastructure
+      receiver: 'slack-infrastructure'
+      group_wait: 30s
+      repeat_interval: 30m
+
+# Inhibition rules (suppress alerts)
+inhibit_rules:
+  # If service is down, inhibit all other alerts for that service
+  - source_match:
+      alertname: 'ServiceDown'
+    target_match:
+      component: 'api'
+    equal: ['job']
+  
+  # If critical alert is firing, inhibit warning alerts
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'job']
+
+# Receivers for different alert types
+receivers:
+  # Default receiver
+  - name: 'slack-default'
+    slack_configs:
+      - channel: '#ai-platform-alerts'
+        title: '{{ .GroupLabels.alertname }}'
+        text: |
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Severity:* {{ .CommonLabels.severity }}
+          *Component:* {{ .CommonLabels.component }}
+          *Summary:* {{ .CommonAnnotations.summary }}
+          *Description:* {{ .CommonAnnotations.description }}
+          
+          *Details:*
+          {{ range .Alerts }}
+            • {{ .Labels.job }}: {{ .Annotations.description }}
+          {{ end }}
+        send_resolved: true
+        color: '{{ if eq .Status "firing" }}danger{{ else }}good{{ end }}'
+  
+  # Critical alerts
+  - name: 'slack-critical'
+    slack_configs:
+      - channel: '#ai-platform-critical'
+        title: '🚨 CRITICAL: {{ .GroupLabels.alertname }}'
+        text: |
+          *CRITICAL ALERT*
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Component:* {{ .CommonLabels.component }}
+          *Summary:* {{ .CommonAnnotations.summary }}
+          *Description:* {{ .CommonAnnotations.description }}
+          
+          @channel - Immediate attention required!
+          
+          *Affected Services:*
+          {{ range .Alerts }}
+            • {{ .Labels.job }}: {{ .Annotations.description }}
+          {{ end }}
+        send_resolved: true
+        color: 'danger'
+  
+  # GPU alerts
+  - name: 'slack-gpu'
+    slack_configs:
+      - channel: '#ai-platform-gpu'
+        title: '🖥️ GPU Alert: {{ .GroupLabels.alertname }}'
+        text: |
+          *GPU Alert*
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Severity:* {{ .CommonLabels.severity }}
+          *Summary:* {{ .CommonAnnotations.summary }}
+          
+          *GPU Status:*
+          {{ range .Alerts }}
+            • {{ .Labels.gpu }}: {{ .Annotations.description }}
+          {{ end }}
+        send_resolved: true
+        color: '{{ if eq .CommonLabels.severity "critical" }}danger{{ else }}warning{{ end }}'
+  
+  # Drift alerts
+  - name: 'slack-drift'
+    slack_configs:
+      - channel: '#ai-platform-drift'
+        title: '📊 Drift Alert: {{ .GroupLabels.alertname }}'
+        text: |
+          *Model Drift Detected*
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Severity:* {{ .CommonLabels.severity }}
+          *Summary:* {{ .CommonAnnotations.summary }}
+          *Description:* {{ .CommonAnnotations.description }}
+          
+          *Action Required:* Review model performance and consider retraining.
+          
+          {{ range .Alerts }}
+            • {{ .Annotations.description }}
+          {{ end }}
+        send_resolved: true
+        color: 'warning'
+  
+  # Budget alerts
+  - name: 'slack-budget'
+    slack_configs:
+      - channel: '#ai-platform-budget'
+        title: '💰 Budget Alert: {{ .GroupLabels.alertname }}'
+        text: |
+          *Memory Budget Alert*
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Severity:* {{ .CommonLabels.severity }}
+          *Summary:* {{ .CommonAnnotations.summary }}
+          
+          *Budget Status:*
+          {{ range .Alerts }}
+            • {{ .Labels.session_id }}: {{ .Annotations.description }}
+          {{ end }}
+        send_resolved: true
+        color: '{{ if eq .CommonLabels.severity "critical" }}danger{{ else }}warning{{ end }}'
+  
+  # Infrastructure alerts
+  - name: 'slack-infrastructure'
+    slack_configs:
+      - channel: '#ai-platform-infra'
+        title: '🔧 Infrastructure Alert: {{ .GroupLabels.alertname }}'
+        text: |
+          *Infrastructure Alert*
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Severity:* {{ .CommonLabels.severity }}
+          *Summary:* {{ .CommonAnnotations.summary }}
+          
+          *Affected Services:*
+          {{ range .Alerts }}
+            • {{ .Labels.job }}: {{ .Annotations.description }}
+          {{ end }}
+        send_resolved: true
+        color: 'danger'

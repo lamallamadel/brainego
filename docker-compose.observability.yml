@@ -1,0 +1,41 @@
+# Docker Compose Override for Observability Stack
+# Use with: docker-compose -f docker-compose.yml -f docker-compose.observability.yml up -d
+
+version: '3.8'
+
+services:
+  # Ensure all services have metrics endpoints exposed
+  gateway:
+    environment:
+      - ENABLE_METRICS=true
+      - METRICS_PORT=9002
+
+  mcpjungle-gateway:
+    environment:
+      - ENABLE_METRICS=true
+      - METRICS_PORT=9100
+
+  api-server:
+    environment:
+      - ENABLE_METRICS=true
+      - METRICS_PORT=8000
+
+  learning-engine:
+    environment:
+      - ENABLE_METRICS=true
+      - METRICS_PORT=8003
+
+  drift-monitor:
+    environment:
+      - ENABLE_METRICS=true
+      - METRICS_PORT=8004
+
+  data-collection:
+    environment:
+      - ENABLE_METRICS=true
+      - METRICS_PORT=8002
+
+  maml-service:
+    environment:
+      - ENABLE_METRICS=true
+      - METRICS_PORT=8005

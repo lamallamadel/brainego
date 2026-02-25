@@ -96,6 +96,12 @@ maml_*.pt
 # Grafana
 grafana-data/
 
+# Observability Stack
+loki-data/
+alertmanager-data/
+prometheus-data/
+promtail-positions/
+
 # Prometheus
 prometheus-data/
 

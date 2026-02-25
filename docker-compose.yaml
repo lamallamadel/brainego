@@ -651,12 +651,155 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      loki:
+        condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "-q", "--spider", "http://localhost:3000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 20s
+
+  # OpenTelemetry Collector for distributed tracing
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.91.0
+    container_name: otel-collector
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+      - "8888:8888"   # Prometheus metrics
+      - "8889:8889"   # Prometheus exporter
+      - "13133:13133" # Health check
+      - "55679:55679" # zpages
+    volumes:
+      - ./configs/otel-collector:/etc/otelcol
+    command: ["--config=/etc/otelcol/otel-collector.yaml"]
+    depends_on:
+      jaeger:
+        condition: service_started
+      loki:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:13133"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Loki for log aggregation (90-day retention)
+  loki:
+    image: grafana/loki:2.9.3
+    container_name: loki
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "3100:3100"
+    volumes:
+      - ./configs/loki:/etc/loki
+      - loki-data:/loki
+    command: -config.file=/etc/loki/loki.yaml
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:3100/ready"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # Promtail for log collection
+  promtail:
+    image: grafana/promtail:2.9.3
+    container_name: promtail
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "9080:9080"
+    volumes:
+      - ./configs/promtail:/etc/promtail
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    command: -config.file=/etc/promtail/promtail.yaml
+    depends_on:
+      loki:
+        condition: service_healthy
+
+  # AlertManager for alert routing and Slack webhooks
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: alertmanager
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "9093:9093"
+    volumes:
+      - ./configs/alertmanager:/etc/alertmanager
+      - alertmanager-data:/alertmanager
+    environment:
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+    command:
+      - '--config.file=/etc/alertmanager/alertmanager.yml'
+      - '--storage.path=/alertmanager'
+      - '--web.external-url=http://localhost:9093'
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Redis Exporter for Prometheus
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.55.0
+    container_name: redis-exporter
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "9121:9121"
+    environment:
+      - REDIS_ADDR=redis:6379
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # PostgreSQL Exporter for Prometheus
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.15.0
+    container_name: postgres-exporter
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "9187:9187"
+    environment:
+      - DATA_SOURCE_NAME=postgresql://ai_user:ai_password@postgres:5432/ai_platform?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  # NVIDIA GPU Exporter for Prometheus
+  nvidia-gpu-exporter:
+    image: utkuozdemir/nvidia_gpu_exporter:1.2.0
+    container_name: nvidia-gpu-exporter
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "9835:9835"
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu, utility]
 
 networks:
   ai-platform-net:
@@ -685,4 +828,8 @@ volumes:
   prometheus-data:
     driver: local
   grafana-data:
+    driver: local
+  loki-data:
+    driver: local
+  alertmanager-data:
     driver: local

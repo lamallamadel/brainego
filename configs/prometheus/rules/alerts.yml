@@ -1,0 +1,249 @@
+groups:
+  - name: latency_alerts
+    interval: 30s
+    rules:
+      # Gateway latency > 2s
+      - alert: HighGatewayLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="gateway"}[5m])) > 2
+        for: 2m
+        labels:
+          severity: warning
+          component: gateway
+        annotations:
+          summary: "High gateway latency detected"
+          description: "Gateway P95 latency is {{ $value }}s (threshold: 2s)"
+
+      # MCPJungle Gateway latency > 2s
+      - alert: HighMCPJungleLatency
+        expr: histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="mcpjungle-gateway"}[5m])) > 2
+        for: 2m
+        labels:
+          severity: warning
+          component: mcpjungle
+        annotations:
+          summary: "High MCPJungle gateway latency detected"
+          description: "MCPJungle P95 latency is {{ $value }}s (threshold: 2s)"
+
+      # MAX Serve latency > 2s
+      - alert: HighMaxServeLatency
+        expr: histogram_quantile(0.95, rate(inference_duration_seconds_bucket{job=~"max-serve-.*"}[5m])) > 2
+        for: 2m
+        labels:
+          severity: warning
+          component: max-serve
+        annotations:
+          summary: "High MAX Serve inference latency"
+          description: "MAX Serve {{ $labels.job }} P95 latency is {{ $value }}s (threshold: 2s)"
+
+      # Memory Engine latency > 2s
+      - alert: HighMemoryEngineLatency
+        expr: histogram_quantile(0.95, rate(memory_operation_duration_seconds_bucket{job="memory-service"}[5m])) > 2
+        for: 2m
+        labels:
+          severity: warning
+          component: memory-engine
+        annotations:
+          summary: "High Memory Engine latency"
+          description: "Memory Engine P95 latency is {{ $value }}s (threshold: 2s)"
+
+  - name: error_rate_alerts
+    interval: 30s
+    rules:
+      # Error rate > 1%
+      - alert: HighErrorRate
+        expr: |
+          (
+            rate(http_requests_total{status=~"5.."}[5m]) /
+            rate(http_requests_total[5m])
+          ) * 100 > 1
+        for: 2m
+        labels:
+          severity: critical
+          component: api
+        annotations:
+          summary: "High error rate detected"
+          description: "{{ $labels.job }} error rate is {{ $value }}% (threshold: 1%)"
+
+      # MAX Serve error rate > 1%
+      - alert: HighMaxServeErrorRate
+        expr: |
+          (
+            rate(inference_requests_total{status="error"}[5m]) /
+            rate(inference_requests_total[5m])
+          ) * 100 > 1
+        for: 2m
+        labels:
+          severity: critical
+          component: max-serve
+        annotations:
+          summary: "High MAX Serve error rate"
+          description: "{{ $labels.job }} error rate is {{ $value }}% (threshold: 1%)"
+
+      # MCP error rate > 1%
+      - alert: HighMCPErrorRate
+        expr: |
+          (
+            rate(mcp_requests_total{status="error"}[5m]) /
+            rate(mcp_requests_total[5m])
+          ) * 100 > 1
+        for: 2m
+        labels:
+          severity: critical
+          component: mcp
+        annotations:
+          summary: "High MCP error rate"
+          description: "MCP error rate is {{ $value }}% (threshold: 1%)"
+
+  - name: gpu_alerts
+    interval: 30s
+    rules:
+      # GPU utilization > 90%
+      - alert: HighGPUUtilization
+        expr: nvidia_gpu_duty_cycle > 90
+        for: 5m
+        labels:
+          severity: warning
+          component: gpu
+        annotations:
+          summary: "High GPU utilization"
+          description: "GPU {{ $labels.gpu }} utilization is {{ $value }}% (threshold: 90%)"
+
+      # GPU memory > 90%
+      - alert: HighGPUMemory
+        expr: (nvidia_gpu_memory_used_bytes / nvidia_gpu_memory_total_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          component: gpu
+        annotations:
+          summary: "High GPU memory usage"
+          description: "GPU {{ $labels.gpu }} memory is {{ $value }}% (threshold: 90%)"
+
+      # GPU temperature > 85C
+      - alert: HighGPUTemperature
+        expr: nvidia_gpu_temperature_celsius > 85
+        for: 5m
+        labels:
+          severity: critical
+          component: gpu
+        annotations:
+          summary: "High GPU temperature"
+          description: "GPU {{ $labels.gpu }} temperature is {{ $value }}°C (threshold: 85°C)"
+
+  - name: drift_alerts
+    interval: 30s
+    rules:
+      # Drift detected
+      - alert: DriftDetected
+        expr: drift_score > 0.15
+        for: 1m
+        labels:
+          severity: warning
+          component: drift-monitor
+        annotations:
+          summary: "Model drift detected"
+          description: "Drift score is {{ $value }} (threshold: 0.15)"
+
+      # High drift score
+      - alert: HighDriftScore
+        expr: drift_score > 0.25
+        for: 1m
+        labels:
+          severity: critical
+          component: drift-monitor
+        annotations:
+          summary: "High model drift detected"
+          description: "Drift score is {{ $value }} (threshold: 0.25) - immediate action required"
+
+  - name: budget_alerts
+    interval: 30s
+    rules:
+      # Budget exceeded
+      - alert: BudgetExceeded
+        expr: memory_budget_used_bytes > memory_budget_total_bytes
+        for: 1m
+        labels:
+          severity: critical
+          component: memory-budget
+        annotations:
+          summary: "Memory budget exceeded"
+          description: "Memory budget exceeded for {{ $labels.session_id }}"
+
+      # Budget warning (>80%)
+      - alert: BudgetWarning
+        expr: (memory_budget_used_bytes / memory_budget_total_bytes) * 100 > 80
+        for: 5m
+        labels:
+          severity: warning
+          component: memory-budget
+        annotations:
+          summary: "Memory budget warning"
+          description: "Memory budget is {{ $value }}% for {{ $labels.session_id }} (threshold: 80%)"
+
+  - name: service_health_alerts
+    interval: 30s
+    rules:
+      # Service down
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Service is down"
+          description: "{{ $labels.job }} has been down for more than 2 minutes"
+
+      # High request queue depth
+      - alert: HighRequestQueueDepth
+        expr: request_queue_depth > 100
+        for: 5m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "High request queue depth"
+          description: "{{ $labels.job }} queue depth is {{ $value }} (threshold: 100)"
+
+  - name: database_alerts
+    interval: 30s
+    rules:
+      # PostgreSQL connection pool exhausted
+      - alert: PostgreSQLPoolExhausted
+        expr: pg_stat_activity_count > 90
+        for: 5m
+        labels:
+          severity: critical
+          component: postgres
+        annotations:
+          summary: "PostgreSQL connection pool exhausted"
+          description: "PostgreSQL has {{ $value }} active connections (threshold: 90)"
+
+      # Redis memory high
+      - alert: RedisMemoryHigh
+        expr: (redis_memory_used_bytes / redis_memory_max_bytes) * 100 > 90
+        for: 5m
+        labels:
+          severity: warning
+          component: redis
+        annotations:
+          summary: "Redis memory usage high"
+          description: "Redis memory usage is {{ $value }}% (threshold: 90%)"
+
+  - name: tracing_alerts
+    interval: 30s
+    rules:
+      # High trace error rate
+      - alert: HighTraceErrorRate
+        expr: |
+          (
+            rate(otelcol_processor_spans_dropped_total[5m]) /
+            rate(otelcol_processor_spans_received_total[5m])
+          ) * 100 > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: tracing
+        annotations:
+          summary: "High trace drop rate"
+          description: "OpenTelemetry Collector is dropping {{ $value }}% of spans (threshold: 5%)"
