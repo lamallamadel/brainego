@@ -1,0 +1,175 @@
+{{- if and .Values.maxServeLlama.enabled .Values.maxServeLlama.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: max-serve-llama-pdb
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-llama
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  {{- if .Values.maxServeLlama.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ .Values.maxServeLlama.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  {{- if .Values.maxServeLlama.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.maxServeLlama.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: max-serve-llama
+{{- end }}
+---
+{{- if and .Values.maxServeQwen.enabled .Values.maxServeQwen.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: max-serve-qwen-pdb
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-qwen
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  {{- if .Values.maxServeQwen.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ .Values.maxServeQwen.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  {{- if .Values.maxServeQwen.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.maxServeQwen.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: max-serve-qwen
+{{- end }}
+---
+{{- if and .Values.maxServeDeepseek.enabled .Values.maxServeDeepseek.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: max-serve-deepseek-pdb
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-deepseek
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  {{- if .Values.maxServeDeepseek.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ .Values.maxServeDeepseek.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  {{- if .Values.maxServeDeepseek.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.maxServeDeepseek.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: max-serve-deepseek
+{{- end }}
+---
+{{- if and .Values.agentRouter.enabled .Values.agentRouter.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: agent-router-pdb
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: agent-router
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  {{- if .Values.agentRouter.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ .Values.agentRouter.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  {{- if .Values.agentRouter.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.agentRouter.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agent-router
+{{- end }}
+---
+{{- if and .Values.gateway.enabled .Values.gateway.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: gateway-pdb
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/component: api
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  {{- if .Values.gateway.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ .Values.gateway.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  {{- if .Values.gateway.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.gateway.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+{{- end }}
+---
+{{- if and .Values.postgres.enabled .Values.postgres.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: postgres-pdb
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: postgres
+    app.kubernetes.io/component: database
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  {{- if .Values.postgres.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ .Values.postgres.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  {{- if .Values.postgres.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.postgres.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+{{- end }}
+---
+{{- if and .Values.redis.enabled .Values.redis.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: redis-pdb
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: redis
+    app.kubernetes.io/component: cache
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  {{- if .Values.redis.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ .Values.redis.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  {{- if .Values.redis.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.redis.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redis
+{{- end }}
+---
+{{- if and .Values.qdrant.enabled .Values.qdrant.podDisruptionBudget.enabled -}}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: qdrant-pdb
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: qdrant
+    app.kubernetes.io/component: database
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  {{- if .Values.qdrant.podDisruptionBudget.minAvailable }}
+  minAvailable: {{ .Values.qdrant.podDisruptionBudget.minAvailable }}
+  {{- end }}
+  {{- if .Values.qdrant.podDisruptionBudget.maxUnavailable }}
+  maxUnavailable: {{ .Values.qdrant.podDisruptionBudget.maxUnavailable }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: qdrant
+{{- end }}

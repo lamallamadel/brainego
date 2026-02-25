@@ -46,6 +46,10 @@ spec:
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
       {{- end }}
+      {{- if .Values.agentRouter.affinity }}
+      affinity:
+        {{- toYaml .Values.agentRouter.affinity | nindent 8 }}
+      {{- end }}
       containers:
         - name: agent-router
           image: "{{ .Values.agentRouter.image.repository }}:{{ .Values.agentRouter.image.tag }}"

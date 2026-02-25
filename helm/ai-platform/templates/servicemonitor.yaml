@@ -1,0 +1,59 @@
+{{- if and .Values.maxServeLlama.enabled .Values.maxServeLlama.autoscaling.enabled .Values.maxServeLlama.autoscaling.customMetrics.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: max-serve-llama
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-llama
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: max-serve-llama
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+{{- end }}
+---
+{{- if and .Values.maxServeQwen.enabled .Values.maxServeQwen.autoscaling.enabled .Values.maxServeQwen.autoscaling.customMetrics.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: max-serve-qwen
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-qwen
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: max-serve-qwen
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+{{- end }}
+---
+{{- if and .Values.maxServeDeepseek.enabled .Values.maxServeDeepseek.autoscaling.enabled .Values.maxServeDeepseek.autoscaling.customMetrics.enabled -}}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: max-serve-deepseek
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-deepseek
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: max-serve-deepseek
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: 30s
+{{- end }}

@@ -1,0 +1,167 @@
+{{- if and .Values.maxServeLlama.enabled .Values.maxServeLlama.autoscaling.enabled -}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: max-serve-llama-hpa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-llama
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: max-serve-llama
+  minReplicas: {{ .Values.maxServeLlama.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.maxServeLlama.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.maxServeLlama.autoscaling.targetCPUUtilizationPercentage }}
+    {{- if .Values.maxServeLlama.autoscaling.customMetrics.enabled }}
+    - type: Pods
+      pods:
+        metric:
+          name: inference_queue_depth
+        target:
+          type: AverageValue
+          averageValue: "{{ .Values.maxServeLlama.autoscaling.customMetrics.inferenceQueueDepthThreshold }}"
+    {{- end }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.maxServeLlama.autoscaling.scaleDownStabilizationWindowSeconds | default 300 }}
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: {{ .Values.maxServeLlama.autoscaling.scaleUpStabilizationWindowSeconds | default 60 }}
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+      selectPolicy: Max
+{{- end }}
+---
+{{- if and .Values.maxServeQwen.enabled .Values.maxServeQwen.autoscaling.enabled -}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: max-serve-qwen-hpa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-qwen
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: max-serve-qwen
+  minReplicas: {{ .Values.maxServeQwen.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.maxServeQwen.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.maxServeQwen.autoscaling.targetCPUUtilizationPercentage }}
+    {{- if .Values.maxServeQwen.autoscaling.customMetrics.enabled }}
+    - type: Pods
+      pods:
+        metric:
+          name: inference_queue_depth
+        target:
+          type: AverageValue
+          averageValue: "{{ .Values.maxServeQwen.autoscaling.customMetrics.inferenceQueueDepthThreshold }}"
+    {{- end }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.maxServeQwen.autoscaling.scaleDownStabilizationWindowSeconds | default 300 }}
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: {{ .Values.maxServeQwen.autoscaling.scaleUpStabilizationWindowSeconds | default 60 }}
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+      selectPolicy: Max
+{{- end }}
+---
+{{- if and .Values.maxServeDeepseek.enabled .Values.maxServeDeepseek.autoscaling.enabled -}}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: max-serve-deepseek-hpa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: max-serve-deepseek
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: max-serve-deepseek
+  minReplicas: {{ .Values.maxServeDeepseek.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.maxServeDeepseek.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.maxServeDeepseek.autoscaling.targetCPUUtilizationPercentage }}
+    {{- if .Values.maxServeDeepseek.autoscaling.customMetrics.enabled }}
+    - type: Pods
+      pods:
+        metric:
+          name: inference_queue_depth
+        target:
+          type: AverageValue
+          averageValue: "{{ .Values.maxServeDeepseek.autoscaling.customMetrics.inferenceQueueDepthThreshold }}"
+    {{- end }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: {{ .Values.maxServeDeepseek.autoscaling.scaleDownStabilizationWindowSeconds | default 300 }}
+      policies:
+        - type: Percent
+          value: 50
+          periodSeconds: 60
+        - type: Pods
+          value: 1
+          periodSeconds: 60
+      selectPolicy: Min
+    scaleUp:
+      stabilizationWindowSeconds: {{ .Values.maxServeDeepseek.autoscaling.scaleUpStabilizationWindowSeconds | default 60 }}
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 2
+          periodSeconds: 30
+      selectPolicy: Max
+{{- end }}

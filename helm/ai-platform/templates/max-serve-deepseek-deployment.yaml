@@ -37,10 +37,18 @@ spec:
       labels:
         app.kubernetes.io/name: max-serve-deepseek
         app.kubernetes.io/component: inference
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.maxServeDeepseek.service.targetPort }}"
+        prometheus.io/path: "/metrics"
     spec:
       {{- with .Values.imagePullSecrets }}
       imagePullSecrets:
         {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.maxServeDeepseek.affinity }}
+      affinity:
+        {{- toYaml .Values.maxServeDeepseek.affinity | nindent 8 }}
       {{- end }}
       containers:
         - name: max-serve-deepseek

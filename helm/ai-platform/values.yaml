@@ -33,6 +33,31 @@ maxServeLlama:
       nvidia.com/gpu: 1
       memory: 8Gi
       cpu: 4
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+    scaleUpStabilizationWindowSeconds: 60
+    scaleDownStabilizationWindowSeconds: 300
+    customMetrics:
+      enabled: true
+      inferenceQueueDepthThreshold: 10
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - max-serve-llama
+            topologyKey: kubernetes.io/hostname
   env:
     - name: NVIDIA_VISIBLE_DEVICES
       value: "all"
@@ -108,6 +133,31 @@ maxServeQwen:
       nvidia.com/gpu: 1
       memory: 8Gi
       cpu: 4
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+    scaleUpStabilizationWindowSeconds: 60
+    scaleDownStabilizationWindowSeconds: 300
+    customMetrics:
+      enabled: true
+      inferenceQueueDepthThreshold: 10
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - max-serve-qwen
+            topologyKey: kubernetes.io/hostname
   env:
     - name: NVIDIA_VISIBLE_DEVICES
       value: "all"
@@ -183,6 +233,31 @@ maxServeDeepseek:
       nvidia.com/gpu: 1
       memory: 8Gi
       cpu: 4
+  autoscaling:
+    enabled: true
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 70
+    scaleUpStabilizationWindowSeconds: 60
+    scaleDownStabilizationWindowSeconds: 300
+    customMetrics:
+      enabled: true
+      inferenceQueueDepthThreshold: 10
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - max-serve-deepseek
+            topologyKey: kubernetes.io/hostname
   env:
     - name: NVIDIA_VISIBLE_DEVICES
       value: "all"
@@ -257,6 +332,21 @@ agentRouter:
     requests:
       memory: 2Gi
       cpu: 1
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - agent-router
+            topologyKey: kubernetes.io/hostname
   env:
     - name: AGENT_ROUTER_CONFIG
       value: /app/configs/agent-router.yaml
@@ -328,6 +418,21 @@ gateway:
     requests:
       memory: 1Gi
       cpu: 500m
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - gateway
+            topologyKey: kubernetes.io/hostname
   env:
     - name: AGENT_ROUTER_CONFIG
       value: /app/configs/agent-router.yaml
@@ -590,6 +695,9 @@ qdrant:
     requests:
       memory: 4Gi
       cpu: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
   env:
     - name: QDRANT__SERVICE__GRPC_PORT
       value: "6334"
@@ -631,6 +739,9 @@ redis:
     requests:
       memory: 2Gi
       cpu: 1
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
   args:
     - redis-server
     - --appendonly
@@ -679,6 +790,9 @@ postgres:
     requests:
       memory: 2Gi
       cpu: 1
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
   env:
     - name: POSTGRES_DB
       value: ai_platform
