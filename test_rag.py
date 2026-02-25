@@ -136,6 +136,107 @@ def test_rag_stats():
     print(f"  Status: {info.get('status', 'unknown')}")
 
 
+def test_rag_query():
+    """Test RAG query endpoint."""
+    print("\nTesting RAG query endpoint...")
+    
+    response = httpx.post(
+        f"{API_BASE_URL}/v1/rag/query",
+        json={
+            "query": "What is a test document?",
+            "k": 3,
+            "temperature": 0.7,
+            "include_context": True
+        },
+        timeout=120.0
+    )
+    
+    assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+    data = response.json()
+    
+    assert "id" in data
+    assert "query" in data
+    assert "response" in data
+    assert "retrieval_stats" in data
+    assert "usage" in data
+    
+    stats = data["retrieval_stats"]
+    assert "chunks_retrieved" in stats
+    assert "retrieval_time_ms" in stats
+    assert "generation_time_ms" in stats
+    assert "total_time_ms" in stats
+    
+    usage = data["usage"]
+    assert "prompt_tokens" in usage
+    assert "completion_tokens" in usage
+    assert "total_tokens" in usage
+    
+    print(f"✓ RAG query successful!")
+    print(f"  Query: {data['query']}")
+    print(f"  Chunks retrieved: {stats['chunks_retrieved']}")
+    print(f"  Response length: {len(data['response'])} chars")
+    print(f"  Retrieval time: {stats['retrieval_time_ms']:.2f}ms")
+    print(f"  Generation time: {stats['generation_time_ms']:.2f}ms")
+    print(f"  Total time: {stats['total_time_ms']:.2f}ms")
+    
+    if stats.get('top_score'):
+        print(f"  Top score: {stats['top_score']:.4f}")
+    
+    if data.get('context'):
+        print(f"  Context chunks included: {len(data['context'])}")
+
+
+def test_rag_query_with_filters():
+    """Test RAG query with metadata filtering."""
+    print("\nTesting RAG query with metadata filters...")
+    
+    response = httpx.post(
+        f"{API_BASE_URL}/v1/rag/query",
+        json={
+            "query": "test document batch",
+            "k": 5,
+            "filters": {"batch": "test_batch"},
+            "temperature": 0.6,
+            "include_context": True
+        },
+        timeout=120.0
+    )
+    
+    assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+    data = response.json()
+    
+    assert "response" in data
+    assert "retrieval_stats" in data
+    
+    stats = data["retrieval_stats"]
+    print(f"✓ Filtered RAG query successful!")
+    print(f"  Chunks retrieved: {stats['chunks_retrieved']}")
+    print(f"  Total time: {stats['total_time_ms']:.2f}ms")
+
+
+def test_rag_query_top_k_variations():
+    """Test RAG query with different top-k values."""
+    print("\nTesting RAG query with different top-k values...")
+    
+    for k in [1, 3, 5]:
+        response = httpx.post(
+            f"{API_BASE_URL}/v1/rag/query",
+            json={
+                "query": "test document",
+                "k": k,
+                "temperature": 0.7,
+                "include_context": False
+            },
+            timeout=120.0
+        )
+        
+        assert response.status_code == 200, f"Expected 200, got {response.status_code}"
+        data = response.json()
+        
+        stats = data["retrieval_stats"]
+        print(f"  k={k}: {stats['chunks_retrieved']} chunks, {stats['total_time_ms']:.2f}ms")
+
+
 def test_rag_delete(document_id: str):
     """Test document deletion."""
     print(f"\nTesting RAG delete for document {document_id}...")
@@ -174,6 +275,9 @@ def main():
         test_rag_batch_ingest()
         test_rag_search()
         test_rag_stats()
+        test_rag_query()
+        test_rag_query_with_filters()
+        test_rag_query_top_k_variations()
         test_rag_delete(doc_id)
         
         print("\n" + "=" * 80)

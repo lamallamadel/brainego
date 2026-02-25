@@ -144,6 +144,28 @@ class RAGStatsResponse(BaseModel):
     collection_info: Dict[str, Any]
 
 
+class RAGQueryRequest(BaseModel):
+    query: str = Field(..., description="Query text to search for relevant context")
+    messages: Optional[List[ChatMessage]] = Field(None, description="Optional chat history messages")
+    k: int = Field(5, ge=1, le=20, description="Number of top results to retrieve (top-k)")
+    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
+    top_p: Optional[float] = Field(0.9, ge=0.0, le=1.0, description="Nucleus sampling parameter")
+    max_tokens: Optional[int] = Field(2048, ge=1, description="Maximum tokens to generate")
+    include_context: Optional[bool] = Field(True, description="Whether to include retrieved context in response")
+
+
+class RAGQueryResponse(BaseModel):
+    id: str
+    object: str = "rag.query.completion"
+    created: int
+    query: str
+    context: Optional[List[Dict[str, Any]]] = Field(None, description="Retrieved context chunks")
+    response: str = Field(..., description="Generated response augmented with context")
+    usage: ChatCompletionUsage
+    retrieval_stats: Dict[str, Any] = Field(..., description="Statistics about retrieval")
+
+
 # Metrics storage
 class MetricsStore:
     def __init__(self):
@@ -281,6 +303,7 @@ async def root():
             "rag_ingest": "/v1/rag/ingest",
             "rag_ingest_batch": "/v1/rag/ingest/batch",
             "rag_search": "/v1/rag/search",
+            "rag_query": "/v1/rag/query",
             "rag_delete": "/v1/rag/documents/{document_id}",
             "rag_stats": "/v1/rag/stats"
         }
@@ -521,6 +544,158 @@ async def rag_stats():
     except Exception as e:
         logger.error(f"Error getting RAG stats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Stats error: {str(e)}")
+
+
+@app.post("/v1/rag/query", response_model=RAGQueryResponse)
+async def rag_query(request: RAGQueryRequest):
+    """
+    RAG query endpoint: retrieves relevant context and generates augmented response.
+    
+    This endpoint:
+    1. Performs cosine similarity search using the query embedding
+    2. Retrieves top-k most relevant document chunks (default k=5)
+    3. Optionally filters results by metadata
+    4. Constructs an augmented prompt with retrieved context
+    5. Generates a response via MAX Serve using the augmented prompt
+    
+    Args:
+        query: User query text
+        messages: Optional chat history for multi-turn conversations
+        k: Number of top results to retrieve (1-20, default 5)
+        filters: Optional metadata filters for retrieval
+        temperature: Sampling temperature (0.0-2.0, default 0.7)
+        top_p: Nucleus sampling parameter (0.0-1.0, default 0.9)
+        max_tokens: Maximum tokens to generate (default 2048)
+        include_context: Include retrieved context in response (default True)
+    
+    Returns:
+        RAGQueryResponse with generated text, retrieved context, and usage stats
+    """
+    start_time = time.time()
+    
+    try:
+        service = get_rag_service()
+        
+        logger.info(f"RAG query with k={request.k}: {request.query[:100]}...")
+        
+        retrieval_start = time.time()
+        results = service.search_documents(
+            query=request.query,
+            limit=request.k,
+            filters=request.filters
+        )
+        retrieval_time_ms = (time.time() - retrieval_start) * 1000
+        
+        logger.info(f"Retrieved {len(results)} context chunks in {retrieval_time_ms:.2f}ms")
+        
+        if not results:
+            logger.warning("No context found for query, generating response without RAG")
+            context_text = ""
+            retrieval_stats = {
+                "chunks_retrieved": 0,
+                "retrieval_time_ms": round(retrieval_time_ms, 2),
+                "top_score": None,
+                "avg_score": None
+            }
+        else:
+            context_chunks = []
+            for idx, result in enumerate(results):
+                chunk_text = f"[Context {idx + 1}]\n{result['text']}\n"
+                context_chunks.append(chunk_text)
+            
+            context_text = "\n".join(context_chunks)
+            
+            scores = [r['score'] for r in results]
+            retrieval_stats = {
+                "chunks_retrieved": len(results),
+                "retrieval_time_ms": round(retrieval_time_ms, 2),
+                "top_score": round(scores[0], 4) if scores else None,
+                "avg_score": round(sum(scores) / len(scores), 4) if scores else None,
+                "min_score": round(min(scores), 4) if scores else None
+            }
+        
+        messages_list = []
+        
+        if context_text:
+            system_message = ChatMessage(
+                role="system",
+                content=(
+                    "You are a helpful assistant. Use the following context to answer the user's question. "
+                    "If the context doesn't contain relevant information, say so and provide the best answer you can.\n\n"
+                    f"Context:\n{context_text}"
+                )
+            )
+            messages_list.append(system_message)
+        else:
+            system_message = ChatMessage(
+                role="system",
+                content="You are a helpful assistant. Answer the user's question to the best of your ability."
+            )
+            messages_list.append(system_message)
+        
+        if request.messages:
+            messages_list.extend(request.messages)
+        
+        messages_list.append(ChatMessage(role="user", content=request.query))
+        
+        prompt = format_chat_prompt(messages_list)
+        
+        params = {
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+            "top_p": request.top_p,
+            "stop": ["<|eot_id|>", "<|end_of_text|>"],
+        }
+        
+        generation_start = time.time()
+        generated_text, prompt_tokens, completion_tokens = await call_max_serve(prompt, params)
+        generation_time_ms = (time.time() - generation_start) * 1000
+        
+        retrieval_stats["generation_time_ms"] = round(generation_time_ms, 2)
+        retrieval_stats["total_time_ms"] = round((time.time() - start_time) * 1000, 2)
+        
+        logger.info(
+            f"RAG query completed: {len(results)} chunks retrieved, "
+            f"response generated in {generation_time_ms:.2f}ms"
+        )
+        
+        context_data = None
+        if request.include_context and results:
+            context_data = [
+                {
+                    "text": r["text"],
+                    "score": round(r["score"], 4),
+                    "metadata": r.get("metadata"),
+                    "id": r.get("id")
+                }
+                for r in results
+            ]
+        
+        response = RAGQueryResponse(
+            id=f"rag-{uuid.uuid4().hex[:24]}",
+            created=int(time.time()),
+            query=request.query,
+            context=context_data,
+            response=generated_text,
+            usage=ChatCompletionUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens
+            ),
+            retrieval_stats=retrieval_stats
+        )
+        
+        metrics.record_request((time.time() - start_time) * 1000)
+        
+        return response
+        
+    except HTTPException:
+        metrics.record_request((time.time() - start_time) * 1000, error=True)
+        raise
+    except Exception as e:
+        metrics.record_request((time.time() - start_time) * 1000, error=True)
+        logger.error(f"Error in RAG query: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"RAG query error: {str(e)}")
 
 
 if __name__ == "__main__":

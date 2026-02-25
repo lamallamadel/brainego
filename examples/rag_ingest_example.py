@@ -77,6 +77,31 @@ async def get_rag_stats():
         return response.json()
 
 
+async def rag_query(
+    query: str,
+    k: int = 5,
+    filters: Dict[str, Any] = None,
+    temperature: float = 0.7,
+    max_tokens: int = 2048,
+    include_context: bool = True
+):
+    """Query RAG system for context-augmented response."""
+    async with httpx.AsyncClient(timeout=120.0) as client:
+        response = await client.post(
+            f"{API_BASE_URL}/v1/rag/query",
+            json={
+                "query": query,
+                "k": k,
+                "filters": filters,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+                "include_context": include_context
+            }
+        )
+        response.raise_for_status()
+        return response.json()
+
+
 async def main():
     print("=" * 80)
     print("RAG Ingestion Example")
@@ -191,13 +216,66 @@ async def main():
     )
     print(f"✓ Found {len(filtered_results['results'])} results in 'technology' category")
     
-    # Example 6: Delete a document
-    print(f"\n6. Deleting document {doc_id_1}...")
+    # Example 6: RAG Query - Context-augmented responses
+    print("\n6. RAG Query - Context-augmented responses...")
+    query_tests = [
+        {
+            "query": "What is deep learning and how does it work?",
+            "k": 3,
+            "temperature": 0.7
+        },
+        {
+            "query": "Explain Python's use cases",
+            "k": 5,
+            "temperature": 0.5
+        },
+        {
+            "query": "How does quantum computing differ from classical computing?",
+            "k": 3,
+            "filters": {"category": "technology"},
+            "temperature": 0.6
+        }
+    ]
+    
+    for test in query_tests:
+        print(f"\n  Query: '{test['query']}'")
+        print(f"  Parameters: k={test['k']}, temperature={test['temperature']}")
+        if test.get('filters'):
+            print(f"  Filters: {test['filters']}")
+        
+        rag_result = await rag_query(**test)
+        
+        print(f"\n  ✓ Response generated:")
+        print(f"    {rag_result['response']}")
+        
+        stats = rag_result['retrieval_stats']
+        print(f"\n  Retrieval Stats:")
+        print(f"    Chunks retrieved: {stats['chunks_retrieved']}")
+        print(f"    Retrieval time: {stats['retrieval_time_ms']:.2f}ms")
+        print(f"    Generation time: {stats['generation_time_ms']:.2f}ms")
+        print(f"    Total time: {stats['total_time_ms']:.2f}ms")
+        
+        if stats.get('top_score'):
+            print(f"    Top similarity score: {stats['top_score']:.4f}")
+            print(f"    Average similarity score: {stats['avg_score']:.4f}")
+        
+        if rag_result.get('context'):
+            print(f"\n  Retrieved Context Chunks:")
+            for i, ctx in enumerate(rag_result['context'][:2], 1):
+                print(f"    {i}. Score: {ctx['score']:.4f}")
+                print(f"       {ctx['text'][:100]}...")
+        
+        print(f"\n  Token Usage:")
+        usage = rag_result['usage']
+        print(f"    Prompt: {usage['prompt_tokens']}, Completion: {usage['completion_tokens']}, Total: {usage['total_tokens']}")
+    
+    # Example 7: Delete a document
+    print(f"\n7. Deleting document {doc_id_1}...")
     delete_result = await delete_document(doc_id_1)
     print(f"✓ {delete_result['message']}")
     
     # Final statistics
-    print("\n7. Final statistics after deletion...")
+    print("\n8. Final statistics after deletion...")
     final_stats = await get_rag_stats()
     print(f"✓ Collection info:")
     print(f"  Points count: {final_stats['collection_info']['points_count']}")
