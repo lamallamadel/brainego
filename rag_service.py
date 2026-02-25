@@ -267,7 +267,8 @@ class RAGIngestionService:
         collection_name: str = "documents",
         chunk_size: int = 1000,
         chunk_overlap: int = 100,
-        embedding_model: str = "nomic-ai/nomic-embed-text-v1.5"
+        embedding_model: str = "nomic-ai/nomic-embed-text-v1.5",
+        graph_service: Optional[Any] = None
     ):
         self.chunker = DocumentChunker(chunk_size=chunk_size, overlap=chunk_overlap)
         self.embedder = NomicEmbedder(model_name=embedding_model)
@@ -276,6 +277,7 @@ class RAGIngestionService:
             port=qdrant_port,
             collection_name=collection_name
         )
+        self.graph_service = graph_service
         
         self.storage.create_collection(self.embedder.dimension)
         logger.info("RAG Ingestion Service initialized")
@@ -387,6 +389,205 @@ class RAGIngestionService:
         query_embedding = self.embedder.embed_text(query)
         results = self.storage.search(query_embedding, limit=limit, filter_conditions=filters)
         return results
+    
+    def search_with_graph_enrichment(
+        self,
+        query: str,
+        limit: int = 10,
+        filters: Optional[Dict[str, Any]] = None,
+        graph_depth: int = 1,
+        graph_limit: int = 10,
+        include_entity_context: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Search for relevant documents with graph-based context enrichment.
+        
+        This method:
+        1. Performs vector similarity search to find relevant documents
+        2. Extracts entities from the query and search results
+        3. Queries the knowledge graph for related entities and relationships
+        4. Augments the results with graph context
+        
+        Args:
+            query: Search query text
+            limit: Maximum number of vector search results
+            filters: Optional metadata filters for vector search
+            graph_depth: Maximum depth for graph traversal (1-3)
+            graph_limit: Maximum number of graph neighbors per entity
+            include_entity_context: Whether to include entity descriptions
+            
+        Returns:
+            Dictionary with vector results and enriched graph context
+        """
+        if not self.graph_service:
+            logger.warning("Graph service not available, falling back to standard search")
+            return {
+                "query": query,
+                "vector_results": self.search_documents(query, limit, filters),
+                "graph_context": None,
+                "enriched": False
+            }
+        
+        # Step 1: Perform vector similarity search
+        logger.info(f"Performing vector search for query: {query}")
+        query_embedding = self.embedder.embed_text(query)
+        vector_results = self.storage.search(query_embedding, limit=limit, filter_conditions=filters)
+        
+        # Step 2: Extract entities from query
+        logger.info("Extracting entities from query")
+        query_entities = self.graph_service.extract_entities(query)
+        
+        # Step 3: Extract entities from top search results
+        result_entities = []
+        for result in vector_results[:3]:  # Only analyze top 3 results
+            text = result.get("text", "")
+            if text:
+                entities = self.graph_service.extract_entities(text)
+                result_entities.extend(entities)
+        
+        # Combine and deduplicate entities
+        all_entities = query_entities + result_entities
+        unique_entity_names = set()
+        unique_entities = []
+        for entity in all_entities:
+            name = entity["text"].lower().strip()
+            if name not in unique_entity_names:
+                unique_entity_names.add(name)
+                unique_entities.append(entity)
+        
+        logger.info(f"Found {len(unique_entities)} unique entities")
+        
+        # Step 4: Query graph for each entity's neighborhood
+        graph_context = {
+            "entities": [],
+            "relationships": [],
+            "subgraphs": []
+        }
+        
+        for entity in unique_entities[:5]:  # Limit to top 5 entities to avoid overload
+            try:
+                # Get entity neighbors from graph
+                neighbors_data = self.graph_service.get_neighbors(
+                    entity_name=entity["text"],
+                    entity_type=entity["type"],
+                    max_depth=graph_depth,
+                    limit=graph_limit
+                )
+                
+                if neighbors_data["neighbors_count"] > 0:
+                    graph_context["entities"].append({
+                        "name": entity["text"],
+                        "type": entity["type"],
+                        "neighbor_count": neighbors_data["neighbors_count"]
+                    })
+                    
+                    # Collect relationships
+                    for neighbor in neighbors_data["neighbors"]:
+                        graph_context["relationships"].append({
+                            "source": entity["text"],
+                            "source_type": entity["type"],
+                            "target": neighbor["name"],
+                            "target_type": neighbor["type"],
+                            "relation_types": neighbor["relation_types"],
+                            "distance": neighbor["distance"]
+                        })
+                    
+                    # Store subgraph
+                    graph_context["subgraphs"].append({
+                        "root": entity["text"],
+                        "neighbors": neighbors_data["neighbors"]
+                    })
+                    
+            except Exception as e:
+                logger.warning(f"Error querying graph for entity {entity['text']}: {e}")
+        
+        # Step 5: Enrich vector results with graph context
+        enriched_results = []
+        for result in vector_results:
+            enriched_result = result.copy()
+            
+            # Find related graph entities for this result
+            related_entities = []
+            for entity in unique_entities:
+                if entity["text"].lower() in result.get("text", "").lower():
+                    # Find this entity's neighbors in graph context
+                    for subgraph in graph_context["subgraphs"]:
+                        if subgraph["root"].lower() == entity["text"].lower():
+                            related_entities.append({
+                                "entity": entity["text"],
+                                "type": entity["type"],
+                                "neighbor_count": len(subgraph["neighbors"]),
+                                "neighbors": subgraph["neighbors"][:3]  # Top 3 neighbors
+                            })
+            
+            enriched_result["graph_entities"] = related_entities
+            enriched_results.append(enriched_result)
+        
+        logger.info(f"Enriched {len(enriched_results)} results with graph context")
+        
+        return {
+            "query": query,
+            "vector_results": enriched_results,
+            "graph_context": graph_context,
+            "enriched": True,
+            "stats": {
+                "vector_results_count": len(vector_results),
+                "entities_found": len(unique_entities),
+                "entities_in_graph": len(graph_context["entities"]),
+                "relationships_found": len(graph_context["relationships"]),
+                "subgraphs": len(graph_context["subgraphs"])
+            }
+        }
+    
+    def format_graph_context_for_llm(
+        self,
+        graph_context: Dict[str, Any]
+    ) -> str:
+        """
+        Format graph context into a human-readable string for LLM prompting.
+        
+        Args:
+            graph_context: Graph context dictionary from search_with_graph_enrichment
+            
+        Returns:
+            Formatted context string
+        """
+        if not graph_context or not graph_context.get("entities"):
+            return ""
+        
+        context_parts = []
+        
+        # Add entities summary
+        entities = graph_context.get("entities", [])
+        if entities:
+            context_parts.append("Knowledge Graph Entities:")
+            for entity in entities:
+                context_parts.append(
+                    f"  - {entity['name']} ({entity['type']}) "
+                    f"with {entity['neighbor_count']} related entities"
+                )
+        
+        # Add relationships summary
+        relationships = graph_context.get("relationships", [])
+        if relationships:
+            context_parts.append("\nEntity Relationships:")
+            # Group by source entity
+            rel_by_source = {}
+            for rel in relationships:
+                source = rel["source"]
+                if source not in rel_by_source:
+                    rel_by_source[source] = []
+                rel_by_source[source].append(rel)
+            
+            for source, rels in rel_by_source.items():
+                context_parts.append(f"  {source}:")
+                for rel in rels[:5]:  # Limit to top 5 per source
+                    rel_types = ", ".join(rel["relation_types"])
+                    context_parts.append(
+                        f"    - {rel_types} → {rel['target']} ({rel['target_type']})"
+                    )
+        
+        return "\n".join(context_parts)
     
     def delete_document(self, document_id: str):
         """Delete all chunks of a document by document_id."""

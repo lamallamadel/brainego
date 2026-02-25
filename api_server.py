@@ -176,6 +176,49 @@ class RAGQueryResponse(BaseModel):
     retrieval_stats: Dict[str, Any] = Field(..., description="Statistics about retrieval")
 
 
+class RAGGraphSearchRequest(BaseModel):
+    query: str = Field(..., description="Search query text")
+    limit: int = Field(10, ge=1, le=100, description="Maximum number of vector search results")
+    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    graph_depth: int = Field(1, ge=1, le=3, description="Maximum depth for graph traversal")
+    graph_limit: int = Field(10, ge=1, le=50, description="Maximum number of graph neighbors per entity")
+    include_entity_context: bool = Field(True, description="Include entity descriptions from graph")
+
+
+class RAGGraphSearchResponse(BaseModel):
+    query: str
+    vector_results: List[Dict[str, Any]]
+    graph_context: Optional[Dict[str, Any]]
+    enriched: bool
+    stats: Dict[str, Any]
+
+
+class RAGGraphQueryRequest(BaseModel):
+    query: str = Field(..., description="Query text to search for relevant context")
+    messages: Optional[List[ChatMessage]] = Field(None, description="Optional chat history messages")
+    k: int = Field(5, ge=1, le=20, description="Number of top results to retrieve (top-k)")
+    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    graph_depth: int = Field(1, ge=1, le=3, description="Maximum depth for graph traversal")
+    graph_limit: int = Field(10, ge=1, le=50, description="Maximum number of graph neighbors per entity")
+    temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
+    top_p: Optional[float] = Field(0.9, ge=0.0, le=1.0, description="Nucleus sampling parameter")
+    max_tokens: Optional[int] = Field(2048, ge=1, description="Maximum tokens to generate")
+    include_context: Optional[bool] = Field(True, description="Whether to include retrieved context in response")
+
+
+class RAGGraphQueryResponse(BaseModel):
+    id: str
+    object: str = "rag.graph.query.completion"
+    created: int
+    query: str
+    vector_context: Optional[List[Dict[str, Any]]] = Field(None, description="Retrieved vector context chunks")
+    graph_context: Optional[Dict[str, Any]] = Field(None, description="Knowledge graph context")
+    graph_context_formatted: Optional[str] = Field(None, description="Formatted graph context for LLM")
+    response: str = Field(..., description="Generated response augmented with vector and graph context")
+    usage: ChatCompletionUsage
+    retrieval_stats: Dict[str, Any] = Field(..., description="Statistics about retrieval")
+
+
 class MemoryAddRequest(BaseModel):
     messages: List[Dict[str, str]] = Field(..., description="Conversation messages to store")
     user_id: Optional[str] = Field(None, description="Optional user identifier")
@@ -338,12 +381,22 @@ def get_rag_service() -> RAGIngestionService:
     global rag_service
     if rag_service is None:
         logger.info("Initializing RAG Ingestion Service...")
+        
+        # Try to get graph service for enrichment
+        try:
+            graph_svc = get_graph_service()
+            logger.info("RAG service will use graph enrichment")
+        except Exception as e:
+            logger.warning(f"Graph service not available for RAG: {e}")
+            graph_svc = None
+        
         rag_service = RAGIngestionService(
             qdrant_host=QDRANT_HOST,
             qdrant_port=QDRANT_PORT,
             collection_name=QDRANT_COLLECTION,
             chunk_size=1000,
-            chunk_overlap=100
+            chunk_overlap=100,
+            graph_service=graph_svc
         )
         logger.info("RAG Ingestion Service initialized")
     return rag_service
@@ -911,6 +964,252 @@ async def rag_query(request: RAGQueryRequest):
         metrics.record_request((time.time() - start_time) * 1000, error=True)
         logger.error(f"Error in RAG query: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"RAG query error: {str(e)}")
+
+
+@app.post("/v1/rag/search/graph-enriched", response_model=RAGGraphSearchResponse)
+async def rag_graph_search(request: RAGGraphSearchRequest):
+    """
+    Graph-enriched RAG search: combines vector similarity with knowledge graph context.
+    
+    This endpoint:
+    1. Performs vector similarity search to find relevant document chunks
+    2. Extracts entities from the query and top search results
+    3. Queries the Neo4j knowledge graph for related entities and relationships
+    4. Enriches vector search results with graph context
+    
+    Args:
+        query: Search query text
+        limit: Maximum number of vector search results (1-100)
+        filters: Optional metadata filters for vector search
+        graph_depth: Maximum depth for graph traversal (1-3)
+        graph_limit: Maximum number of graph neighbors per entity (1-50)
+        include_entity_context: Include entity descriptions from graph
+    
+    Returns:
+        Vector search results enriched with knowledge graph context
+    """
+    try:
+        service = get_rag_service()
+        
+        if not service.graph_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Graph service not available. Graph-enriched search requires Neo4j."
+            )
+        
+        logger.info(f"Graph-enriched search with depth={request.graph_depth}: {request.query[:100]}...")
+        
+        enriched_results = service.search_with_graph_enrichment(
+            query=request.query,
+            limit=request.limit,
+            filters=request.filters,
+            graph_depth=request.graph_depth,
+            graph_limit=request.graph_limit,
+            include_entity_context=request.include_entity_context
+        )
+        
+        logger.info(
+            f"Graph-enriched search completed: {enriched_results['stats']['vector_results_count']} "
+            f"vector results, {enriched_results['stats']['entities_in_graph']} entities, "
+            f"{enriched_results['stats']['relationships_found']} relationships"
+        )
+        
+        return RAGGraphSearchResponse(**enriched_results)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in graph-enriched search: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Graph-enriched search error: {str(e)}")
+
+
+@app.post("/v1/rag/query/graph-enriched", response_model=RAGGraphQueryResponse)
+async def rag_graph_query(request: RAGGraphQueryRequest):
+    """
+    Graph-enriched RAG query: generates responses using both vector and graph context.
+    
+    This endpoint:
+    1. Performs vector similarity search to find relevant document chunks
+    2. Extracts entities from query and results, queries knowledge graph
+    3. Enriches context with entity relationships from Neo4j
+    4. Constructs an augmented prompt with both vector and graph context
+    5. Generates response via MAX Serve using the enriched context
+    
+    Args:
+        query: User query text
+        messages: Optional chat history for multi-turn conversations
+        k: Number of top vector results to retrieve (1-20)
+        filters: Optional metadata filters for vector search
+        graph_depth: Maximum depth for graph traversal (1-3)
+        graph_limit: Maximum number of graph neighbors per entity (1-50)
+        temperature: Sampling temperature (0.0-2.0)
+        top_p: Nucleus sampling parameter (0.0-1.0)
+        max_tokens: Maximum tokens to generate
+        include_context: Include retrieved context in response
+    
+    Returns:
+        Generated response augmented with vector and graph context
+    """
+    start_time = time.time()
+    
+    try:
+        service = get_rag_service()
+        
+        if not service.graph_service:
+            raise HTTPException(
+                status_code=503,
+                detail="Graph service not available. Graph-enriched query requires Neo4j."
+            )
+        
+        logger.info(f"Graph-enriched RAG query with k={request.k}: {request.query[:100]}...")
+        
+        retrieval_start = time.time()
+        enriched_results = service.search_with_graph_enrichment(
+            query=request.query,
+            limit=request.k,
+            filters=request.filters,
+            graph_depth=request.graph_depth,
+            graph_limit=request.graph_limit
+        )
+        retrieval_time_ms = (time.time() - retrieval_start) * 1000
+        
+        vector_results = enriched_results['vector_results']
+        graph_context = enriched_results.get('graph_context')
+        
+        logger.info(
+            f"Retrieved {len(vector_results)} vector chunks and "
+            f"{enriched_results['stats']['relationships_found']} graph relationships "
+            f"in {retrieval_time_ms:.2f}ms"
+        )
+        
+        if not vector_results:
+            logger.warning("No context found for query, generating response without RAG")
+            context_text = ""
+            retrieval_stats = {
+                "chunks_retrieved": 0,
+                "retrieval_time_ms": round(retrieval_time_ms, 2),
+                "entities_in_graph": 0,
+                "relationships_found": 0,
+                "top_score": None,
+                "avg_score": None
+            }
+        else:
+            context_chunks = []
+            for idx, result in enumerate(vector_results):
+                chunk_text = f"[Context {idx + 1}]\n{result['text']}\n"
+                context_chunks.append(chunk_text)
+            
+            context_text = "\n".join(context_chunks)
+            
+            scores = [r['score'] for r in vector_results]
+            retrieval_stats = {
+                "chunks_retrieved": len(vector_results),
+                "retrieval_time_ms": round(retrieval_time_ms, 2),
+                "entities_in_graph": enriched_results['stats']['entities_in_graph'],
+                "relationships_found": enriched_results['stats']['relationships_found'],
+                "top_score": round(scores[0], 4) if scores else None,
+                "avg_score": round(sum(scores) / len(scores), 4) if scores else None,
+                "min_score": round(min(scores), 4) if scores else None
+            }
+        
+        messages_list = []
+        
+        graph_context_formatted = ""
+        if graph_context and enriched_results['enriched']:
+            graph_context_formatted = service.format_graph_context_for_llm(graph_context)
+        
+        if context_text or graph_context_formatted:
+            system_content = (
+                "You are a helpful assistant. Use the following context to answer the user's question. "
+                "If the context doesn't contain relevant information, say so and provide the best answer you can.\n\n"
+            )
+            
+            if context_text:
+                system_content += f"Document Context:\n{context_text}\n\n"
+            
+            if graph_context_formatted:
+                system_content += f"{graph_context_formatted}\n"
+            
+            system_message = ChatMessage(role="system", content=system_content)
+            messages_list.append(system_message)
+        else:
+            system_message = ChatMessage(
+                role="system",
+                content="You are a helpful assistant. Answer the user's question to the best of your ability."
+            )
+            messages_list.append(system_message)
+        
+        if request.messages:
+            messages_list.extend(request.messages)
+        
+        messages_list.append(ChatMessage(role="user", content=request.query))
+        
+        prompt = format_chat_prompt(messages_list)
+        
+        params = {
+            "max_tokens": request.max_tokens,
+            "temperature": request.temperature,
+            "top_p": request.top_p,
+            "stop": ["<|eot_id|>", "<|end_of_text|>"],
+        }
+        
+        generation_start = time.time()
+        generated_text, prompt_tokens, completion_tokens, routing_metadata = await generate_with_router(
+            messages=messages_list,
+            prompt=prompt,
+            params=params
+        )
+        generation_time_ms = (time.time() - generation_start) * 1000
+        
+        retrieval_stats["generation_time_ms"] = round(generation_time_ms, 2)
+        retrieval_stats["total_time_ms"] = round((time.time() - start_time) * 1000, 2)
+        
+        logger.info(
+            f"Graph-enriched RAG query completed: {len(vector_results)} chunks, "
+            f"{retrieval_stats['relationships_found']} relationships, "
+            f"response generated in {generation_time_ms:.2f}ms"
+        )
+        
+        vector_context_data = None
+        if request.include_context and vector_results:
+            vector_context_data = [
+                {
+                    "text": r["text"],
+                    "score": round(r["score"], 4),
+                    "metadata": r.get("metadata"),
+                    "id": r.get("id"),
+                    "graph_entities": r.get("graph_entities", [])
+                }
+                for r in vector_results
+            ]
+        
+        response = RAGGraphQueryResponse(
+            id=f"rag-graph-{uuid.uuid4().hex[:24]}",
+            created=int(time.time()),
+            query=request.query,
+            vector_context=vector_context_data,
+            graph_context=graph_context if request.include_context else None,
+            graph_context_formatted=graph_context_formatted if request.include_context else None,
+            response=generated_text,
+            usage=ChatCompletionUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens
+            ),
+            retrieval_stats=retrieval_stats
+        )
+        
+        metrics.record_request((time.time() - start_time) * 1000)
+        
+        return response
+        
+    except HTTPException:
+        metrics.record_request((time.time() - start_time) * 1000, error=True)
+        raise
+    except Exception as e:
+        metrics.record_request((time.time() - start_time) * 1000, error=True)
+        logger.error(f"Error in graph-enriched RAG query: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Graph-enriched RAG query error: {str(e)}")
 
 
 @app.post("/memory/add", response_model=MemoryAddResponse)
