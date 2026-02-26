@@ -10,6 +10,7 @@ import time
 import json
 import uuid
 import logging
+import asyncio
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 
@@ -563,6 +564,63 @@ def estimate_tokens(text: str) -> int:
     return len(text) // 4
 
 
+async def stream_chat_completion_response(
+    completion_id: str,
+    created: int,
+    model: str,
+    content: str,
+    finish_reason: str = "stop"
+):
+    """
+    Stream an OpenAI-compatible chat completion response over SSE.
+
+    This yields an initial role chunk, a content chunk, and a final stop chunk,
+    followed by the standard [DONE] marker.
+    """
+
+    role_chunk = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": {"role": "assistant"},
+            "finish_reason": None
+        }]
+    }
+    yield f"data: {json.dumps(role_chunk)}\n\n"
+
+    if content:
+        content_chunk = {
+            "id": completion_id,
+            "object": "chat.completion.chunk",
+            "created": created,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "delta": {"content": content},
+                "finish_reason": None
+            }]
+        }
+        yield f"data: {json.dumps(content_chunk)}\n\n"
+
+    final_chunk = {
+        "id": completion_id,
+        "object": "chat.completion.chunk",
+        "created": created,
+        "model": model,
+        "choices": [{
+            "index": 0,
+            "delta": {},
+            "finish_reason": finish_reason
+        }]
+    }
+    yield f"data: {json.dumps(final_chunk)}\n\n"
+    await asyncio.sleep(0)
+    yield "data: [DONE]\n\n"
+
+
 async def generate_with_router(
     messages: List[ChatMessage],
     prompt: str,
@@ -717,12 +775,33 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         latency_ms = (time.time() - start_time) * 1000
         metrics.record_request(latency_ms)
         
+        completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+        created = int(time.time())
+        response_model = routing_metadata.get('model_name', request.model)
+
+        if request.stream:
+            logger.info("Streaming response requested; returning SSE-compatible output")
+            return StreamingResponse(
+                stream_chat_completion_response(
+                    completion_id=completion_id,
+                    created=created,
+                    model=response_model,
+                    content=generated_text,
+                    finish_reason="stop"
+                ),
+                media_type="text/event-stream",
+                headers={
+                    "Cache-Control": "no-cache",
+                    "Connection": "keep-alive"
+                }
+            )
+
         # Build response with routing metadata
         response_data = {
-            "id": f"chatcmpl-{uuid.uuid4().hex[:24]}",
+            "id": completion_id,
             "object": "chat.completion",
-            "created": int(time.time()),
-            "model": routing_metadata.get('model_name', request.model),
+            "created": created,
+            "model": response_model,
             "choices": [
                 {
                     "index": 0,
