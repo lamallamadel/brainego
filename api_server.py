@@ -80,6 +80,26 @@ class ChatMessage(BaseModel):
     name: Optional[str] = Field(None, description="Optional name of the participant")
 
 
+class ChatRAGOptions(BaseModel):
+    enabled: bool = Field(False, description="Enable retrieval-augmented generation for this request")
+    query: Optional[str] = Field(
+        None,
+        description="Optional retrieval query override (defaults to latest user message)"
+    )
+    k: int = Field(5, ge=1, le=20, description="Number of chunks to retrieve")
+    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    min_score: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Optional minimum similarity score threshold"
+    )
+    include_context: bool = Field(
+        False,
+        description="Include retrieved context chunks in non-streaming response"
+    )
+
+
 class ChatCompletionRequest(BaseModel):
     model: str = Field(default="llama-3.3-8b-instruct", description="Model to use")
     messages: List[ChatMessage] = Field(..., description="List of messages")
@@ -92,6 +112,7 @@ class ChatCompletionRequest(BaseModel):
     presence_penalty: Optional[float] = Field(0.0, ge=-2.0, le=2.0)
     frequency_penalty: Optional[float] = Field(0.0, ge=-2.0, le=2.0)
     user: Optional[str] = Field(None, description="Unique user identifier")
+    rag: Optional[ChatRAGOptions] = Field(None, description="Optional per-request RAG options")
 
 
 class ChatCompletionChoice(BaseModel):
@@ -766,8 +787,74 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         if request.n != 1:
             raise HTTPException(status_code=400, detail="Only n=1 is currently supported")
         
+        messages_for_generation = list(request.messages)
+        rag_context_data = None
+        rag_metadata = None
+
+        if request.rag and request.rag.enabled:
+            service = get_rag_service()
+            latest_user_message = next(
+                (msg.content for msg in reversed(request.messages) if msg.role == "user"),
+                None
+            )
+            retrieval_query = request.rag.query or latest_user_message
+
+            if not retrieval_query:
+                raise HTTPException(
+                    status_code=400,
+                    detail="RAG requires at least one user message or rag.query"
+                )
+
+            retrieval_start = time.time()
+            rag_results = service.search_documents(
+                query=retrieval_query,
+                limit=request.rag.k,
+                filters=request.rag.filters
+            )
+            retrieval_time_ms = (time.time() - retrieval_start) * 1000
+
+            if request.rag.min_score is not None:
+                rag_results = [r for r in rag_results if r.get("score", 0.0) >= request.rag.min_score]
+
+            if rag_results:
+                context_chunks = [f"[Context {i + 1}]\n{r['text']}" for i, r in enumerate(rag_results)]
+                rag_system_message = ChatMessage(
+                    role="system",
+                    content=(
+                        "Use the provided context from the user's documents when relevant. "
+                        "If the context does not answer the question, say what is missing and provide "
+                        "the best available answer.\n\n"
+                        "Context:\n" + "\n\n".join(context_chunks)
+                    )
+                )
+                messages_for_generation = [rag_system_message, *messages_for_generation]
+
+            rag_scores = [r.get("score", 0.0) for r in rag_results]
+            rag_metadata = {
+                "enabled": True,
+                "query": retrieval_query,
+                "k": request.rag.k,
+                "filters": request.rag.filters,
+                "min_score": request.rag.min_score,
+                "chunks_retrieved": len(rag_results),
+                "retrieval_time_ms": round(retrieval_time_ms, 2),
+                "top_score": round(max(rag_scores), 4) if rag_scores else None,
+                "avg_score": round(sum(rag_scores) / len(rag_scores), 4) if rag_scores else None
+            }
+
+            if request.rag.include_context:
+                rag_context_data = [
+                    {
+                        "id": r.get("id"),
+                        "score": round(r.get("score", 0.0), 4),
+                        "text": r.get("text"),
+                        "metadata": r.get("metadata")
+                    }
+                    for r in rag_results
+                ]
+
         # Format prompt
-        prompt = format_chat_prompt(request.messages)
+        prompt = format_chat_prompt(messages_for_generation)
         logger.info(f"Processing chat completion request with {len(request.messages)} messages")
         
         # Call Agent Router
@@ -779,7 +866,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         }
         
         generated_text, prompt_tokens, completion_tokens, routing_metadata = await generate_with_router(
-            messages=request.messages,
+            messages=messages_for_generation,
             prompt=prompt,
             params=params
         )
@@ -832,6 +919,11 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             },
             "x-routing-metadata": routing_metadata
         }
+
+        if rag_metadata:
+            response_data["x-rag-metadata"] = rag_metadata
+            if rag_context_data is not None:
+                response_data["rag_context"] = rag_context_data
         
         logger.info(
             f"Request completed in {latency_ms:.2f}ms "
