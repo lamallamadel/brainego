@@ -38,7 +38,7 @@ class ModelConfig:
     capabilities: List[str]
     max_tokens: int
     temperature: float
-    health_status: bool = True
+    health_status: bool = False
     consecutive_failures: int = 0
     consecutive_successes: int = 0
 
@@ -238,8 +238,8 @@ class AgentRouter:
     
     def _initialize_metrics(self):
         """Initialize Prometheus metrics."""
-        for model_id in self.models.keys():
-            self.metrics.model_health.labels(model=model_id).set(1)
+        for model_id, model in self.models.items():
+            self.metrics.model_health.labels(model=model_id).set(1 if model.health_status else 0)
             self.metrics.fallback_rate.labels(model=model_id).set(0)
     
     def _initialize_circuit_breakers(self):
@@ -263,6 +263,10 @@ class AgentRouter:
         """Start periodic health checks for all models."""
         if not self.health_check_enabled:
             return
+
+        # Run an initial probe immediately so API readiness reflects real
+        # model availability before the first interval elapses.
+        await self._check_all_models_health()
         
         logger.info("Starting health check background task")
         self.health_check_task = asyncio.create_task(self._health_check_loop())
