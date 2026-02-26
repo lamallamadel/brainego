@@ -15,7 +15,7 @@ lib64/
 parts/
 sdist/
 var/
-wheels/
+# Note: wheels/ is ignored EXCEPT vendor/wheels/ which contains offline CI/CD wheels
 *.egg-info/
 .installed.cfg
 *.egg
@@ -202,3 +202,8 @@ trivy_scan_results.json
 backup_restore_report.json
 production_validation_report.json
 *_validation_report.json
+
+# EXCEPTION: Allow vendor/wheels/ for offline CI/CD (commit wheels!)
+!vendor/
+!vendor/wheels/
+!vendor/wheels/**

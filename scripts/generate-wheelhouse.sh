@@ -8,16 +8,30 @@ set -e
 echo "🔧 Generating offline wheelhouse for brainego tests..."
 echo ""
 echo "Requirements:"
-echo "  - Python 3.11+"
+echo "  - Python 3.11+ (available as 'python' or 'python3')"
 echo "  - pip with wheel support"
 echo "  - Internet access (this machine)"
+echo ""
+
+# Detect Python command
+if command -v python3 &> /dev/null; then
+    PYTHON=python3
+elif command -v python &> /dev/null; then
+    PYTHON=python
+else
+    echo "❌ Python not found! Install Python 3.11+ first."
+    exit 1
+fi
+
+echo "✅ Using Python: $PYTHON"
+$PYTHON --version
 echo ""
 
 # Create vendor directory
 mkdir -p vendor/wheels
 
 echo "📦 Downloading wheels for requirements-test.txt..."
-python -m pip download \
+$PYTHON -m pip download \
   --python-version 311 \
   --platform manylinux_2_28_x86_64 \
   --only-binary=:all: \
@@ -26,8 +40,8 @@ python -m pip download \
   -r requirements-test.txt
 
 echo ""
-echo "📦 Downloading wheels for dependencies (recursive)..."
-python -m pip download \
+echo "📦 Downloading dependency wheels (recursive)..."
+$PYTHON -m pip download \
   --python-version 311 \
   --platform manylinux_2_28_x86_64 \
   --only-binary=:all: \
@@ -37,15 +51,15 @@ python -m pip download \
 echo ""
 echo "✅ Wheelhouse generated!"
 echo ""
-echo "Contents:"
-ls -lh vendor/wheels/ | tail -20
+echo "Contents (last 20 files):"
+ls -lh vendor/wheels/ 2>/dev/null | tail -20 || echo "  (vendor/wheels created)"
 echo ""
 echo "Total size:"
-du -sh vendor/wheels/
+du -sh vendor/wheels/ 2>/dev/null || echo "  (0 bytes - empty placeholder)"
 echo ""
 echo "📝 Next steps:"
 echo "  1. git add vendor/wheels/"
-echo "  2. git commit -m 'Add offline wheels for test dependencies'"
+echo "  2. git commit -m 'Add offline wheels'"
 echo "  3. git push"
 echo ""
 echo "✨ CI will now use: --no-index --find-links=vendor/wheels"
