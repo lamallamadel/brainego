@@ -19,7 +19,8 @@ from qdrant_client.models import (
     PointStruct,
     Filter,
     FieldCondition,
-    MatchValue
+    MatchValue,
+    MatchAny,
 )
 
 logger = logging.getLogger(__name__)
@@ -242,7 +243,8 @@ class QdrantStorage:
         self,
         query_vector: List[float],
         limit: int = 10,
-        filter_conditions: Optional[Dict[str, Any]] = None
+        filter_conditions: Optional[Dict[str, Any]] = None,
+        collection_name: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Search for similar documents.
@@ -251,6 +253,7 @@ class QdrantStorage:
             query_vector: Query embedding vector
             limit: Maximum number of results
             filter_conditions: Optional metadata filters
+            collection_name: Optional collection name override
             
         Returns:
             List of search results with text, metadata, and score
@@ -259,16 +262,21 @@ class QdrantStorage:
         if filter_conditions:
             conditions = []
             for key, value in filter_conditions.items():
+                match_expression = (
+                    MatchAny(any=value["any"])
+                    if isinstance(value, dict) and "any" in value
+                    else MatchValue(value=value)
+                )
                 conditions.append(
                     FieldCondition(
                         key=f"metadata.{key}",
-                        match=MatchValue(value=value)
+                        match=match_expression
                     )
                 )
             query_filter = Filter(must=conditions)
-        
+
         results = self.client.search(
-            collection_name=self.collection_name,
+            collection_name=collection_name or self.collection_name,
             query_vector=query_vector,
             limit=limit,
             query_filter=query_filter
@@ -446,7 +454,8 @@ class RAGIngestionService:
         self,
         query: str,
         limit: int = 10,
-        filters: Optional[Dict[str, Any]] = None
+        filters: Optional[Dict[str, Any]] = None,
+        collection_name: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Search for relevant documents.
@@ -455,12 +464,48 @@ class RAGIngestionService:
             query: Search query text
             limit: Maximum number of results
             filters: Optional metadata filters
+            collection_name: Optional Qdrant collection override
             
         Returns:
             List of search results
         """
         query_embedding = self.embedder.embed_text(query)
-        results = self.storage.search(query_embedding, limit=limit, filter_conditions=filters)
+        results = self.storage.search(
+            query_embedding,
+            limit=limit,
+            filter_conditions=filters,
+            collection_name=collection_name,
+        )
+        return results
+
+    def semantic_search(
+        self,
+        query: str,
+        top_k: int = 10,
+        filters: Optional[Dict[str, Any]] = None,
+        collection_name: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Perform semantic similarity search over a Qdrant collection.
+
+        Args:
+            query: Search query text
+            top_k: Maximum number of nearest neighbors to return
+            filters: Optional metadata filters (equality or {"any": [...]})
+            collection_name: Optional Qdrant collection override
+
+        Returns:
+            List of semantic search results ordered by similarity score
+        """
+        if top_k < 1:
+            raise ValueError("top_k must be greater than 0")
+
+        results = self.search_documents(
+            query=query,
+            limit=top_k,
+            filters=filters,
+            collection_name=collection_name,
+        )
         return results
     
     def search_with_graph_enrichment(

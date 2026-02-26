@@ -171,6 +171,30 @@ results = httpx.post(f"{API}/v1/rag/search", json={
 })
 ```
 
+### 4. Semantic Search Across Collections
+
+```python
+# Top-k semantic search with filters and optional collection override
+results = httpx.post(f"{API}/v1/rag/semantic-search", json={
+    "query": "vector indexing strategy",
+    "top_k": 8,
+    "collection_name": "engineering-docs",
+    "filters": {
+        "project": "brainego",
+        "source": {"any": ["github", "notion"]}
+    }
+})
+```
+
+### Qdrant Filter Semantics Reference
+
+- Qdrant supports `match: { any: [...] }` for "one-of" matching (IN-style filtering).
+- For better filtered-search performance at scale, create payload indexes on frequently filtered metadata fields.
+
+References:
+- https://qdrant.tech/documentation/concepts/filtering/
+- https://qdrant.tech/documentation/concepts/search/
+
 ## Error Codes
 
 | Code | Description |

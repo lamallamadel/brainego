@@ -201,6 +201,20 @@ class RAGSearchResponse(BaseModel):
     limit: int
 
 
+class RAGSemanticSearchRequest(BaseModel):
+    query: str = Field(..., description="Search query text")
+    top_k: int = Field(10, ge=1, le=100, description="Top-k nearest neighbors to return")
+    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    collection_name: Optional[str] = Field(None, description="Optional Qdrant collection override")
+
+
+class RAGSemanticSearchResponse(BaseModel):
+    results: List[Dict[str, Any]]
+    query: str
+    top_k: int
+    collection_name: Optional[str] = None
+
+
 class RAGStatsResponse(BaseModel):
     collection_info: Dict[str, Any]
 
@@ -1201,6 +1215,46 @@ async def rag_search(request: RAGSearchRequest):
     except Exception as e:
         logger.error(f"Error searching documents: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+
+
+@app.post("/v1/rag/semantic-search", response_model=RAGSemanticSearchResponse)
+async def rag_semantic_search(request: RAGSemanticSearchRequest):
+    """
+    Perform semantic similarity search over Qdrant collections.
+
+    Args:
+        query: Search query text
+        top_k: Maximum number of nearest neighbors (1-100)
+        filters: Optional metadata filters (equality or {"any": [...]})
+        collection_name: Optional Qdrant collection override
+
+    Returns:
+        Top-k semantic search results with scores and metadata
+    """
+    try:
+        service = get_rag_service()
+        results = service.semantic_search(
+            query=request.query,
+            top_k=request.top_k,
+            filters=request.filters,
+            collection_name=request.collection_name,
+        )
+        logger.info(
+            "Semantic search completed: %s results (top_k=%s, collection=%s) for query: %s...",
+            len(results),
+            request.top_k,
+            request.collection_name or DEFAULT_COLLECTION,
+            request.query[:50],
+        )
+        return RAGSemanticSearchResponse(
+            results=results,
+            query=request.query,
+            top_k=request.top_k,
+            collection_name=request.collection_name,
+        )
+    except Exception as e:
+        logger.error(f"Error in semantic search: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Semantic search error: {str(e)}")
 
 
 @app.delete("/v1/rag/documents/{document_id}")
