@@ -147,6 +147,46 @@ class ChatCompletionRequest(BaseModel):
     )
 
 
+class UnifiedChatRequest(BaseModel):
+    """Unified chat request with opt-in controls for transparent orchestration."""
+
+    model: str = Field(default="llama-3.3-8b-instruct", description="Model to use")
+    messages: List[ChatMessage] = Field(..., description="List of messages")
+    temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
+    top_p: Optional[float] = Field(0.9, ge=0.0, le=1.0, description="Nucleus sampling parameter")
+    max_tokens: Optional[int] = Field(2048, ge=1, description="Maximum tokens to generate")
+    stream: Optional[bool] = Field(False, description="Whether to stream responses")
+    user_id: Optional[str] = Field(None, description="User identifier for personalized memory")
+    user: Optional[str] = Field(None, description="OpenAI-compatible user identifier")
+    n: Optional[int] = Field(1, ge=1, le=1, description="Number of completions (only 1 supported)")
+    stop: Optional[List[str]] = Field(None, description="Stop sequences")
+    presence_penalty: Optional[float] = Field(0.0, ge=-2.0, le=2.0)
+    frequency_penalty: Optional[float] = Field(0.0, ge=-2.0, le=2.0)
+    use_rag: bool = Field(True, description="Enable retrieval-augmented generation")
+    use_memory: bool = Field(True, description="Enable long-term memory retrieval")
+    store_memory: bool = Field(True, description="Store generated exchange in memory")
+    use_temporal_decay: bool = Field(True, description="Apply temporal decay for memory scoring")
+    rag_k: int = Field(5, ge=1, le=20, description="Number of chunks to retrieve from RAG")
+    rag_filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters for RAG")
+    rag_min_score: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Optional minimum score threshold for RAG chunks"
+    )
+    memory_top_k: int = Field(5, ge=1, le=20, description="Number of memories to retrieve")
+    memory_min_score: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Optional minimum combined score threshold for memories"
+    )
+    include_context: bool = Field(
+        False,
+        description="Include retrieved RAG and memory context in non-streaming responses"
+    )
+
+
 class ChatCompletionChoice(BaseModel):
     index: int
     message: ChatMessage
@@ -599,7 +639,9 @@ def get_memory_service() -> MemoryService:
             redis_db=REDIS_DB,
             memory_collection="memories",
             embedding_model="sentence-transformers/all-MiniLM-L6-v2",
-            temporal_decay_factor=0.1
+            temporal_decay_factor=float(os.getenv("MEMORY_TEMPORAL_DECAY_FACTOR", "0.1")),
+            cosine_weight=float(os.getenv("MEMORY_COSINE_WEIGHT", "0.7")),
+            temporal_weight=float(os.getenv("MEMORY_TEMPORAL_WEIGHT", "0.3"))
         )
         logger.info("Memory Service initialized")
     return memory_service
@@ -764,6 +806,7 @@ async def root():
         "models": router.list_models(),
         "endpoints": {
             "chat": "/v1/chat/completions",
+            "chat_unified": "/v1/chat",
             "models": "/v1/models",
             "health": "/health",
             "metrics": "/metrics",
@@ -1159,6 +1202,47 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         metrics.record_request((time.time() - start_time) * 1000, error=True)
         logger.error(f"Unexpected error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/v1/chat")
+async def unified_chat(request: UnifiedChatRequest, raw_request: Request):
+    """
+    Unified chat endpoint that transparently orchestrates memory, RAG, and completion.
+
+    This endpoint keeps client payloads simple while enabling both memory retrieval
+    and document retrieval by default.
+    """
+    resolved_user = request.user_id or request.user
+
+    completion_request = ChatCompletionRequest(
+        model=request.model,
+        messages=request.messages,
+        temperature=request.temperature,
+        top_p=request.top_p,
+        max_tokens=request.max_tokens,
+        stream=request.stream,
+        n=request.n,
+        stop=request.stop,
+        presence_penalty=request.presence_penalty,
+        frequency_penalty=request.frequency_penalty,
+        user=resolved_user,
+        rag=ChatRAGOptions(
+            enabled=request.use_rag,
+            k=request.rag_k,
+            filters=request.rag_filters,
+            min_score=request.rag_min_score,
+            include_context=request.include_context
+        ) if request.use_rag else None,
+        memory=ChatMemoryOptions(
+            enabled=request.use_memory,
+            top_k=request.memory_top_k,
+            min_score=request.memory_min_score,
+            include_context=request.include_context,
+            auto_store=request.store_memory,
+            use_temporal_decay=request.use_temporal_decay
+        ) if request.use_memory else None
+    )
+    return await chat_completions(completion_request, raw_request)
 
 
 @app.get("/v1/models")

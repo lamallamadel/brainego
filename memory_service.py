@@ -12,13 +12,13 @@ import uuid
 import logging
 from typing import List, Dict, Optional, Any
 from datetime import datetime, timezone
-import math
-
 from mem0 import Memory
 from qdrant_client import QdrantClient
 from qdrant_client.http import models
 import redis
 import numpy as np
+
+from memory_scoring import combined_memory_score, normalize_weights
 
 logger = logging.getLogger(__name__)
 
@@ -43,7 +43,9 @@ class MemoryService:
         redis_db: int = 0,
         memory_collection: str = "memories",
         embedding_model: str = "sentence-transformers/all-MiniLM-L6-v2",
-        temporal_decay_factor: float = 0.1
+        temporal_decay_factor: float = 0.1,
+        cosine_weight: float = 0.7,
+        temporal_weight: float = 0.3
     ):
         """
         Initialize Memory Service.
@@ -57,6 +59,8 @@ class MemoryService:
             memory_collection: Qdrant collection name for memories
             embedding_model: Model for embeddings
             temporal_decay_factor: Factor for temporal decay (higher = faster decay)
+            cosine_weight: Relative weight for cosine similarity score
+            temporal_weight: Relative weight for recency score
         """
         self.qdrant_host = qdrant_host
         self.qdrant_port = qdrant_port
@@ -65,6 +69,9 @@ class MemoryService:
         self.memory_collection = memory_collection
         self.embedding_model = embedding_model
         self.temporal_decay_factor = temporal_decay_factor
+        self.cosine_weight, self.temporal_weight = normalize_weights(
+            cosine_weight, temporal_weight
+        )
         
         logger.info("Initializing Memory Service...")
         
@@ -358,13 +365,17 @@ class MemoryService:
                                 if timestamp_str and use_temporal_decay:
                                     memory_time = datetime.fromisoformat(timestamp_str)
                                     time_diff_hours = (current_time - memory_time).total_seconds() / 3600
-                                    temporal_score = math.exp(-self.temporal_decay_factor * time_diff_hours / 24)
                                 else:
-                                    temporal_score = 1.0
-                                
-                                # Combine scores
+                                    time_diff_hours = 0.0
+
                                 cosine_score = result.get("score", 0.5)
-                                combined_score = cosine_score * 0.7 + temporal_score * 0.3
+                                combined_score, cosine_score, temporal_score = combined_memory_score(
+                                    cosine_similarity=cosine_score,
+                                    age_hours=time_diff_hours if use_temporal_decay else 0.0,
+                                    temporal_decay_factor=self.temporal_decay_factor,
+                                    similarity_weight=self.cosine_weight,
+                                    recency_weight=self.temporal_weight,
+                                )
                                 
                                 enhanced_results.append({
                                     "memory_id": memory_id,
@@ -462,14 +473,18 @@ class MemoryService:
                 try:
                     memory_time = datetime.fromisoformat(timestamp_str)
                     time_diff_hours = (current_time - memory_time).total_seconds() / 3600
-                    temporal_score = math.exp(-self.temporal_decay_factor * time_diff_hours / 24)
                 except Exception:
-                    temporal_score = 1.0
+                    time_diff_hours = 0.0
             else:
-                temporal_score = 1.0
-            
-            # Combined score: 70% cosine similarity, 30% temporal
-            combined_score = cosine_score * 0.7 + temporal_score * 0.3
+                time_diff_hours = 0.0
+
+            combined_score, cosine_score, temporal_score = combined_memory_score(
+                cosine_similarity=cosine_score,
+                age_hours=time_diff_hours if use_temporal_decay else 0.0,
+                temporal_decay_factor=self.temporal_decay_factor,
+                similarity_weight=self.cosine_weight,
+                recency_weight=self.temporal_weight,
+            )
             
             results.append({
                 "memory_id": payload.get("memory_id", str(hit.id)),
