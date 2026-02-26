@@ -731,6 +731,34 @@ async def health_check():
         overall_status = "unhealthy"
     else:
         overall_status = "healthy" if all_healthy else "degraded"
+
+    qdrant_status = "unhealthy"
+    qdrant_error = None
+    qdrant_url = f"http://{QDRANT_HOST}:{QDRANT_PORT}/healthz"
+    qdrant_probe_urls = [
+        qdrant_url,
+        f"http://{QDRANT_HOST}:{QDRANT_PORT}/health"
+    ]
+
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            for probe_url in qdrant_probe_urls:
+                try:
+                    qdrant_response = await client.get(probe_url)
+                    qdrant_response.raise_for_status()
+                    qdrant_status = "healthy"
+                    qdrant_url = probe_url
+                    break
+                except Exception:
+                    continue
+
+        if qdrant_status != "healthy":
+            raise RuntimeError(
+                f"Qdrant health probe failed for endpoints: {', '.join(qdrant_probe_urls)}"
+            )
+    except Exception as exc:
+        qdrant_error = str(exc)
+        overall_status = "degraded" if has_models else "unhealthy"
     
     payload = {
         "status": overall_status,
@@ -746,10 +774,17 @@ async def health_check():
         "summary": {
             "total_models": len(models_info),
             "healthy_models": sum(1 for info in models_info.values() if info['health_status'])
+        },
+        "dependencies": {
+            "qdrant": {
+                "status": qdrant_status,
+                "endpoint": qdrant_url,
+                "error": qdrant_error
+            }
         }
     }
 
-    status_code = 200 if all_healthy else 503
+    status_code = 200 if all_healthy and qdrant_status == "healthy" else 503
     return JSONResponse(content=payload, status_code=status_code)
 
 
