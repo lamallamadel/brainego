@@ -374,15 +374,19 @@ services:
     networks:
       - ai-platform-net
     ports:
-      - "6379:6379"
+      - "127.0.0.1:6379:6379"
     volumes:
       - redis-data:/data
-    command: redis-server --appendonly yes --maxmemory 2gb --maxmemory-policy allkeys-lru
+      - ./configs/redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: >
+      sh -c "redis-server /usr/local/etc/redis/redis.conf
+      --maxmemory ${REDIS_MAX_MEMORY:-2gb}
+      --maxmemory-policy ${REDIS_MAX_MEMORY_POLICY:-allkeys-lru}"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      interval: 5s
+      timeout: 3s
+      retries: 20
       start_period: 10s
 
   postgres:
