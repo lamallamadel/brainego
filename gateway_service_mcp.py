@@ -337,7 +337,9 @@ def get_memory_service() -> MemoryService:
             redis_db=REDIS_DB,
             memory_collection="memories",
             embedding_model="sentence-transformers/all-MiniLM-L6-v2",
-            temporal_decay_factor=0.1
+            temporal_decay_factor=float(os.getenv("MEMORY_TEMPORAL_DECAY_FACTOR", "0.1")),
+            cosine_weight=float(os.getenv("MEMORY_COSINE_WEIGHT", "0.7")),
+            temporal_weight=float(os.getenv("MEMORY_TEMPORAL_WEIGHT", "0.3"))
         )
         logger.info("Memory Service initialized")
     return memory_service

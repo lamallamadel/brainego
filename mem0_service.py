@@ -42,6 +42,8 @@ memory_service = MemoryService(
     redis_db=int(os.getenv("REDIS_DB", "0")),
     memory_collection=os.getenv("QDRANT_COLLECTION", "memories"),
     temporal_decay_factor=float(os.getenv("MEMORY_TEMPORAL_DECAY_FACTOR", "0.1")),
+    cosine_weight=float(os.getenv("MEMORY_COSINE_WEIGHT", "0.7")),
+    temporal_weight=float(os.getenv("MEMORY_TEMPORAL_WEIGHT", "0.3")),
 )
 
 
