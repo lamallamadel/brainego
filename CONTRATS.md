@@ -331,26 +331,9 @@ Codex ne peut pas:
 - Ouvrir l'accès réseau dans Codex
 - Créer de nouveaux contrats / politiques
 
-### 7.3 Protocol de Demande
+### 7.3 Protocol de Demande (Générique - Resource Unavailability)
 
-Quand Codex a besoin d'une dépendance:
-
-```python
-# Needs: httpx>=0.25.1
-# Needs: anyio>=3.7.0
-
-import httpx
-import anyio
-
-# ... code utilisant httpx / anyio
-```
-
-**Humain/Opérateur réagit:**
-1. Vérifie que les dépendances sont raisonnables
-2. Ajoute à requirements-test.txt
-3. Génère wheels: `python -m pip download -d vendor/wheels httpx anyio`
-4. Commit vendor/wheels/
-5. Codex peut maintenant utiliser
+Voir Section 8 (Invariant I7).
 
 ### 7.4 Clause de Refus
 
@@ -359,26 +342,88 @@ Si Codex ne peut pas satisfaire une consigne sans violer cette loi:
 ```
 Réponse correcte:
 "Je ne peux pas le faire sans violer la loi fondamentale de brainego.
-Spécifiquement: [I1|I2|I3|I4|I5|dépendance manquante]
+Spécifiquement: [I1|I2|I3|I4|I5|I6|I7]
 
-Pour procéder, il faut [ajouter au wheelhouse | créer ADR | accepter bruit | ...]"
+Pour procéder, il faut [ajouter au wheelhouse | créer ADR | accepter bruit | déclarer # Needs: | ...]"
 ```
 
 Pas de bricolage autour.
 
 ---
 
-## 8. Garantie Observable des Agents (Codex + Autres)
+## 8. Invariant de Ressource (I7 - Resource Unavailability Pattern)
 
-### 8.1 Le Problème
+### 8.1 Contexte
+
+Codex Cloud est **complètement offline** (zéro réseau, zéro pip, zéro docker, zéro shell).
+Codex peut générer du code qui dépend de ressources indisponibles localement:
+- Packages Python (fastapi, qdrant-client, etc.)
+- Fichiers de config (configs/agent-router.yaml)
+- Services externes (Qdrant, Redis, MAX Serve)
+- Outils (docker, kubectl)
+
+### 8.2 Invariant I7 (Formel & Général)
+
+```
+code_généré_dépend_de_ressource_X:
+
+  SI Codex peut satisfaire X localement:
+    ✅ Satisfait X
+    ✅ Teste le code
+    ✅ Commit final
+
+  SINON (X indisponible en Codex):
+    ✅ Déclare X explicitement (# Needs: <type>:<spec>)
+    ✅ Génère code (assume X disponible)
+    ✅ Commit (opérateur verra # Needs:)
+    ❌ NE PAS tenter de satisfaire X
+    ❌ NE PAS bricoler autour
+```
+
+### 8.3 Ressources Couvertes (Extensible)
+
+| Type | Exemple | Codex Action | Operator Action |
+|------|---------|--------------|-------------|
+| `python-package` | `fastapi>=0.104.1` | Déclare `# Needs:` | Ajoute à wheelhouse, download, commit |
+| `file` | `configs/agent-router.yaml` | Déclare `# Needs:` | Crée/fourni file, commit |
+| `service` | `qdrant` | Déclare `# Needs:` (mark test @integration) | CI Docker fournit le service |
+| `tool` | `docker` | Déclare `# Needs:` | Disponible en CI, pas Codex |
+| `data` | `models/llama-3.3-8b.gguf` | Déclare `# Needs:` | Download/store, update .gitignore |
+
+### 8.4 Violation I7
+
+❌ Codex tente `pip install package` → interdit (zéro pip)
+❌ Codex tente `docker pull image` → interdit (zéro docker)
+❌ Codex tente `curl https://...` → interdit (zéro réseau)
+❌ Codex génère code sans déclarer `# Needs: X` → ressource manquante non documentée
+❌ Codex bricode autour (try/except pour contourner absence) → masque le problème
+
+### 8.5 Bénéfice
+
+```
+Avant (chaos):
+  Codex: "pip install fastapi failed"
+  → Erreur incompréhensible, frustration
+
+Après (I7 clear pattern):
+  Codex: "FastAPI pas dispo, déclare # Needs:, continue"
+  Operator: "Voit # Needs:, ajoute fastapi au wheelhouse"
+  → Workflow clair, reproductible, pas de boucle infernale
+```
+
+---
+
+## 9. Garantie Observable des Agents (Codex + Autres)
+
+### 9.1 Le Problème
 
 Les agents peuvent réciter les règles sans les appliquer (boucle infernale):
 - Soit faire sans cadre (ignorance des règles)
 - Soit lire le cadre sans faire (performativité creuse)
 
-**Solution:** Contrat d'**auditabilité non-ambigüe** à chaque sortie d'agent.
+**Solution:** Contrat d'**auditabilité non-ambigüe** à chaque sortie d'agent (I6).
 
-### 8.2 État de Sortie (Falsifiable)
+### 9.2 État de Sortie (Falsifiable)
 
 Tout agent doit finir dans UN seul état valide:
 
@@ -398,7 +443,7 @@ Tout agent doit finir dans UN seul état valide:
 Tout autre état = erreur détectable immédiatement
 ```
 
-### 8.3 Preuves Obligatoires (Pas de "Crois-Moi")
+### 9.3 Preuves Obligatoires (Pas de "Crois-Moi")
 
 Avant de déclarer "terminé", agent fournit:
 
@@ -421,7 +466,7 @@ python validate_wheels.py
 # [❌] Check 3: raison pourquoi acceptable ou non
 ```
 
-### 8.4 Gate de Vérification (Avant "Terminé")
+### 9.4 Gate de Vérification (Avant "Terminé") - I6
 
 Agent doit cocher ces cases:
 
@@ -430,8 +475,9 @@ Agent doit cocher ces cases:
 
 ☐ Règles lues: AGENTS.md + CONTRATS.md consultés
 ☐ Scope clair: Tâche X = Y résultat attendu
+☐ Ressources: I7 checklist (# Needs: déclarés si nécessaire)
 ☐ Dépendances: Offline uniquement, validate_wheels.py ok
-☐ Tests offline: py_compile + pytest unit réussis
+☐ Tests offline: py_compile + pytest unit réussis (ou skipped avec raison)
 ☐ Zéro web lookup: Aucun curl/requests/urllib extern
 ☐ Commit cohérent: État final = V1 ou V2 (jamais état mixte)
 ☐ Preuves jointes: git status + checks logs + fichiers
@@ -440,7 +486,7 @@ Si UN point manque: NE PAS conclure "terminé"
 Conclure plutôt: "bloqué sur [X], raison: [Y], prochaine action: [Z]"
 ```
 
-### 8.5 Exemple: Sortie Conforme vs Non-Conforme
+### 9.5 Exemple: Sortie Conforme vs Non-Conforme
 
 **❌ Non-Conforme (Boucle Infernale)**
 ```
@@ -456,11 +502,12 @@ Conclusion: Tâche conforme."
   - Déclaration sans preuve
 ```
 
-**✅ Conforme (Auditabilité)**
+**✅ Conforme (Auditabilité + I7)**
 ```
 [INVARIANTS VÉRIFIÉS]
 ☑ Scope: Impl API /v1/chat + /v1/rag/query + tests
-☑ Offline: httpx, pytest en wheelhouse ✅
+☑ I7: Tests marqués @unit (pas de services), # Needs: python-package:fastapi déclaré
+☑ Offline: fastapi, pytest en wheelhouse ✅
 ☑ Tests: py_compile ✅, pytest tests/unit/ ✅
 ☑ Code: 3 fichiers modifiés (api_server.py, rag_service.py, test_...py)
 ☑ Zéro web: Aucun curl, requests, urllib vers internet
@@ -484,10 +531,10 @@ $ pytest tests/unit/test_unified_chat.py -v
 $ python validate_wheels.py
 ✅ All 14 requirements in wheelhouse
 
-Prêt PR: github.com/lamallamadel/brainego/pull/XXX
+État: V2 (changements validés, prêt PR)
 ```
 
-### 8.6 Limite Transparente (Pas de Faux Contrat)
+### 9.6 Limite Transparente (Pas de Faux Contrat)
 
 Agent reconnaît ses limites:
 
@@ -505,22 +552,22 @@ Conséquence:
 
 ---
 
-## 9. Protocol d'Exécution Agent (Appliquable à Tout Agent)
+## 10. Protocol d'Exécution Agent (Appliquable à Tout Agent)
 
-### 9.1 Avant de Commencer
+### 10.1 Avant de Commencer
 
 ```
 1. Lire tâche / issue linéaire
 2. Vérifier scope / dépendances
-3. Vérifier si compatible avec environnement Codex
+3. Vérifier si compatible avec environnement Codex (I1-I7)
 4. Annoncer le plan (jamais faire sans annoncer)
 5. Exécuter
-6. Vérifier gate [8.4]
+6. Vérifier gate [9.4]
 7. Si V1 ou V2: conclure
    Sinon: repeller ou refuser explicitement
 ```
 
-### 9.2 Annonce Obligatoire Avant Première Action
+### 10.2 Annonce Obligatoire Avant Première Action
 
 AVANT tout `read_file`, `shell`, `write_file`:
 
@@ -532,11 +579,12 @@ Résultat attendu: [Z].
 Contraintes de brainego appliquées:
   - Offline uniquement (✅/❌)
   - Dépendances wheelhouse (✅/❌)
+  - Resource Unavailability (I7) (✅/❌)
   - Tests offline (✅/❌)
   - Commit/PR si modif (✅/❌)"
 ```
 
-### 9.3 Pendant l'Exécution
+### 10.3 Pendant l'Exécution
 
 ```
 Après chaque étape majeure:
@@ -546,7 +594,7 @@ Jamais:
   "Perfect", "Excellent", "Great" (filler words)
 ```
 
-### 9.4 À la Fin
+### 10.4 À la Fin
 
 ```
 Fournir tableau:
@@ -554,6 +602,7 @@ Fournir tableau:
 [INVARIANTS VÉRIFIÉS]
 ☑/☐ Règles lues
 ☑/☐ Scope implémenté
+☑/☐ I7 checklist (# Needs: si ressources manquantes)
 ☑/☐ Tests offshore
 ☑/☐ Commit/PR cohérent
 ☑/☐ Zéro web lookup
@@ -572,9 +621,9 @@ Si BLOQUÉ:
 
 ---
 
-## 10. Garde-Fous (Enforcement)
+## 11. Garde-Fous (Enforcement)
 
-### 10.1 CI/CD Checks
+### 11.1 CI/CD Checks
 
 ```bash
 # Vérifier qu'aucun pip install n'est "online"
@@ -590,15 +639,15 @@ pytest --cov=api_server --cov=memory_service --cov=drift_monitor --cov-report=te
 python validate_wheels.py || exit 1
 ```
 
-### 10.2 Revue Manuelle
+### 11.2 Revue Manuelle
 
-- ✅ Chaque PR doit vérifier: dépendances, classification test, observabilité
+- ✅ Chaque PR doit vérifier: dépendances, classification test, observabilité, I7 declarations
 - ✅ Tout changement de CI/architecture/sécurité → humain review obligatoire
-- ✅ Chaque sortie agent → vérifier gate [8.4], pas juste "looks good"
+- ✅ Chaque sortie agent → vérifier gate [9.4], pas juste "looks good"
 
 ---
 
-## 11. Résumé des Invariants
+## 12. Résumé des Invariants
 
 | Invariant | Formule | Violation |
 |-----------|---------|-----------|
@@ -608,20 +657,25 @@ python validate_wheels.py || exit 1
 | **I4** | nouvelle_brique ⟹ (compatible ∨ ADR_approuvée) | nouveau service sans décision |
 | **I5** | changement_sensible ⟹ obs_new ≥ obs_prev | suppression de métriques |
 | **I6** | sortie_agent ⟹ État ∈ {V1, V2} | État mixte / déclaration sans preuves |
+| **I7** | ressource_indisponible ⟹ Déclare + NE_PAS_satisfaire | Codex tente pip/docker/curl |
 
 ---
 
-## 12. Référence Rapide
+## 13. Référence Rapide
 
 **Codex generating code?**
 → tests/unit/ + offline uniquement
-→ Déclare Needs: si dépendance
+→ Déclare `# Needs:` si ressource manquante
+
+**Ressource indisponible (fastapi, qdrant, docker)?**
+→ Déclare `# Needs: <type>:<spec>` + continue
+→ Opérateur satisfait après, commit
 
 **Test échoue à cause de pip 403?**
-→ Normal (bruit). Ajouter au wheelhouse.
+→ Normal (bruit). I1: ajouter au wheelhouse.
 
 **Test échoue dans Codex mais passe en CI?**
-→ Normal. C'est un test integration. Correct.
+→ Normal. I2: c'est un test integration. Correct.
 
 **Métriques supprimées pour simplifier?**
 → Violation I5. Refuser.
@@ -630,11 +684,14 @@ python validate_wheels.py || exit 1
 → Vérifier I4 (compatible + éventuellement ADR)
 
 **Agent sort en boucle (récite sans faire)?**
-→ Violation I6. Vérifier gate [8.4].
+→ Violation I6. Vérifier gate [9.4].
+
+**Code dépend d'une ressource offline?**
+→ I7: Déclarer explicitement `# Needs:`, pas de bricolage.
 
 ---
 
-**Statut:** Loi fondamentale v2 (Agent Auditability) - À appliquer immédiatement
+**Statut:** Loi fondamentale v3 (I7: Resource Unavailability Pattern) - À appliquer immédiatement
 **Auteur:** Gordon (Docker AI) + Décisions du projet
 **Révision:** Annuelle + sur ADR majeure
 **Questions:** Créer issue avec tag `[CONTRATS]`
