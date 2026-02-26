@@ -16,7 +16,7 @@ from datetime import datetime
 
 import uvicorn
 import signal
-from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -776,8 +776,8 @@ async def root():
             "rag_delete": "/v1/rag/documents/{document_id}",
             "rag_stats": "/v1/rag/stats",
             "memory_add": "POST /memory/add",
-            "memory_search": "GET /memory/search",
-            "memory_forget": "DELETE /memory/forget/{memory_id}",
+            "memory_search": "POST|GET /memory/search",
+            "memory_forget": "DELETE /memory/forget/{memory_id} or /memory/forget?memory_id=...",
             "memory_stats": "GET /memory/stats",
             "graph_process": "POST /graph/process",
             "graph_query": "POST /graph/query",
@@ -1913,6 +1913,58 @@ async def memory_search(request: MemorySearchRequest):
         raise HTTPException(status_code=500, detail=f"Memory search error: {str(e)}")
 
 
+@app.get("/memory/search", response_model=MemorySearchResponse)
+async def memory_search_get(
+    response: Response,
+    query: str = Query(..., description="Search query text"),
+    user_id: Optional[str] = Query(None, description="Optional user ID to filter memories"),
+    limit: int = Query(10, ge=1, le=100, description="Maximum number of results"),
+    use_temporal_decay: bool = Query(True, description="Apply temporal decay to scores"),
+    filters: Optional[str] = Query(
+        None,
+        description=(
+            "Optional URL-encoded JSON object for metadata filters. "
+            "Use POST /memory/search for complex filters."
+        ),
+        examples=[
+            "{\"project\":\"brainego\"}",
+            "%7B%22project%22%3A%22brainego%22%7D"
+        ],
+    ),
+):
+    """
+    Search memories using query parameters.
+
+    Notes:
+    - This endpoint mirrors POST /memory/search for clients that require GET.
+    - `filters` must be a JSON object encoded as a string (URL-encoded is supported).
+    - POST /memory/search is recommended for complex filters due to URL length limits.
+    - Adds Cache-Control: no-store to reduce accidental caching of user-specific searches.
+    """
+    response.headers["Cache-Control"] = "no-store"
+
+    parsed_filters: Optional[Dict[str, Any]] = None
+    if filters:
+        try:
+            parsed_candidate = json.loads(filters)
+        except json.JSONDecodeError as exc:
+            raise HTTPException(status_code=400, detail=f"Invalid filters JSON: {exc}") from exc
+
+        if not isinstance(parsed_candidate, dict):
+            raise HTTPException(status_code=400, detail="Invalid filters JSON: expected an object")
+
+        parsed_filters = parsed_candidate
+
+    request = MemorySearchRequest(
+        query=query,
+        user_id=user_id,
+        limit=limit,
+        filters=parsed_filters,
+        use_temporal_decay=use_temporal_decay,
+    )
+    return await memory_search(request)
+
+
 @app.delete("/memory/forget/{memory_id}", response_model=MemoryForgetResponse)
 async def memory_forget(memory_id: str):
     """
@@ -1937,6 +1989,17 @@ async def memory_forget(memory_id: str):
     except Exception as e:
         logger.error(f"Error deleting memory: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Memory delete error: {str(e)}")
+
+
+@app.delete("/memory/forget", response_model=MemoryForgetResponse)
+async def memory_forget_by_query(memory_id: str):
+    """
+    Delete a memory by query parameter.
+
+    This endpoint mirrors DELETE /memory/forget/{memory_id} for clients that
+    cannot pass path parameters.
+    """
+    return await memory_forget(memory_id)
 
 
 @app.get("/memory/stats", response_model=MemoryStatsResponse)

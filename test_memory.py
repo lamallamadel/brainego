@@ -5,6 +5,7 @@ Tests for Memory API endpoints.
 
 import httpx
 import time
+import urllib.parse
 import sys
 
 
@@ -82,6 +83,70 @@ def test_memory_search(user_id="test_user"):
     assert 'results' in result
     assert isinstance(result['results'], list)
     
+    return result
+
+
+def test_memory_search_get(user_id="test_user"):
+    """Test searching memories via GET endpoint."""
+    print("\n=== Testing Memory Search (GET) ===")
+
+    response = httpx.get(
+        f"{API_URL}/memory/search",
+        params={
+            "query": "What does the user do for work?",
+            "user_id": user_id,
+            "limit": 5,
+            "use_temporal_decay": True,
+        },
+        timeout=30.0,
+    )
+    response.raise_for_status()
+    result = response.json()
+
+    print(f"Query: {result['query']}")
+    print(f"Results: {len(result['results'])} memories found")
+
+    assert 'results' in result
+    assert isinstance(result['results'], list)
+
+    return result
+
+
+def test_memory_search_get_urlencoded_filters(user_id="test_user"):
+    """Test GET search with URL-encoded JSON filters."""
+    print("\n=== Testing Memory Search (GET, URL-encoded filters) ===")
+
+    encoded_filters = urllib.parse.quote('{"category":"personal"}', safe="")
+    url = (
+        f"{API_URL}/memory/search?query=software%20engineer"
+        f"&user_id={user_id}&limit=5&filters={encoded_filters}"
+    )
+    response = httpx.get(url, timeout=30.0)
+    response.raise_for_status()
+    result = response.json()
+
+    assert "results" in result
+    assert isinstance(result["results"], list)
+    return result
+
+
+def test_memory_search_get_invalid_filters():
+    """Test GET search with invalid JSON in filters."""
+    print("\n=== Testing Memory Search (GET, invalid filters JSON) ===")
+
+    response = httpx.get(
+        f"{API_URL}/memory/search",
+        params={
+            "query": "software engineer",
+            "filters": "{bad-json}",
+        },
+        timeout=30.0,
+    )
+
+    assert response.status_code == 400
+    result = response.json()
+    assert "detail" in result
+    assert "Invalid filters JSON" in result["detail"]
     return result
 
 
@@ -186,6 +251,11 @@ def run_tests():
         
         # Test temporal decay
         test_temporal_decay()
+
+        # Test GET search
+        test_memory_search_get()
+        test_memory_search_get_urlencoded_filters()
+        test_memory_search_get_invalid_filters()
         
         # Test statistics
         stats_before = test_memory_stats()
