@@ -1,0 +1,161 @@
+name: Codex Feature Build & Test
+
+on:
+  push:
+    branches:
+      - 'feature/codex/**'
+  pull_request:
+    branches:
+      - 'feature/codex/**'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: read
+      packages: write
+      checks: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx (Cloud)
+        uses: docker/setup-buildx-action@v3
+        with:
+          version: latest
+          driver-options: image=moby/buildkit:latest
+      
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      # Build API server image with Docker Build Cloud
+      - name: Build and push API server image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.api
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/api:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/api:${{ github.ref_name }}-latest
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/api:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/api:buildcache,mode=max
+      
+      # Build gateway image
+      - name: Build and push gateway image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.gateway
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway:${{ github.ref_name }}-latest
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/gateway:buildcache,mode=max
+      
+      # Build MCPJungle image
+      - name: Build and push MCPJungle image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.mcpjungle
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/mcpjungle:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/mcpjungle:${{ github.ref_name }}-latest
+          cache-from: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/mcpjungle:buildcache
+          cache-to: type=registry,ref=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}/mcpjungle:buildcache,mode=max
+      
+      # Setup Testcontainers Cloud
+      - name: Start Testcontainers Cloud agent
+        env:
+          TESTCONTAINERS_CLOUD_TOKEN: ${{ secrets.TESTCONTAINERS_CLOUD_TOKEN }}
+        run: |
+          curl -fsSL https://testcontainers.cloud/install.sh | bash
+          ./testcontainers-cloud-agent &
+      
+      # Setup Python for tests
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+      
+      # Install dependencies
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-cov testcontainers
+      
+      # Run unit tests
+      - name: Run unit tests
+        run: pytest tests/unit/ -v --tb=short --cov=. --cov-report=xml 2>&1 | tee test-output.log
+      
+      # Run integration tests with Testcontainers Cloud
+      - name: Run integration tests (Testcontainers Cloud)
+        env:
+          TESTCONTAINERS_DOCKER_SOCKET_OVERRIDE: /run/docker.sock
+          TESTCONTAINERS_HOST_OVERRIDE: testcontainers.cloud
+        run: |
+          pytest tests/integration/ -v --tb=short -s 2>&1 | tee integration-test-output.log
+      
+      # Upload test results
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: test-results
+          path: |
+            test-output.log
+            integration-test-output.log
+            .coverage
+      
+      # Publish test results
+      - name: Publish test results
+        if: always()
+        uses: EnricoMi/publish-unit-test-result-action@v2
+        with:
+          files: test-results.xml
+          check_name: Test Results
+          comment_mode: always
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Run Trivy vulnerability scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: 'fs'
+          scan-ref: '.'
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+      
+      - name: Upload Trivy results to GitHub Security
+        uses: github/codeql-action/upload-sarif@v2
+        with:
+          sarif_file: 'trivy-results.sarif'
+
+  notify:
+    runs-on: ubuntu-latest
+    needs: [build-and-test, security-scan]
+    if: always()
+    steps:
+      - name: Send notification
+        run: |
+          echo "Build Status: ${{ needs.build-and-test.result }}"
+          echo "Security Scan: ${{ needs.security-scan.result }}"
