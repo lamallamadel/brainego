@@ -16,13 +16,14 @@ from datetime import datetime
 
 import uvicorn
 import signal
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import httpx
 
 from agent_router import AgentRouter
+from document_ingestion_service import DocumentIngestionService
 from rag_service import RAGIngestionService
 from memory_service import MemoryService
 from graph_service import GraphService
@@ -167,6 +168,21 @@ class RAGIngestBatchResponse(BaseModel):
     total_chunks: int
     total_points: int
     results: List[Dict[str, Any]]
+
+
+class DocumentIngestTextRequest(BaseModel):
+    text: str = Field(..., description="Raw text content to ingest")
+    source: str = Field(..., description="Source identifier (e.g. slack, github, upload)")
+    project: str = Field(..., description="Project identifier")
+    created_at: Optional[str] = Field(None, description="Optional document creation timestamp")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Optional additional metadata")
+
+
+class DocumentIngestResponse(BaseModel):
+    document_id: str
+    metadata: Dict[str, Any]
+    chunks: List[Dict[str, Any]]
+    chunks_created: int
 
 
 class RAGSearchRequest(BaseModel):
@@ -467,6 +483,7 @@ rag_service = None
 memory_service = None
 graph_service = None
 feedback_service = None
+document_ingestion_service = None
 
 # Graceful shutdown flag
 shutdown_in_progress = False
@@ -506,6 +523,19 @@ def get_rag_service() -> RAGIngestionService:
         )
         logger.info("RAG Ingestion Service initialized")
     return rag_service
+
+
+def get_document_ingestion_service() -> DocumentIngestionService:
+    """Get or initialize document ingestion service."""
+    global document_ingestion_service
+    if document_ingestion_service is None:
+        logger.info("Initializing Document Ingestion Service...")
+        document_ingestion_service = DocumentIngestionService(
+            chunk_size=1000,
+            chunk_overlap=100
+        )
+        logger.info("Document Ingestion Service initialized")
+    return document_ingestion_service
 
 
 def get_memory_service() -> MemoryService:
@@ -1025,6 +1055,69 @@ async def router_info():
         },
         "prometheus_metrics": "http://localhost:8001/metrics"
     }
+
+
+@app.post("/v1/documents/ingest/text", response_model=DocumentIngestResponse)
+async def ingest_document_text(request: DocumentIngestTextRequest):
+    """Ingest raw text and return UTF-8 normalized overlapping chunks."""
+    try:
+        service = get_document_ingestion_service()
+        result = service.ingest_text(
+            text=request.text,
+            source=request.source,
+            project=request.project,
+            created_at=request.created_at,
+            metadata=request.metadata
+        )
+        return DocumentIngestResponse(
+            document_id=result["document_id"],
+            metadata=result["metadata"],
+            chunks=result["chunks"],
+            chunks_created=result["chunks_created"]
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error ingesting text document: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Document ingestion error: {str(e)}")
+
+
+@app.post("/v1/documents/ingest/file", response_model=DocumentIngestResponse)
+async def ingest_document_file(
+    file: UploadFile = File(...),
+    source: str = Form(...),
+    project: str = Form(...),
+    created_at: Optional[str] = Form(None),
+    metadata: Optional[str] = Form(None)
+):
+    """Ingest file bytes and return UTF-8 normalized overlapping chunks."""
+    try:
+        parsed_metadata = json.loads(metadata) if metadata else None
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=400, detail=f"Invalid metadata JSON: {str(e)}")
+
+    try:
+        service = get_document_ingestion_service()
+        content = await file.read()
+        result = service.ingest_file(
+            file_bytes=content,
+            filename=file.filename or "uploaded-file",
+            source=source,
+            project=project,
+            created_at=created_at,
+            metadata=parsed_metadata
+        )
+        return DocumentIngestResponse(
+            document_id=result["document_id"],
+            metadata=result["metadata"],
+            chunks=result["chunks"],
+            chunks_created=result["chunks_created"]
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error ingesting file document: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Document ingestion error: {str(e)}")
 
 
 @app.post("/v1/rag/ingest", response_model=RAGIngestResponse)
