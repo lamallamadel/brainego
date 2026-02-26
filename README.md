@@ -20,6 +20,18 @@ Docker Compose infrastructure for an AI platform with MAX Serve running three GG
 
 ## Quick Start
 
+### Optional: Install Modular + MAX CLI on the Inference Host
+
+```bash
+chmod +x install_modular_max.sh
+./install_modular_max.sh
+
+# Expected verification output from the script
+max --version
+```
+
+This installs the Modular Python package (`modular`) and verifies that the `max` CLI is available in `PATH`.
+
 ### 1. Download the Model
 
 ```bash
