@@ -92,12 +92,11 @@ jobs:
           python-version: '3.11'
           cache: 'pip'
       
-      # Install dependencies
-      - name: Install dependencies
+      # Install test dependencies (offline, no-index)
+      - name: Install test dependencies (offline)
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements.txt
-          pip install pytest pytest-asyncio pytest-cov testcontainers
+          python -m pip install --no-index --find-links=vendor/wheels -q -r requirements-test.txt
       
       # Run unit tests
       - name: Run unit tests

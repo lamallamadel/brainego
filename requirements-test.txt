@@ -1,0 +1,24 @@
+# Minimal test dependencies only (no heavy ML libraries)
+# Used in CI/CD for pytest execution with offline pip install
+
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+testcontainers>=3.7.0
+
+# Core API dependencies (minimal for unit tests)
+fastapi>=0.104.1
+pydantic>=2.5.0
+httpx>=0.25.1
+
+# Testing utilities
+python-multipart>=0.0.6
+
+# For mocking/testing services
+redis>=5.0.1
+neo4j>=5.15.0
+psycopg2-binary>=2.9.9
+qdrant-client>=1.7.1
+
+# For test fixtures
+pyyaml>=6.0.1
