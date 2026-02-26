@@ -745,6 +745,7 @@ async def root():
             "rag_ingest_batch": "/v1/rag/ingest/batch",
             "rag_search": "/v1/rag/search",
             "rag_query": "/v1/rag/query",
+            "rag_query_api": "/v1/rag/queryAPI",
             "rag_delete": "/v1/rag/documents/{document_id}",
             "rag_stats": "/v1/rag/stats",
             "memory_add": "POST /memory/add",
@@ -1300,6 +1301,7 @@ async def rag_stats():
 
 
 @app.post("/v1/rag/query", response_model=RAGQueryResponse)
+@app.post("/v1/rag/queryAPI", response_model=RAGQueryResponse)
 async def rag_query(request: RAGQueryRequest):
     """
     RAG query endpoint: retrieves relevant context and generates augmented response.
