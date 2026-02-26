@@ -1,10 +1,11 @@
-.PHONY: help install download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status grafana grafana-start grafana-stop grafana-ui drift drift-start drift-stop drift-logs drift-check drift-metrics test-unit test-integration test-all codex-help
+.PHONY: help install install-modular download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status grafana grafana-start grafana-stop grafana-ui drift drift-start drift-stop drift-logs drift-check drift-metrics test-unit test-integration test-all codex-help
 
 help:
 	@echo "MAX Serve + Llama 3.3 8B Infrastructure"
 	@echo ""
 	@echo "Available commands:"
 	@echo "  make install      - Install Python dependencies"
+	@echo "  make install-modular - Install Modular Python package and verify MAX CLI"
 	@echo "  make download     - Download Llama 3.3 8B model"
 	@echo "  make build        - Build Docker images"
 	@echo "  make start        - Start all services"
@@ -78,6 +79,10 @@ help:
 
 install:
 	pip install -r requirements.txt
+
+install-modular:
+	chmod +x install_modular_max.sh
+	./install_modular_max.sh
 
 download:
 	chmod +x download_model.sh
