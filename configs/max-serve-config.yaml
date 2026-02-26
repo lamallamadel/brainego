@@ -1,4 +1,9 @@
-# MAX Serve Configuration for Llama 3.3 8B Instruct
+# MAX Serve Configuration for the selected base model (Llama 3.3 8B Instruct)
+selected_base_model:
+  provider: "meta-llama"
+  id: "Llama-3.3-8B-Instruct"
+  quantization: "Q4_K_M"
+
 model:
   name: "llama-3.3-8b-instruct"
   path: "/models/llama-3.3-8b-instruct-q4_k_m.gguf"
@@ -17,6 +22,7 @@ server:
   port: 8080
   workers: 4
   max_concurrent_requests: 64
+  health_endpoint: "/health"
 
 # Inference settings
 inference:

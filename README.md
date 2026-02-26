@@ -256,6 +256,20 @@ inference:
   context_length: 8192
 ```
 
+### Selected Base Model Container
+
+Use `docker-compose.max-serve.yaml` when you want a single MAX Serve container pinned to the selected 8B base model with configurable runtime settings:
+
+```bash
+MAX_SERVE_MODEL_PATH=/models/llama-3.3-8b-instruct-q4_k_m.gguf \
+MAX_SERVE_BATCH_SIZE=32 \
+MAX_SERVE_CONTEXT_LENGTH=8192 \
+MAX_SERVE_PORT=8080 \
+docker compose -f docker-compose.max-serve.yaml up -d
+```
+
+The service exposes a health probe at `http://localhost:${MAX_SERVE_PORT:-8080}/health`.
+
 ### Batching Benefits
 
 With `max_batch_size=32`, MAX Serve can process up to 32 requests simultaneously, providing:
