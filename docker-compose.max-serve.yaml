@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  max-serve:
+    image: modular/max-serve:latest
+    container_name: max-serve
+    restart: unless-stopped
+    ports:
+      - "${MAX_SERVE_PORT:-8080}:${MAX_SERVE_PORT:-8080}"
+    volumes:
+      - ./models:/models
+      - ./configs:/configs
+      - ./logs:/logs
+    environment:
+      - NVIDIA_VISIBLE_DEVICES=all
+      - CUDA_VISIBLE_DEVICES=${CUDA_VISIBLE_DEVICES:-0}
+      - MAX_SERVE_MODEL_PATH=${MAX_SERVE_MODEL_PATH:-/models/llama-3.3-8b-instruct-q4_k_m.gguf}
+      - MAX_SERVE_BATCH_SIZE=${MAX_SERVE_BATCH_SIZE:-32}
+      - MAX_SERVE_CONTEXT_LENGTH=${MAX_SERVE_CONTEXT_LENGTH:-8192}
+      - MAX_SERVE_PORT=${MAX_SERVE_PORT:-8080}
+    command: >
+      max-serve
+      --model-path ${MAX_SERVE_MODEL_PATH:-/models/llama-3.3-8b-instruct-q4_k_m.gguf}
+      --host 0.0.0.0
+      --port ${MAX_SERVE_PORT:-8080}
+      --max-batch-size ${MAX_SERVE_BATCH_SIZE:-32}
+      --max-waiting-time ${MAX_SERVE_MAX_WAIT_MS:-10}
+      --max-tokens ${MAX_SERVE_MAX_TOKENS:-2048}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:${MAX_SERVE_PORT:-8080}/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
