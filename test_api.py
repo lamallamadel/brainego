@@ -57,6 +57,54 @@ def test_chat_completion():
     print()
 
 
+def test_chat_completion_stream():
+    """Test streaming chat completions endpoint."""
+    print("Testing /v1/chat/completions endpoint (stream=true)...")
+
+    payload = {
+        "model": "llama-3.3-8b-instruct",
+        "messages": [
+            {"role": "system", "content": "You are a helpful assistant."},
+            {"role": "user", "content": "Say hello in one short sentence."}
+        ],
+        "max_tokens": 60,
+        "temperature": 0.7,
+        "stream": True
+    }
+
+    response = requests.post(
+        f"{API_BASE_URL}/v1/chat/completions",
+        json=payload,
+        timeout=300,
+        stream=True
+    )
+
+    print(f"Status: {response.status_code}")
+
+    if response.status_code != 200:
+        print(f"Error: {response.text}")
+        print()
+        return
+
+    chunks = []
+    done_seen = False
+    for line in response.iter_lines(decode_unicode=True):
+        if not line:
+            continue
+        if line.startswith("data: "):
+            data = line[len("data: "):]
+            chunks.append(data)
+            if data == "[DONE]":
+                done_seen = True
+                break
+
+    print(f"Received chunks: {len(chunks)}")
+    print(f"DONE marker received: {done_seen}")
+    if chunks:
+        print(f"First chunk: {chunks[0]}")
+    print()
+
+
 def test_metrics():
     """Test the metrics endpoint."""
     print("Testing /metrics endpoint...")
@@ -75,6 +123,7 @@ if __name__ == "__main__":
     try:
         test_health()
         test_chat_completion()
+        test_chat_completion_stream()
         test_metrics()
         
         print("=" * 60)

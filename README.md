@@ -118,6 +118,22 @@ response = requests.post(
 print(response.json()["choices"][0]["message"]["content"])
 ```
 
+### Streaming Chat Completions
+
+```bash
+curl -N -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama-3.3-8b-instruct",
+    "messages": [
+      {"role": "user", "content": "Write one sentence about local LLM APIs."}
+    ],
+    "stream": true
+  }'
+```
+
+The API returns Server-Sent Events in OpenAI-compatible `chat.completion.chunk` format ending with `data: [DONE]`.
+
 ### Health Check
 
 ```bash
