@@ -9,15 +9,32 @@ import time
 import json
 import statistics
 import argparse
-from typing import List, Dict, Any
+import sys
+from typing import Any, Dict, List
 from datetime import datetime
-import httpx
 from dataclasses import dataclass, asdict
 
 # Test configuration
 API_BASE_URL = "http://localhost:8000"
 CHAT_COMPLETIONS_URL = f"{API_BASE_URL}/v1/chat/completions"
 HEALTH_URL = f"{API_BASE_URL}/health"
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build command-line parser for the load-test runner."""
+    parser = argparse.ArgumentParser(description="Load test MAX Serve API")
+    parser.add_argument("--url", default=API_BASE_URL, help="API base URL")
+    parser.add_argument("--requests", type=int, default=100, help="Number of requests")
+    parser.add_argument("--concurrency", type=int, default=10, help="Concurrent requests")
+    parser.add_argument("--max-tokens", type=int, default=100, help="Max tokens per request")
+    parser.add_argument(
+        "--scenario",
+        choices=["short", "medium", "long", "all"],
+        default="medium",
+        help="Test scenario",
+    )
+    parser.add_argument("--output", default="load_test_report.json", help="Output JSON file")
+    return parser
 
 
 @dataclass
@@ -58,20 +75,25 @@ class LoadTestReport:
     total_completion_tokens: int
     total_tokens: int
     avg_tokens_per_request: float
+    total_tokens_per_second: float
+    completion_tokens_per_second: float
     
     timestamp: str
 
 
 class LoadTester:
-    def __init__(self, base_url: str = API_BASE_URL):
+    def __init__(self, httpx_module: Any, base_url: str = API_BASE_URL):
+        self.httpx = httpx_module
         self.base_url = base_url
+        self.chat_completions_url = f"{base_url}/v1/chat/completions"
+        self.health_url = f"{base_url}/health"
         self.results: List[TestResult] = []
         
     async def check_health(self) -> bool:
         """Check if the API is healthy."""
         try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(HEALTH_URL)
+            async with self.httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(self.health_url)
                 if response.status_code == 200:
                     data = response.json()
                     print(f"✓ Health check passed: {data.get('status')}")
@@ -104,8 +126,8 @@ class LoadTester:
         start_time = time.time()
         
         try:
-            async with httpx.AsyncClient(timeout=300.0) as client:
-                response = await client.post(CHAT_COMPLETIONS_URL, json=payload)
+            async with self.httpx.AsyncClient(timeout=300.0) as client:
+                response = await client.post(self.chat_completions_url, json=payload)
                 latency_ms = (time.time() - start_time) * 1000
                 
                 if response.status_code == 200:
@@ -212,6 +234,10 @@ class LoadTester:
             total_completion_tokens=total_completion_tokens,
             total_tokens=total_tokens,
             avg_tokens_per_request=total_tokens / len(successful_results) if successful_results else 0,
+            total_tokens_per_second=total_tokens / duration if duration > 0 else 0.0,
+            completion_tokens_per_second=(
+                total_completion_tokens / duration if duration > 0 else 0.0
+            ),
             
             timestamp=datetime.utcnow().isoformat()
         )
@@ -247,6 +273,8 @@ class LoadTester:
         print(f"  Total Completion Tokens: {report.total_completion_tokens}")
         print(f"  Total Tokens:            {report.total_tokens}")
         print(f"  Avg Tokens/Request:      {report.avg_tokens_per_request:.1f}")
+        print(f"  Total Tokens/sec:        {report.total_tokens_per_second:.2f}")
+        print(f"  Completion Tokens/sec:   {report.completion_tokens_per_second:.2f}")
         
         print("\n" + "=" * 80 + "\n")
     
@@ -273,19 +301,9 @@ TEST_MESSAGES_LONG = [
 ]
 
 
-async def main():
-    parser = argparse.ArgumentParser(description="Load test MAX Serve API")
-    parser.add_argument("--url", default=API_BASE_URL, help="API base URL")
-    parser.add_argument("--requests", type=int, default=100, help="Number of requests")
-    parser.add_argument("--concurrency", type=int, default=10, help="Concurrent requests")
-    parser.add_argument("--max-tokens", type=int, default=100, help="Max tokens per request")
-    parser.add_argument("--scenario", choices=["short", "medium", "long", "all"], default="medium",
-                       help="Test scenario")
-    parser.add_argument("--output", default="load_test_report.json", help="Output JSON file")
-    
-    args = parser.parse_args()
-    
-    tester = LoadTester(args.url)
+async def async_main(args: argparse.Namespace, httpx_module: Any):
+    """Run asynchronous load tests with parsed CLI arguments."""
+    tester = LoadTester(httpx_module=httpx_module, base_url=args.url)
     
     print(f"🚀 Starting Load Test")
     print(f"   API URL: {args.url}")
@@ -348,5 +366,23 @@ async def main():
     print("\n✅ Load test completed!")
 
 
+def main(argv: List[str] | None = None) -> int:
+    """Parse args and run load tests."""
+    parser = build_parser()
+    args = parser.parse_args(argv)
+
+    try:
+        import httpx as httpx_module
+    except ImportError:
+        print(
+            "Missing dependency: httpx. Install it with `pip install -r requirements.txt`.",
+            file=sys.stderr,
+        )
+        return 2
+
+    asyncio.run(async_main(args, httpx_module))
+    return 0
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(main())
