@@ -157,6 +157,16 @@ def test_protected_endpoint_accepts_bearer_token(monkeypatch):
     assert recorder["headers"]["authorization"] == "Bearer sk-test-key-123"
 
 
+
+
+def test_memory_root_path_is_protected(monkeypatch):
+    _enable_auth(monkeypatch)
+    client = TestClient(service.app)
+
+    response = client.get("/memory")
+
+    assert response.status_code == 401
+
 def test_options_request_is_not_blocked_by_auth(monkeypatch):
     _enable_auth(monkeypatch)
     client = TestClient(service.app)

@@ -50,7 +50,7 @@ def _extract_api_key(request: Request) -> str:
 
 def _is_protected_path(path: str) -> bool:
     """Return True when request path must be authenticated for MVP."""
-    return path in {"/v1/chat", "/v1/rag/query"} or path.startswith("/memory/")
+    return path in {"/v1/chat", "/v1/rag/query", "/memory"} or path.startswith("/memory/")
 
 
 @app.middleware("http")
