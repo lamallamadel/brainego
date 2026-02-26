@@ -1,4 +1,14 @@
-# AGENTS.md
+# AGENTS.md - Rules & Workflows
+
+⚠️ **CRITICAL: Read CONTRATS.md first**
+
+This file defines how agents (Codex, humans, CI) interact with brainego.
+
+👉 **The law of brainego is in CONTRATS.md** - all invariants, responsibilities, and non-negotiable rules.
+
+This AGENTS.md is the operational reference for setup, commands, and style.
+
+---
 
 ## Setup & Commands
 
