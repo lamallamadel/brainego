@@ -1,0 +1,17 @@
+# Makefile additions for MAX testing
+
+.PHONY: test-with-max test-max-only
+
+test-with-max:
+	@echo "Testing with MAX runtime sidecar..."
+	@docker-compose -f docker-compose.test.yml up -d
+	@sleep 15
+	@pytest tests/integration/test_with_max.py -v -s
+	@docker-compose -f docker-compose.test.yml down
+
+test-max-only:
+	@echo "Testing MAX runtime only..."
+	@docker-compose -f docker-compose.test.yml up -d max-runtime
+	@sleep 5
+	@curl -v http://localhost:8080/health
+	@docker-compose -f docker-compose.test.yml down
