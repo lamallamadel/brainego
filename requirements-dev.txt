@@ -1,0 +1,12 @@
+# Development & Test Dependencies
+# Vendoried for offline installation: pip install --no-index --find-links=vendor/wheels -r requirements-dev.txt
+
+# Core confirmed dependencies
+httpx>=0.25.1
+requests>=2.31.0
+pydantic>=2.5.0
+pytest-asyncio>=0.21.0
+
+# Async support (robustness)
+anyio>=3.7.0
+pytest-anyio>=0.0.0
