@@ -705,7 +705,7 @@ async def health_check():
     
     all_healthy = all(model['health_status'] for model in models_info.values())
     
-    return {
+    payload = {
         "status": "healthy" if all_healthy else "degraded",
         "timestamp": datetime.utcnow().isoformat(),
         "models": {
@@ -717,6 +717,9 @@ async def health_check():
             for model_id, info in models_info.items()
         }
     }
+
+    status_code = 200 if all_healthy else 503
+    return JSONResponse(content=payload, status_code=status_code)
 
 
 @app.get("/metrics")
