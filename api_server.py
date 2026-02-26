@@ -105,6 +105,29 @@ class ChatRAGOptions(BaseModel):
     )
 
 
+class ChatMemoryOptions(BaseModel):
+    enabled: bool = Field(False, description="Enable long-term memory for this request")
+    top_k: int = Field(5, ge=1, le=20, description="Number of memories to retrieve")
+    min_score: Optional[float] = Field(
+        None,
+        ge=0.0,
+        le=1.0,
+        description="Optional minimum combined memory score threshold"
+    )
+    include_context: bool = Field(
+        False,
+        description="Include retrieved memories in non-streaming response"
+    )
+    auto_store: bool = Field(
+        True,
+        description="Store the latest user/assistant exchange as memory"
+    )
+    use_temporal_decay: bool = Field(
+        True,
+        description="Apply temporal decay when ranking retrieved memories"
+    )
+
+
 class ChatCompletionRequest(BaseModel):
     model: str = Field(default="llama-3.3-8b-instruct", description="Model to use")
     messages: List[ChatMessage] = Field(..., description="List of messages")
@@ -118,6 +141,10 @@ class ChatCompletionRequest(BaseModel):
     frequency_penalty: Optional[float] = Field(0.0, ge=-2.0, le=2.0)
     user: Optional[str] = Field(None, description="Unique user identifier")
     rag: Optional[ChatRAGOptions] = Field(None, description="Optional per-request RAG options")
+    memory: Optional[ChatMemoryOptions] = Field(
+        None,
+        description="Optional per-request long-term memory options"
+    )
 
 
 class ChatCompletionChoice(BaseModel):
@@ -877,6 +904,72 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         messages_for_generation = list(request.messages)
         rag_context_data = None
         rag_metadata = None
+        memory_context_data = None
+        memory_metadata = None
+
+        if request.memory and request.memory.enabled:
+            latest_user_message = next(
+                (msg.content for msg in reversed(request.messages) if msg.role == "user"),
+                None
+            )
+
+            if latest_user_message:
+                try:
+                    service = get_memory_service()
+                    memory_results = service.search_memory(
+                        query=latest_user_message,
+                        user_id=request.user,
+                        limit=request.memory.top_k,
+                        use_temporal_decay=request.memory.use_temporal_decay
+                    )
+
+                    if request.memory.min_score is not None:
+                        memory_results = [
+                            result
+                            for result in memory_results
+                            if result.get("score", 0.0) >= request.memory.min_score
+                        ]
+
+                    if memory_results:
+                        memory_chunks = [
+                            (
+                                f"- {result.get('text', '')} "
+                                f"(score={result.get('score', 0.0):.4f})"
+                            )
+                            for result in memory_results
+                        ]
+                        memory_system_message = ChatMessage(
+                            role="system",
+                            content=(
+                                "Use the following remembered user facts and preferences when "
+                                "they are relevant. Do not invent facts that are not listed.\n\n"
+                                "Remembered context:\n" + "\n".join(memory_chunks)
+                            )
+                        )
+                        messages_for_generation = [memory_system_message, *messages_for_generation]
+
+                    memory_scores = [result.get("score", 0.0) for result in memory_results]
+                    memory_metadata = {
+                        "enabled": True,
+                        "query": latest_user_message,
+                        "top_k": request.memory.top_k,
+                        "min_score": request.memory.min_score,
+                        "use_temporal_decay": request.memory.use_temporal_decay,
+                        "memories_retrieved": len(memory_results),
+                        "top_score": round(max(memory_scores), 4) if memory_scores else None,
+                        "avg_score": (
+                            round(sum(memory_scores) / len(memory_scores), 4)
+                            if memory_scores
+                            else None
+                        )
+                    }
+
+                    if request.memory.include_context:
+                        memory_context_data = memory_results
+                except Exception as exc:
+                    logger.warning("Memory retrieval failed: %s", exc)
+            else:
+                logger.info("Memory enabled but no user message was found for retrieval query")
 
         if request.rag and request.rag.enabled:
             service = get_rag_service()
@@ -966,6 +1059,39 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         created = int(time.time())
         response_model = routing_metadata.get('model_name', request.model)
 
+        if request.memory and request.memory.enabled and request.memory.auto_store:
+            try:
+                memory_service_instance = get_memory_service()
+                latest_user_message = next(
+                    (msg.content for msg in reversed(request.messages) if msg.role == "user"),
+                    None
+                )
+                if latest_user_message:
+                    memory_messages = [
+                        {"role": "user", "content": latest_user_message},
+                        {"role": "assistant", "content": generated_text}
+                    ]
+                    store_result = memory_service_instance.add_memory(
+                        messages=memory_messages,
+                        user_id=request.user,
+                        metadata={
+                            "source": "chat.completions",
+                            "model": response_model
+                        }
+                    )
+                    if memory_metadata is None:
+                        memory_metadata = {"enabled": True}
+                    memory_metadata["memory_stored"] = True
+                    memory_metadata["stored_memory_id"] = store_result.get("memory_id")
+                else:
+                    logger.info("No user message found, skipping automatic memory storage")
+            except Exception as exc:
+                logger.warning("Automatic memory storage failed: %s", exc)
+                if memory_metadata is None:
+                    memory_metadata = {"enabled": True}
+                memory_metadata["memory_stored"] = False
+                memory_metadata["storage_error"] = str(exc)
+
         if request.stream:
             logger.info("Streaming response requested; returning SSE-compatible output")
             return StreamingResponse(
@@ -1011,6 +1137,11 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             response_data["x-rag-metadata"] = rag_metadata
             if rag_context_data is not None:
                 response_data["rag_context"] = rag_context_data
+
+        if memory_metadata:
+            response_data["x-memory-metadata"] = memory_metadata
+            if memory_context_data is not None:
+                response_data["memory_context"] = memory_context_data
         
         logger.info(
             f"Request completed in {latency_ms:.2f}ms "
