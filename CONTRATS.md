@@ -368,9 +368,213 @@ Pas de bricolage autour.
 
 ---
 
-## 8. Garde-Fous (Enforcement)
+## 8. Garantie Observable des Agents (Codex + Autres)
 
-### 8.1 CI/CD Checks
+### 8.1 Le Problème
+
+Les agents peuvent réciter les règles sans les appliquer (boucle infernale):
+- Soit faire sans cadre (ignorance des règles)
+- Soit lire le cadre sans faire (performativité creuse)
+
+**Solution:** Contrat d'**auditabilité non-ambigüe** à chaque sortie d'agent.
+
+### 8.2 État de Sortie (Falsifiable)
+
+Tout agent doit finir dans UN seul état valide:
+
+```
+État V1: Zéro modification code
+  → pas de commit
+  → pas de PR
+  → raison technique explicite
+  → exemple: "pas de modif nécessaire" ou "erreur bloquante: [..]"
+
+État V2: Changements code validés
+  → tests/checks exécutés
+  → git commit fait
+  → PR générée ou raison explicite pourquoi non
+  → exemple: "3 fichiers modifiés, 4 tests passants, PR#123"
+
+Tout autre état = erreur détectable immédiatement
+```
+
+### 8.3 Preuves Obligatoires (Pas de "Crois-Moi")
+
+Avant de déclarer "terminé", agent fournit:
+
+```bash
+# 1. État du repo
+git status --short
+git log -1 --oneline
+
+# 2. Fichiers touchés
+ls -la <fichiers modifiés>
+
+# 3. Checks exécutés (offline conformes)
+python -m py_compile $(find . -name '*.py')
+pytest tests/unit/ -v --tb=short
+python validate_wheels.py
+
+# 4. Résultat de chaque check
+# [✅] Check 1: ...
+# [✅] Check 2: ...
+# [❌] Check 3: raison pourquoi acceptable ou non
+```
+
+### 8.4 Gate de Vérification (Avant "Terminé")
+
+Agent doit cocher ces cases:
+
+```
+[INVARIANTS VÉRIFIÉS AVANT CONCLUSION]
+
+☐ Règles lues: AGENTS.md + CONTRATS.md consultés
+☐ Scope clair: Tâche X = Y résultat attendu
+☐ Dépendances: Offline uniquement, validate_wheels.py ok
+☐ Tests offline: py_compile + pytest unit réussis
+☐ Zéro web lookup: Aucun curl/requests/urllib extern
+☐ Commit cohérent: État final = V1 ou V2 (jamais état mixte)
+☐ Preuves jointes: git status + checks logs + fichiers
+
+Si UN point manque: NE PAS conclure "terminé"
+Conclure plutôt: "bloqué sur [X], raison: [Y], prochaine action: [Z]"
+```
+
+### 8.5 Exemple: Sortie Conforme vs Non-Conforme
+
+**❌ Non-Conforme (Boucle Infernale)**
+```
+"J'ai relu AGENTS.md et CONTRATS.md.
+Codex doit rester offline.
+J'ai exécuté py_compile.
+Conclusion: Tâche conforme."
+
+❌ Problèmes:
+  - Zéro fichier créé/modifié listé
+  - Zéro git status fourni
+  - Zéro lien vers fichiers modifiés
+  - Déclaration sans preuve
+```
+
+**✅ Conforme (Auditabilité)**
+```
+[INVARIANTS VÉRIFIÉS]
+☑ Scope: Impl API /v1/chat + /v1/rag/query + tests
+☑ Offline: httpx, pytest en wheelhouse ✅
+☑ Tests: py_compile ✅, pytest tests/unit/ ✅
+☑ Code: 3 fichiers modifiés (api_server.py, rag_service.py, test_...py)
+☑ Zéro web: Aucun curl, requests, urllib vers internet
+
+Changements:
+$ git status --short
+ M api_server.py
+ M rag_service.py
+ A tests/unit/test_unified_chat.py
+
+$ git log -1 --oneline
+7a3f8c2 Impl AFR-27: Lightweight API service
+
+Checks exécutés:
+$ python -m py_compile api_server.py rag_service.py
+✅ Compilation OK
+
+$ pytest tests/unit/test_unified_chat.py -v
+✅ 6/6 tests passed
+
+$ python validate_wheels.py
+✅ All 14 requirements in wheelhouse
+
+Prêt PR: github.com/lamallamadel/brainego/pull/XXX
+```
+
+### 8.6 Limite Transparente (Pas de Faux Contrat)
+
+Agent reconnaît ses limites:
+
+```
+Garantie mathématique absolue (impossible d'échouer): NON
+  → Je suis probabiliste, pas preuve formelle
+
+Garantie procédurale vérifiable (traces auditable): OUI
+  → git status, logs de tests, commits vérifiables
+
+Conséquence:
+  Tu me juges sur observations mesurables, pas intention
+  Toute dérive = visible immédiatement via gate
+```
+
+---
+
+## 9. Protocol d'Exécution Agent (Appliquable à Tout Agent)
+
+### 9.1 Avant de Commencer
+
+```
+1. Lire tâche / issue linéaire
+2. Vérifier scope / dépendances
+3. Vérifier si compatible avec environnement Codex
+4. Annoncer le plan (jamais faire sans annoncer)
+5. Exécuter
+6. Vérifier gate [8.4]
+7. Si V1 ou V2: conclure
+   Sinon: repeller ou refuser explicitement
+```
+
+### 9.2 Annonce Obligatoire Avant Première Action
+
+AVANT tout `read_file`, `shell`, `write_file`:
+
+```
+"Je vais [action1], puis [action2], puis [action3].
+Raisonnement: [Y].
+Résultat attendu: [Z].
+
+Contraintes de brainego appliquées:
+  - Offline uniquement (✅/❌)
+  - Dépendances wheelhouse (✅/❌)
+  - Tests offline (✅/❌)
+  - Commit/PR si modif (✅/❌)"
+```
+
+### 9.3 Pendant l'Exécution
+
+```
+Après chaque étape majeure:
+  "Done. Now [prochaine étape]"
+  
+Jamais:
+  "Perfect", "Excellent", "Great" (filler words)
+```
+
+### 9.4 À la Fin
+
+```
+Fournir tableau:
+
+[INVARIANTS VÉRIFIÉS]
+☑/☐ Règles lues
+☑/☐ Scope implémenté
+☑/☐ Tests offshore
+☑/☐ Commit/PR cohérent
+☑/☐ Zéro web lookup
+
+État final: V1 | V2 | BLOQUÉ
+
+Si V1 ou V2:
+  git status --short
+  git log -1 --oneline
+  
+Si BLOQUÉ:
+  Raison: [...]
+  Pré-requis: [...]
+  Action suivante: [...]
+```
+
+---
+
+## 10. Garde-Fous (Enforcement)
+
+### 10.1 CI/CD Checks
 
 ```bash
 # Vérifier qu'aucun pip install n'est "online"
@@ -381,16 +585,20 @@ pytest --collect-only -q | grep "ImportError" && exit 1
 
 # Vérifier la couverture de composants sensibles
 pytest --cov=api_server --cov=memory_service --cov=drift_monitor --cov-report=term-missing
+
+# Vérifier que le wheelhouse est à jour
+python validate_wheels.py || exit 1
 ```
 
-### 8.2 Revue Manuelle
+### 10.2 Revue Manuelle
 
 - ✅ Chaque PR doit vérifier: dépendances, classification test, observabilité
 - ✅ Tout changement de CI/architecture/sécurité → humain review obligatoire
+- ✅ Chaque sortie agent → vérifier gate [8.4], pas juste "looks good"
 
 ---
 
-## 9. Résumé des Invariants
+## 11. Résumé des Invariants
 
 | Invariant | Formule | Violation |
 |-----------|---------|-----------|
@@ -399,10 +607,11 @@ pytest --cov=api_server --cov=memory_service --cov=drift_monitor --cov-report=te
 | **I3** | signal ∉ signaux_valides ⟹ signal_invalide | curl wikipedia en test |
 | **I4** | nouvelle_brique ⟹ (compatible ∨ ADR_approuvée) | nouveau service sans décision |
 | **I5** | changement_sensible ⟹ obs_new ≥ obs_prev | suppression de métriques |
+| **I6** | sortie_agent ⟹ État ∈ {V1, V2} | État mixte / déclaration sans preuves |
 
 ---
 
-## 10. Référence Rapide
+## 12. Référence Rapide
 
 **Codex generating code?**
 → tests/unit/ + offline uniquement
@@ -420,9 +629,12 @@ pytest --cov=api_server --cov=memory_service --cov=drift_monitor --cov-report=te
 **Nouveau composant ajouté?**
 → Vérifier I4 (compatible + éventuellement ADR)
 
+**Agent sort en boucle (récite sans faire)?**
+→ Violation I6. Vérifier gate [8.4].
+
 ---
 
-**Statut:** Loi fondamentale v1 - À appliquer immédiatement
+**Statut:** Loi fondamentale v2 (Agent Auditability) - À appliquer immédiatement
 **Auteur:** Gordon (Docker AI) + Décisions du projet
 **Révision:** Annuelle + sur ADR majeure
 **Questions:** Créer issue avec tag `[CONTRATS]`
