@@ -212,9 +212,21 @@ EOF
     print_success ".env file created"
 fi
 
+
+# Compose file selection
+COMPOSE_ARGS=(-f docker-compose.yaml)
+if [ "${USE_DOCKER_CLOUD_CONFIG:-false}" = "true" ]; then
+    if [ -f "docker-compose.observability.yml" ]; then
+        COMPOSE_ARGS+=( -f docker-compose.observability.yml )
+        print_info "Using Docker cloud/observability compose override: docker-compose.observability.yml"
+    else
+        print_warning "USE_DOCKER_CLOUD_CONFIG=true but docker-compose.observability.yml was not found"
+    fi
+fi
+
 # Pull Docker images
 print_info "Pulling Docker images (this may take a while)..."
-if docker compose pull; then
+if docker compose "${COMPOSE_ARGS[@]}" pull; then
     print_success "Docker images pulled successfully"
 else
     print_error "Failed to pull Docker images"
@@ -223,7 +235,7 @@ fi
 
 # Start services
 print_info "Starting services..."
-if docker compose up -d; then
+if docker compose "${COMPOSE_ARGS[@]}" up -d; then
     print_success "Services started successfully"
 else
     print_error "Failed to start services"
@@ -234,7 +246,7 @@ fi
 print_info "Waiting for services to be healthy..."
 echo ""
 
-SERVICES=("redis" "postgres" "minio" "qdrant")
+SERVICES=("redis" "postgres" "minio" "qdrant" "max-serve-llama" "max-serve-qwen" "max-serve-deepseek" "api-server")
 MAX_WAIT=60
 WAIT_INTERVAL=5
 
@@ -242,7 +254,7 @@ for service in "${SERVICES[@]}"; do
     print_info "Checking $service..."
     elapsed=0
     while [ $elapsed -lt $MAX_WAIT ]; do
-        if docker compose ps "$service" | grep -q "healthy\|Up"; then
+        if docker compose "${COMPOSE_ARGS[@]}" ps "$service" | grep -q "healthy\|Up"; then
             print_success "$service is ready"
             break
         fi
