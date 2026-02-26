@@ -1,4 +1,4 @@
-.PHONY: help install download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status grafana grafana-start grafana-stop grafana-ui drift drift-start drift-stop drift-logs drift-check drift-metrics
+.PHONY: help install download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status grafana grafana-start grafana-stop grafana-ui drift drift-start drift-stop drift-logs drift-check drift-metrics test-unit test-integration test-all codex-help
 
 help:
 	@echo "MAX Serve + Llama 3.3 8B Infrastructure"
@@ -349,3 +349,63 @@ drift-check:
 drift-metrics:
 	@echo "Fetching drift metrics..."
 	@curl -s http://localhost:8004/drift/metrics?days=7 | python -m json.tool || echo "Drift monitor not responding"
+
+# ============================================================================
+# Docker Build Cloud + Testcontainers Cloud Commands
+# ============================================================================
+
+test-unit:
+	@echo "Running unit tests..."
+	@pip install -q pytest pytest-asyncio pytest-cov 2>/dev/null || true
+	@pytest tests/unit/ -v --tb=short --cov=. --cov-report=term-missing
+
+test-integration:
+	@echo "Running integration tests (requires Testcontainers Cloud)..."
+	@echo "Set TESTCONTAINERS_CLOUD_TOKEN environment variable"
+	@pip install -q pytest pytest-asyncio testcontainers 2>/dev/null || true
+	@pytest tests/integration/ -v --tb=short -s
+
+test-all: test-unit test-integration
+	@echo ""
+	@echo "✅ All tests completed"
+
+codex-help:
+	@echo "=============================================================================="
+	@echo "Codex: Docker Build Cloud + Testcontainers Cloud Setup"
+	@echo "=============================================================================="
+	@echo ""
+	@echo "📚 Documentation:"
+	@echo "  - QUICKSTART.md           Quick setup (5 min)"
+	@echo "  - CODEX_INSTRUCTIONS.md   How to generate code"
+	@echo "  - GITHUB_ACTIONS_SETUP.md Technical details"
+	@echo "  - CI_CD_SUMMARY.md        Complete overview"
+	@echo ""
+	@echo "🚀 Quick Start:"
+	@echo "  1. Add GitHub Secret: TESTCONTAINERS_CLOUD_TOKEN"
+	@echo "     → https://cloud.testcontainers.com/ → Settings → API Tokens"
+	@echo ""
+	@echo "  2. Test the pipeline:"
+	@echo "     make test-unit"
+	@echo "     make test-integration"
+	@echo ""
+	@echo "  3. Push to feature/codex/* branch"
+	@echo "     → GitHub Actions runs automatically"
+	@echo ""
+	@echo "  4. Check PR comments for results"
+	@echo ""
+	@echo "🛠️  Local Testing:"
+	@echo "  make test-unit        Run unit tests (fast, ~2s)"
+	@echo "  make test-integration Run integration tests (slow, ~45s)"
+	@echo "  make test-all         Run all tests"
+	@echo ""
+	@echo "📊 What Happens:"
+	@echo "  - Builds 3 images (API, gateway, MCPJungle) via Docker Build Cloud"
+	@echo "  - Runs unit tests (local)"
+	@echo "  - Runs integration tests with Testcontainers Cloud"
+	@echo "  - Security scan (Trivy)"
+	@echo "  - Posts results to PR"
+	@echo ""
+	@echo "📁 Workflow File: .github/workflows/codex-build.yml"
+	@echo ""
+	@echo "For more info: cat QUICKSTART.md"
+
