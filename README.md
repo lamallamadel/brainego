@@ -1,10 +1,10 @@
 # AI Platform Infrastructure with MAX Serve & Llama 3.3
 
-Docker Compose infrastructure for AI platform with MAX Serve serving Llama 3.3 8B Instruct (GGUF Q4_K_M), Qdrant, Redis, PostgreSQL, and MinIO. Includes OpenAI-compatible API and comprehensive load testing tools.
+Docker Compose infrastructure for an AI platform with MAX Serve running three GGUF models (Llama 3.3 8B, Qwen2.5-Coder 7B, and DeepSeek-R1-Distill-Qwen-7B), plus Qdrant, Redis, PostgreSQL, and MinIO. Includes an OpenAI-compatible API and comprehensive load-testing tools.
 
 ## Features
 
-- 🚀 **MAX Serve** with Llama 3.3 8B Instruct (GGUF Q4_K_M quantization)
+- 🚀 **MAX Serve (multi-model)** with Llama 3.3 8B, Qwen2.5-Coder 7B, and DeepSeek-R1-Distill-Qwen-7B
 - 🔄 **Dynamic Batching** (max_batch_size=32) for optimal throughput
 - 🌐 **OpenAI-Compatible API** (`/v1/chat/completions`, `/health`, `/metrics`)
 - 📊 **Load Testing** with P50/P95/P99 latency metrics
@@ -20,6 +20,18 @@ Docker Compose infrastructure for AI platform with MAX Serve serving Llama 3.3 8
 
 ## Quick Start
 
+### Optional: Install Modular + MAX CLI on the Inference Host
+
+```bash
+chmod +x install_modular_max.sh
+./install_modular_max.sh
+
+# Expected verification output from the script
+max --version
+```
+
+This installs the Modular Python package (`modular`) and verifies that the `max` CLI is available in `PATH`.
+
 ### 1. Download the Model
 
 ```bash
@@ -34,6 +46,12 @@ This downloads Llama 3.3 8B Instruct Q4_K_M (~4.5 GB) to the `models/` directory
 ```bash
 chmod +x init.sh
 ./init.sh
+```
+
+If you want to include the Docker cloud/observability override config, enable it before running init:
+
+```bash
+USE_DOCKER_CLOUD_CONFIG=true ./init.sh
 ```
 
 The initialization script will:
@@ -74,7 +92,9 @@ python load_test.py --requests 1000 --concurrency 32 --max-tokens 200
 | **Chat Completions** | http://localhost:8000/v1/chat/completions | Main chat endpoint |
 | **Health Check** | http://localhost:8000/health | Service health status |
 | **Metrics** | http://localhost:8000/metrics | Performance metrics |
-| **MAX Serve** | http://localhost:8080 | Direct MAX Serve access |
+| **MAX Serve (Llama)** | http://localhost:8080 | General-purpose model endpoint |
+| **MAX Serve (Qwen Coder)** | http://localhost:8081 | Coding-specialized endpoint |
+| **MAX Serve (DeepSeek R1)** | http://localhost:8082 | Reasoning-specialized endpoint |
 | **Qdrant** | http://localhost:6333 | Vector database |
 | **Redis** | localhost:6379 | Cache & message broker |
 | **PostgreSQL** | localhost:5432 | Relational database |
@@ -117,6 +137,22 @@ response = requests.post(
 
 print(response.json()["choices"][0]["message"]["content"])
 ```
+
+### Streaming Chat Completions
+
+```bash
+curl -N -X POST http://localhost:8000/v1/chat/completions \
+  -H "Content-Type: application/json" \
+  -d '{
+    "model": "llama-3.3-8b-instruct",
+    "messages": [
+      {"role": "user", "content": "Write one sentence about local LLM APIs."}
+    ],
+    "stream": true
+  }'
+```
+
+The API returns Server-Sent Events in OpenAI-compatible `chat.completion.chunk` format ending with `data: [DONE]`.
 
 ### Health Check
 
@@ -235,14 +271,22 @@ With `max_batch_size=32`, MAX Serve can process up to 32 requests simultaneously
 └────────┬────────┘
          │
          ▼
-┌─────────────────┐     ┌──────────────┐
-│   API Server    │────▶│  MAX Serve   │
-│  (Port 8000)    │     │  (Port 8080) │
-│                 │     │              │
-│ - Chat API      │     │ - Llama 3.3  │
-│ - Health Check  │     │ - Batching   │
-│ - Metrics       │     │ - GPU Accel  │
-└─────────────────┘     └──────────────┘
+┌─────────────────┐
+│   API Server    │
+│  (Port 8000)    │
+│ - Chat API      │
+│ - Health Check  │
+│ - Metrics       │
+└────────┬────────┘
+         │
+         ▼
+┌───────────────────────────────────────────┐
+│            MAX Serve Backends             │
+│  ┌──────────────┬──────────────┬────────┐ │
+│  │ Llama 3.3    │ Qwen Coder   │ DeepSeek│ │
+│  │ (Port 8080)  │ (Port 8081)  │ (8082)  │ │
+│  └──────────────┴──────────────┴────────┘ │
+└───────────────────────────────────────────┘
          │
          ▼
 ┌─────────────────────────────────────┐
@@ -270,7 +314,9 @@ With `max_batch_size=32`, MAX Serve can process up to 32 requests simultaneously
 ├── configs/
 │   └── max-serve-config.yaml    # MAX Serve configuration
 ├── models/                       # Model storage (created by init.sh)
-│   └── llama-3.3-8b-instruct-q4_k_m.gguf
+│   ├── llama-3.3-8b-instruct-q4_k_m.gguf
+│   ├── qwen2.5-coder-7b-instruct-q4_k_m.gguf
+│   └── deepseek-r1-distill-qwen-7b-q4_k_m.gguf
 ├── logs/                         # Application logs
 └── init-scripts/
     └── postgres/
@@ -283,18 +329,23 @@ With `max_batch_size=32`, MAX Serve can process up to 32 requests simultaneously
 # Start all services
 docker compose up -d
 
-# Start specific service
-docker compose up -d max-serve
+# Start all services with cloud/observability config override
+docker compose -f docker-compose.yaml -f docker-compose.observability.yml up -d
+
+# Start specific model services
+docker compose up -d max-serve-llama max-serve-qwen max-serve-deepseek
 
 # Stop all services
 docker compose down
 
 # View logs
-docker compose logs -f max-serve
+docker compose logs -f max-serve-llama
+docker compose logs -f max-serve-qwen
+docker compose logs -f max-serve-deepseek
 docker compose logs -f api-server
 
 # Restart service
-docker compose restart max-serve
+docker compose restart max-serve-llama max-serve-qwen max-serve-deepseek
 
 # Check status
 docker compose ps
@@ -327,13 +378,17 @@ sudo systemctl restart docker
 
 ```bash
 # Check logs
-docker compose logs max-serve
+docker compose logs max-serve-llama
+docker compose logs max-serve-qwen
+docker compose logs max-serve-deepseek
 
 # Verify model file exists
 ls -lh models/llama-3.3-8b-instruct-q4_k_m.gguf
 
 # Check GPU availability in container
-docker exec max-serve nvidia-smi
+docker exec max-serve-llama nvidia-smi
+docker exec max-serve-qwen nvidia-smi
+docker exec max-serve-deepseek nvidia-smi
 ```
 
 ### API Connection Issues
@@ -348,8 +403,13 @@ curl http://localhost:8080/health
 # Test API server
 curl http://localhost:8000/health
 
+# Validate merged Docker cloud config
+docker compose -f docker-compose.yaml -f docker-compose.observability.yml config >/tmp/brainego-compose-cloud.txt
+
 # Check network connectivity
-docker compose exec api-server ping max-serve
+docker compose exec api-server ping max-serve-llama
+docker compose exec api-server ping max-serve-qwen
+docker compose exec api-server ping max-serve-deepseek
 ```
 
 ### Performance Optimization
@@ -370,12 +430,16 @@ For better performance:
 ## Model Information
 
 **Llama 3.3 8B Instruct (Q4_K_M)**
-- **Size**: ~4.5 GB
-- **Quantization**: Q4_K_M (4-bit, medium quality)
-- **Context Length**: 8,192 tokens
-- **Parameters**: 8 billion
-- **Format**: GGUF (GPU-accelerated)
-- **Use Case**: High-quality chat and instruction following
+- **Port**: 8080
+- **Use Case**: General-purpose chat and instruction following
+
+**Qwen2.5-Coder 7B Instruct (Q4_K_M)**
+- **Port**: 8081
+- **Use Case**: Coding, debugging, and developer workflows
+
+**DeepSeek-R1-Distill-Qwen-7B (Q4_K_M)**
+- **Port**: 8082
+- **Use Case**: Reasoning-heavy and analytical tasks
 
 ## Performance Expectations
 
