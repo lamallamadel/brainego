@@ -283,6 +283,45 @@ services:
       retries: 3
       start_period: 30s
 
+  mem0:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: mem0
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "8006:8006"
+    volumes:
+      - ./configs:/app/configs:ro
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+      - QDRANT_COLLECTION=memories
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - REDIS_DB=0
+      - POSTGRES_HOST=postgres
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=ai_platform
+      - POSTGRES_USER=ai_user
+      - POSTGRES_PASSWORD=ai_password
+    depends_on:
+      qdrant:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    command: ["uvicorn", "mem0_service:app", "--host", "0.0.0.0", "--port", "8006"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8006/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 30s
+
   jaeger:
     image: jaegertracing/all-in-one:1.52
     container_name: jaeger

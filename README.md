@@ -9,6 +9,7 @@ Docker Compose infrastructure for an AI platform with MAX Serve running three GG
 - 🌐 **OpenAI-Compatible API** (`/v1/chat/completions`, `/health`, `/metrics`)
 - 📊 **Load Testing** with P50/P95/P99 latency metrics
 - 🎯 **Complete AI Stack**: Qdrant, Redis, PostgreSQL, MinIO
+- 🧠 **Dedicated Mem0 Service**: Standalone memory API backed by Qdrant
 
 ## Prerequisites
 
@@ -97,6 +98,7 @@ python load_test.py --requests 1000 --concurrency 32 --max-tokens 200
 | **MAX Serve (DeepSeek R1)** | http://localhost:8082 | Reasoning-specialized endpoint |
 | **Qdrant** | http://localhost:6333 | Vector database |
 | **Redis** | localhost:6379 | Cache & message broker |
+| **Mem0 Service** | http://localhost:8006 | Memory service backed by Qdrant |
 | **PostgreSQL** | localhost:5432 | Relational database |
 | **MinIO Console** | http://localhost:9001 | Object storage UI |
 | **MinIO API** | http://localhost:9000 | S3-compatible API |
