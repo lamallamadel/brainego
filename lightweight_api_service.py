@@ -2,7 +2,7 @@
 """Lightweight API service that proxies chat, RAG and memory endpoints."""
 
 import os
-from typing import Dict
+from typing import Dict, Set
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -13,6 +13,8 @@ MAX_CHAT_PATH = os.getenv("MAX_CHAT_PATH", "/v1/chat/completions")
 RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://localhost:8001").rstrip("/")
 MEM0_SERVICE_URL = os.getenv("MEM0_SERVICE_URL", "http://localhost:8002").rstrip("/")
 FORWARD_TIMEOUT_SECONDS = float(os.getenv("FORWARD_TIMEOUT_SECONDS", "20"))
+REQUIRE_API_KEY = os.getenv("REQUIRE_API_KEY", "true").lower() in {"1", "true", "yes", "on"}
+DEFAULT_API_KEYS = "sk-test-key-123"
 
 ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 EXCLUDED_HEADERS = {"host", "content-length", "connection"}
@@ -22,6 +24,47 @@ app = FastAPI(
     version="1.1.0",
     description="Minimal API façade forwarding /v1/chat, /v1/rag/query and /memory/* requests.",
 )
+
+
+def _load_valid_api_keys() -> Set[str]:
+    """Load allowed API keys from env (comma-separated) with a safe default for local MVP runs."""
+    configured = os.getenv("API_KEYS", DEFAULT_API_KEYS)
+    return {key.strip() for key in configured.split(",") if key.strip()}
+
+
+VALID_API_KEYS = _load_valid_api_keys()
+
+
+def _extract_api_key(request: Request) -> str:
+    """Extract API key from x-api-key header or Bearer Authorization token."""
+    x_api_key = request.headers.get("x-api-key")
+    if x_api_key:
+        return x_api_key.strip()
+
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+
+    return ""
+
+
+@app.middleware("http")
+async def enforce_api_key(request: Request, call_next):
+    """Protect MVP endpoints with API key authentication."""
+    protected_prefixes = ("/v1/chat", "/v1/rag/query", "/memory/")
+    if REQUIRE_API_KEY and request.url.path.startswith(protected_prefixes):
+        provided_key = _extract_api_key(request)
+        if not provided_key or provided_key not in VALID_API_KEYS:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "detail": "Invalid or missing API key",
+                    "type": "authentication_error",
+                },
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+    return await call_next(request)
 
 
 def _forward_headers(request: Request) -> Dict[str, str]:

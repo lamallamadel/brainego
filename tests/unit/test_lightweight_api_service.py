@@ -6,6 +6,9 @@ from fastapi.testclient import TestClient
 import lightweight_api_service as service
 
 
+API_HEADER = {"x-api-key": "sk-test-key-123"}
+
+
 class MockResponse:
     def __init__(self, status_code=200, payload=None, headers=None):
         self.status_code = status_code
@@ -49,7 +52,11 @@ def test_chat_endpoint_forwards_to_max_chat_path(monkeypatch):
     _patch_client(monkeypatch, recorder)
 
     client = TestClient(service.app)
-    response = client.post("/v1/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+    response = client.post(
+        "/v1/chat",
+        json={"messages": [{"role": "user", "content": "hi"}]},
+        headers=API_HEADER,
+    )
 
     assert response.status_code == 200
     assert recorder["method"] == "POST"
@@ -61,7 +68,11 @@ def test_rag_query_forwards_query_params_and_body(monkeypatch):
     _patch_client(monkeypatch, recorder)
 
     client = TestClient(service.app)
-    response = client.post("/v1/rag/query?tenant=acme", json={"query": "hello"})
+    response = client.post(
+        "/v1/rag/query?tenant=acme",
+        json={"query": "hello"},
+        headers=API_HEADER,
+    )
 
     assert response.status_code == 200
     assert recorder["url"] == f"{service.RAG_SERVICE_URL}/v1/rag/query"
@@ -74,7 +85,7 @@ def test_memory_wildcard_endpoint_forwards_path_and_method(monkeypatch):
     _patch_client(monkeypatch, recorder)
 
     client = TestClient(service.app)
-    response = client.delete("/memory/forget/abc123")
+    response = client.delete("/memory/forget/abc123", headers=API_HEADER)
 
     assert response.status_code == 200
     assert recorder["method"] == "DELETE"
@@ -86,7 +97,34 @@ def test_forwarded_response_keeps_downstream_headers(monkeypatch):
     _patch_client(monkeypatch, recorder)
 
     client = TestClient(service.app)
-    response = client.post("/v1/chat", json={"messages": [{"role": "user", "content": "ok"}]})
+    response = client.post(
+        "/v1/chat",
+        json={"messages": [{"role": "user", "content": "ok"}]},
+        headers=API_HEADER,
+    )
 
     assert response.status_code == 200
     assert response.headers.get("x-test") == "ok"
+
+
+def test_protected_endpoint_rejects_missing_api_key():
+    client = TestClient(service.app)
+    response = client.post("/v1/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+
+    assert response.status_code == 401
+    assert response.json()["type"] == "authentication_error"
+
+
+def test_protected_endpoint_accepts_bearer_token(monkeypatch):
+    recorder = {}
+    _patch_client(monkeypatch, recorder)
+
+    client = TestClient(service.app)
+    response = client.post(
+        "/v1/chat",
+        json={"messages": [{"role": "user", "content": "hi"}]},
+        headers={"Authorization": "Bearer sk-test-key-123"},
+    )
+
+    assert response.status_code == 200
+    assert recorder["headers"]["authorization"] == "Bearer sk-test-key-123"
