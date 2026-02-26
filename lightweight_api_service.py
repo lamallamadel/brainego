@@ -2,7 +2,7 @@
 """Lightweight API service that proxies chat, RAG and memory endpoints."""
 
 import os
-from typing import Dict
+from typing import Dict, Set
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -19,9 +19,60 @@ EXCLUDED_HEADERS = {"host", "content-length", "connection"}
 
 app = FastAPI(
     title="Lightweight API Service",
-    version="1.1.0",
+    version="1.2.0",
     description="Minimal API façade forwarding /v1/chat, /v1/rag/query and /memory/* requests.",
 )
+
+
+def _is_auth_enabled() -> bool:
+    """Return whether API key auth is enabled (default: enabled)."""
+    return os.getenv("REQUIRE_API_KEY", "true").lower() in {"1", "true", "yes", "on"}
+
+
+def _load_valid_api_keys() -> Set[str]:
+    """Load allowed API keys from env (comma-separated)."""
+    configured = os.getenv("API_KEYS", "")
+    return {key.strip() for key in configured.split(",") if key.strip()}
+
+
+def _extract_api_key(request: Request) -> str:
+    """Extract API key from x-api-key header or Bearer Authorization token."""
+    x_api_key = request.headers.get("x-api-key")
+    if x_api_key:
+        return x_api_key.strip()
+
+    authorization = request.headers.get("authorization", "")
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+
+    return ""
+
+
+def _is_protected_path(path: str) -> bool:
+    """Return True when request path must be authenticated for MVP."""
+    return path in {"/v1/chat", "/v1/rag/query", "/memory"} or path.startswith("/memory/")
+
+
+@app.middleware("http")
+async def enforce_api_key(request: Request, call_next):
+    """Protect MVP endpoints with API key authentication."""
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    if _is_auth_enabled() and _is_protected_path(request.url.path):
+        valid_api_keys = _load_valid_api_keys()
+        provided_key = _extract_api_key(request)
+        if not provided_key or not valid_api_keys or provided_key not in valid_api_keys:
+            return JSONResponse(
+                status_code=401,
+                content={
+                    "detail": "Invalid or missing API key",
+                    "type": "authentication_error",
+                },
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+
+    return await call_next(request)
 
 
 def _forward_headers(request: Request) -> Dict[str, str]:
@@ -69,6 +120,7 @@ async def health() -> JSONResponse:
     return JSONResponse(
         {
             "status": "ok",
+            "auth_enabled": _is_auth_enabled(),
             "routes": {
                 "chat": f"{MAX_SERVE_URL}{MAX_CHAT_PATH}",
                 "rag_query": f"{RAG_SERVICE_URL}/v1/rag/query",
