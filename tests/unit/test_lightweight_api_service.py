@@ -1,5 +1,7 @@
-# Needs: fastapi>=0.133.1
-# Needs: httpx>=0.28.1
+# Needs: python-package:fastapi>=0.133.1
+# Needs: python-package:httpx>=0.28.1
+
+import os
 
 from fastapi.testclient import TestClient
 
@@ -47,7 +49,13 @@ def _patch_client(monkeypatch, recorder):
     monkeypatch.setattr(service.httpx, "AsyncClient", fake_client)
 
 
+def _enable_auth(monkeypatch):
+    monkeypatch.setenv("REQUIRE_API_KEY", "true")
+    monkeypatch.setenv("API_KEYS", "sk-test-key-123")
+
+
 def test_chat_endpoint_forwards_to_max_chat_path(monkeypatch):
+    _enable_auth(monkeypatch)
     recorder = {}
     _patch_client(monkeypatch, recorder)
 
@@ -64,6 +72,7 @@ def test_chat_endpoint_forwards_to_max_chat_path(monkeypatch):
 
 
 def test_rag_query_forwards_query_params_and_body(monkeypatch):
+    _enable_auth(monkeypatch)
     recorder = {}
     _patch_client(monkeypatch, recorder)
 
@@ -81,6 +90,7 @@ def test_rag_query_forwards_query_params_and_body(monkeypatch):
 
 
 def test_memory_wildcard_endpoint_forwards_path_and_method(monkeypatch):
+    _enable_auth(monkeypatch)
     recorder = {}
     _patch_client(monkeypatch, recorder)
 
@@ -93,6 +103,7 @@ def test_memory_wildcard_endpoint_forwards_path_and_method(monkeypatch):
 
 
 def test_forwarded_response_keeps_downstream_headers(monkeypatch):
+    _enable_auth(monkeypatch)
     recorder = {}
     _patch_client(monkeypatch, recorder)
 
@@ -107,7 +118,8 @@ def test_forwarded_response_keeps_downstream_headers(monkeypatch):
     assert response.headers.get("x-test") == "ok"
 
 
-def test_protected_endpoint_rejects_missing_api_key():
+def test_protected_endpoint_rejects_missing_api_key(monkeypatch):
+    _enable_auth(monkeypatch)
     client = TestClient(service.app)
     response = client.post("/v1/chat", json={"messages": [{"role": "user", "content": "hi"}]})
 
@@ -115,7 +127,22 @@ def test_protected_endpoint_rejects_missing_api_key():
     assert response.json()["type"] == "authentication_error"
 
 
+def test_protected_endpoint_rejects_when_no_api_keys_configured(monkeypatch):
+    monkeypatch.setenv("REQUIRE_API_KEY", "true")
+    monkeypatch.delenv("API_KEYS", raising=False)
+
+    client = TestClient(service.app)
+    response = client.post(
+        "/v1/rag/query",
+        json={"query": "hello"},
+        headers=API_HEADER,
+    )
+
+    assert response.status_code == 401
+
+
 def test_protected_endpoint_accepts_bearer_token(monkeypatch):
+    _enable_auth(monkeypatch)
     recorder = {}
     _patch_client(monkeypatch, recorder)
 
@@ -128,3 +155,23 @@ def test_protected_endpoint_accepts_bearer_token(monkeypatch):
 
     assert response.status_code == 200
     assert recorder["headers"]["authorization"] == "Bearer sk-test-key-123"
+
+
+def test_options_request_is_not_blocked_by_auth(monkeypatch):
+    _enable_auth(monkeypatch)
+    client = TestClient(service.app)
+
+    response = client.options("/v1/chat")
+
+    assert response.status_code != 401
+
+
+def test_auth_can_be_disabled(monkeypatch):
+    monkeypatch.setenv("REQUIRE_API_KEY", "false")
+    recorder = {}
+    _patch_client(monkeypatch, recorder)
+
+    client = TestClient(service.app)
+    response = client.post("/v1/chat", json={"messages": [{"role": "user", "content": "hi"}]})
+
+    assert response.status_code == 200

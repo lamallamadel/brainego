@@ -13,26 +13,26 @@ MAX_CHAT_PATH = os.getenv("MAX_CHAT_PATH", "/v1/chat/completions")
 RAG_SERVICE_URL = os.getenv("RAG_SERVICE_URL", "http://localhost:8001").rstrip("/")
 MEM0_SERVICE_URL = os.getenv("MEM0_SERVICE_URL", "http://localhost:8002").rstrip("/")
 FORWARD_TIMEOUT_SECONDS = float(os.getenv("FORWARD_TIMEOUT_SECONDS", "20"))
-REQUIRE_API_KEY = os.getenv("REQUIRE_API_KEY", "true").lower() in {"1", "true", "yes", "on"}
-DEFAULT_API_KEYS = "sk-test-key-123"
 
 ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 EXCLUDED_HEADERS = {"host", "content-length", "connection"}
 
 app = FastAPI(
     title="Lightweight API Service",
-    version="1.1.0",
+    version="1.2.0",
     description="Minimal API façade forwarding /v1/chat, /v1/rag/query and /memory/* requests.",
 )
 
 
+def _is_auth_enabled() -> bool:
+    """Return whether API key auth is enabled (default: enabled)."""
+    return os.getenv("REQUIRE_API_KEY", "true").lower() in {"1", "true", "yes", "on"}
+
+
 def _load_valid_api_keys() -> Set[str]:
-    """Load allowed API keys from env (comma-separated) with a safe default for local MVP runs."""
-    configured = os.getenv("API_KEYS", DEFAULT_API_KEYS)
+    """Load allowed API keys from env (comma-separated)."""
+    configured = os.getenv("API_KEYS", "")
     return {key.strip() for key in configured.split(",") if key.strip()}
-
-
-VALID_API_KEYS = _load_valid_api_keys()
 
 
 def _extract_api_key(request: Request) -> str:
@@ -48,13 +48,21 @@ def _extract_api_key(request: Request) -> str:
     return ""
 
 
+def _is_protected_path(path: str) -> bool:
+    """Return True when request path must be authenticated for MVP."""
+    return path in {"/v1/chat", "/v1/rag/query"} or path.startswith("/memory/")
+
+
 @app.middleware("http")
 async def enforce_api_key(request: Request, call_next):
     """Protect MVP endpoints with API key authentication."""
-    protected_prefixes = ("/v1/chat", "/v1/rag/query", "/memory/")
-    if REQUIRE_API_KEY and request.url.path.startswith(protected_prefixes):
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    if _is_auth_enabled() and _is_protected_path(request.url.path):
+        valid_api_keys = _load_valid_api_keys()
         provided_key = _extract_api_key(request)
-        if not provided_key or provided_key not in VALID_API_KEYS:
+        if not provided_key or not valid_api_keys or provided_key not in valid_api_keys:
             return JSONResponse(
                 status_code=401,
                 content={
@@ -112,6 +120,7 @@ async def health() -> JSONResponse:
     return JSONResponse(
         {
             "status": "ok",
+            "auth_enabled": _is_auth_enabled(),
             "routes": {
                 "chat": f"{MAX_SERVE_URL}{MAX_CHAT_PATH}",
                 "rag_query": f"{RAG_SERVICE_URL}/v1/rag/query",
