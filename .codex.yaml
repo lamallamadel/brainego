@@ -1,0 +1,77 @@
+# Codex Configuration for brainego
+# Instructs Codex on how to test and validate code
+
+version: 1
+
+# Validation rules
+validation:
+  # Code syntax checks (always do these)
+  syntax:
+    enabled: true
+    commands:
+      - python -m py_compile {python_files}
+  
+  # Unit tests (always do these)
+  tests:
+    enabled: true
+    commands:
+      - pytest -q tests/unit/
+  
+  # NO web searches - we don't need external network
+  web_search:
+    enabled: false
+    reason: "Zero egress policy in CI/CD - all tests must be offline"
+
+# Health checks (direct, no web search)
+health_checks:
+  max_serve:
+    enabled: true
+    method: "direct_http"
+    endpoint: "http://localhost:8080/health"
+    timeout: 30
+    description: "Test MAX Serve /health endpoint directly"
+  
+  api_server:
+    enabled: true
+    method: "direct_http"
+    endpoint: "http://localhost:8000/health"
+    timeout: 30
+    description: "Test API server /health endpoint directly"
+
+# Offline-only requirements
+requirements:
+  network:
+    egress: false
+    reason: "Corporate proxy policy blocks external requests (403)"
+  
+  pip_install:
+    method: "offline"
+    source: "vendor/wheels/"
+    description: "Use pre-downloaded wheels, no PyPI downloads"
+
+# Code generation rules
+generation:
+  # When generating tests, use these patterns
+  test_patterns:
+    - "Use pytest markers: @pytest.mark.unit, @pytest.mark.integration"
+    - "Mock external services, don't hit real endpoints"
+    - "Use testcontainers for integration tests (Testcontainers Cloud)"
+  
+  # Branching strategy
+  git:
+    - "Always create feature/codex/* branches"
+    - "Never commit to main directly"
+    - "Use descriptive commit messages"
+
+# Skip these steps (they fail due to proxy policy)
+skip:
+  - "Web searches (urllib, requests to external sites)"
+  - "pip install from PyPI (use vendor/wheels instead)"
+  - "DNS lookups to external domains"
+  - "HTTP requests to non-localhost addresses"
+
+# Documentation
+docs:
+  - "CODEX_INSTRUCTIONS.md - How to generate code"
+  - "OFFLINE_CI_CD.md - Offline setup and wheelhouse"
+  - "scripts/max-health-check.sh - Direct health endpoint testing"
