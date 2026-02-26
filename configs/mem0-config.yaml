@@ -3,7 +3,7 @@
 # Vector Store Configuration (Qdrant)
 vector_store:
   provider: qdrant
-  host: localhost
+  host: qdrant
   port: 6333
   collection_name: memories
   
@@ -14,7 +14,7 @@ embedder:
   
 # Redis Configuration (Key-Value Store)
 redis:
-  host: localhost
+  host: redis
   port: 6379
   db: 0
   
