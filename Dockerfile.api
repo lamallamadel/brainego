@@ -15,6 +15,7 @@ COPY agent_router.py .
 COPY rag_service.py .
 COPY memory_service.py .
 COPY graph_service.py .
+COPY embedding_service.py .
 
 # Expose port
 EXPOSE 8000

@@ -10,6 +10,7 @@ import logging
 from typing import List, Dict, Optional, Any
 from datetime import datetime
 
+import httpx
 from sentence_transformers import SentenceTransformer
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -93,6 +94,67 @@ class NomicEmbedder:
         """Generate embeddings for a batch of texts."""
         embeddings = self.model.encode(texts, convert_to_numpy=True, show_progress_bar=False)
         return embeddings.tolist()
+
+
+class HTTPEmbeddingServiceClient:
+    """Embedding client that delegates vectorization to a local HTTP service."""
+
+    def __init__(
+        self,
+        service_url: str,
+        model_name: str = "nomic-ai/nomic-embed-text-v1.5",
+        timeout_seconds: float = 60.0,
+    ):
+        self.service_url = service_url.rstrip("/")
+        self.model_name = model_name
+        self.timeout_seconds = timeout_seconds
+        self.dimension = self._fetch_dimension()
+        logger.info(
+            "Connected to embedding service at %s with model %s (dimension=%s)",
+            self.service_url,
+            self.model_name,
+            self.dimension,
+        )
+
+    def _fetch_dimension(self) -> int:
+        """Fetch embedding dimension from the service health endpoint."""
+        try:
+            response = httpx.get(
+                f"{self.service_url}/health",
+                timeout=self.timeout_seconds,
+            )
+            response.raise_for_status()
+            payload = response.json()
+            dimension = payload.get("dimension")
+            if not isinstance(dimension, int) or dimension <= 0:
+                raise ValueError("Embedding service returned invalid dimension")
+            return dimension
+        except Exception as exc:
+            logger.error("Failed to fetch embedding dimension from %s: %s", self.service_url, exc)
+            raise
+
+    def embed_text(self, text: str) -> List[float]:
+        """Generate embedding for a single text via HTTP service."""
+        embeddings = self.embed_batch([text])
+        return embeddings[0]
+
+    def embed_batch(self, texts: List[str]) -> List[List[float]]:
+        """Generate embeddings for a batch of texts via HTTP service."""
+        if not texts:
+            return []
+
+        response = httpx.post(
+            f"{self.service_url}/v1/embeddings",
+            json={
+                "model": self.model_name,
+                "input": texts,
+            },
+            timeout=self.timeout_seconds,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data", [])
+        return [item["embedding"] for item in data]
 
 
 class QdrantStorage:
@@ -268,10 +330,21 @@ class RAGIngestionService:
         chunk_size: int = 1000,
         chunk_overlap: int = 100,
         embedding_model: str = "nomic-ai/nomic-embed-text-v1.5",
+        embedding_provider: str = "local",
+        embedding_service_url: str = "http://localhost:8003",
         graph_service: Optional[Any] = None
     ):
         self.chunker = DocumentChunker(chunk_size=chunk_size, overlap=chunk_overlap)
-        self.embedder = NomicEmbedder(model_name=embedding_model)
+        normalized_provider = embedding_provider.strip().lower()
+        if normalized_provider == "service":
+            logger.info("Using HTTP embedding service provider")
+            self.embedder = HTTPEmbeddingServiceClient(
+                service_url=embedding_service_url,
+                model_name=embedding_model,
+            )
+        else:
+            logger.info("Using in-process embedding provider")
+            self.embedder = NomicEmbedder(model_name=embedding_model)
         self.storage = QdrantStorage(
             host=qdrant_host,
             port=qdrant_port,

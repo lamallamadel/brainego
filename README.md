@@ -158,6 +158,7 @@ The API returns Server-Sent Events in OpenAI-compatible `chat.completion.chunk` 
 
 ```bash
 curl http://localhost:8000/health
+curl http://localhost:8003/health
 ```
 
 Response:
@@ -337,6 +338,15 @@ With `max_batch_size=32`, MAX Serve can process up to 32 requests simultaneously
         └── init.sql             # Database initialization
 ```
 
+
+## Embedding Service (RAG)
+
+The stack now includes a dedicated local embedding service (`embedding-service`) that serves an OpenAI-compatible `/v1/embeddings` endpoint on port `8003`.
+
+- Default model: `nomic-ai/nomic-embed-text-v1.5`
+- API server uses this service for RAG ingestion/search when `RAG_EMBEDDING_PROVIDER=service`
+- Fallback mode remains available with in-process embeddings via `RAG_EMBEDDING_PROVIDER=local`
+
 ## Management Commands
 
 ```bash
@@ -357,6 +367,7 @@ docker compose logs -f max-serve-llama
 docker compose logs -f max-serve-qwen
 docker compose logs -f max-serve-deepseek
 docker compose logs -f api-server
+docker compose logs -f embedding-service
 
 # Restart service
 docker compose restart max-serve-llama max-serve-qwen max-serve-deepseek
@@ -409,13 +420,14 @@ docker exec max-serve-deepseek nvidia-smi
 
 ```bash
 # Check if API server is running
-docker compose ps api-server
+docker compose ps api-server embedding-service
 
 # Test MAX Serve directly
 curl http://localhost:8080/health
 
 # Test API server
 curl http://localhost:8000/health
+curl http://localhost:8003/health
 
 # Validate merged Docker cloud config
 docker compose -f docker-compose.yaml -f docker-compose.observability.yml config >/tmp/brainego-compose-cloud.txt

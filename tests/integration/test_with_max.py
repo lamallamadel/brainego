@@ -50,6 +50,26 @@ async def test_max_runtime_health(max_client):
 
 @pytest.mark.integration
 @pytest.mark.asyncio
+async def test_max_embeddings_endpoint(max_client):
+    """Test MAX OpenAI-compatible embeddings endpoint."""
+    response = await max_client.post(
+        "/v1/embeddings",
+        json={
+            "model": "sentence-transformers/all-mpnet-base-v2",
+            "input": "MAX embeddings integration test",
+        },
+    )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert "data" in data
+    assert len(data["data"]) > 0
+    assert "embedding" in data["data"][0]
+    assert len(data["data"][0]["embedding"]) > 0
+
+
+@pytest.mark.integration
+@pytest.mark.asyncio
 async def test_api_health(api_client):
     """Test that API server is up and healthy."""
     response = await api_client.get("/health")

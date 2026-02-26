@@ -112,6 +112,29 @@ services:
       retries: 3
       start_period: 60s
 
+  embedding-service:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    container_name: embedding-service
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "8003:8003"
+    environment:
+      - EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
+      - EMBEDDING_SERVICE_HOST=0.0.0.0
+      - EMBEDDING_SERVICE_PORT=8003
+    command: ["python", "embedding_service.py"]
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8003/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+
   api-server:
     build:
       context: .
@@ -141,12 +164,17 @@ services:
       - POSTGRES_DB=ai_platform
       - POSTGRES_USER=ai_user
       - POSTGRES_PASSWORD=ai_password
+      - RAG_EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
+      - RAG_EMBEDDING_PROVIDER=service
+      - RAG_EMBEDDING_SERVICE_URL=http://embedding-service:8003
     depends_on:
       max-serve-llama:
         condition: service_healthy
       max-serve-qwen:
         condition: service_healthy
       max-serve-deepseek:
+        condition: service_healthy
+      embedding-service:
         condition: service_healthy
       qdrant:
         condition: service_healthy
@@ -190,6 +218,8 @@ services:
       max-serve-qwen:
         condition: service_healthy
       max-serve-deepseek:
+        condition: service_healthy
+      embedding-service:
         condition: service_healthy
       qdrant:
         condition: service_healthy
@@ -237,6 +267,8 @@ services:
       max-serve-qwen:
         condition: service_healthy
       max-serve-deepseek:
+        condition: service_healthy
+      embedding-service:
         condition: service_healthy
       qdrant:
         condition: service_healthy
@@ -329,6 +361,9 @@ services:
       - POSTGRES_DB=ai_platform
       - POSTGRES_USER=ai_user
       - POSTGRES_PASSWORD=ai_password
+      - RAG_EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
+      - RAG_EMBEDDING_PROVIDER=service
+      - RAG_EMBEDDING_SERVICE_URL=http://embedding-service:8003
       - PGDATA=/var/lib/postgresql/data/pgdata
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ai_user -d ai_platform"]
@@ -490,6 +525,9 @@ services:
       - POSTGRES_DB=ai_platform
       - POSTGRES_USER=ai_user
       - POSTGRES_PASSWORD=ai_password
+      - RAG_EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
+      - RAG_EMBEDDING_PROVIDER=service
+      - RAG_EMBEDDING_SERVICE_URL=http://embedding-service:8003
       - AUTO_TRAIN_ENABLED=true
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_VISIBLE_DEVICES=0
@@ -533,6 +571,9 @@ services:
       - POSTGRES_DB=ai_platform
       - POSTGRES_USER=ai_user
       - POSTGRES_PASSWORD=ai_password
+      - RAG_EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
+      - RAG_EMBEDDING_PROVIDER=service
+      - RAG_EMBEDDING_SERVICE_URL=http://embedding-service:8003
       - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
       - LEARNING_ENGINE_URL=http://learning-engine:8003
     depends_on:
@@ -580,6 +621,9 @@ services:
       - POSTGRES_DB=ai_platform
       - POSTGRES_USER=ai_user
       - POSTGRES_PASSWORD=ai_password
+      - RAG_EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
+      - RAG_EMBEDDING_PROVIDER=service
+      - RAG_EMBEDDING_SERVICE_URL=http://embedding-service:8003
       - MAML_SCHEDULE_ENABLED=true
       - MAML_CRON_SCHEDULE=0 2 1 * *
       - NVIDIA_VISIBLE_DEVICES=all
@@ -831,6 +875,9 @@ services:
       - POSTGRES_DB=ai_platform
       - POSTGRES_USER=ai_user
       - POSTGRES_PASSWORD=ai_password
+      - RAG_EMBEDDING_MODEL=nomic-ai/nomic-embed-text-v1.5
+      - RAG_EMBEDDING_PROVIDER=service
+      - RAG_EMBEDDING_SERVICE_URL=http://embedding-service:8003
     depends_on:
       qdrant:
         condition: service_healthy

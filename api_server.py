@@ -58,6 +58,10 @@ POSTGRES_DB = os.getenv("POSTGRES_DB", "ai_platform")
 POSTGRES_USER = os.getenv("POSTGRES_USER", "ai_user")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "ai_password")
 
+RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
+RAG_EMBEDDING_PROVIDER = os.getenv("RAG_EMBEDDING_PROVIDER", "local")
+RAG_EMBEDDING_SERVICE_URL = os.getenv("RAG_EMBEDDING_SERVICE_URL", "http://embedding-service:8003")
+
 # Create FastAPI app
 app = FastAPI(
     title="OpenAI-Compatible API for MAX Serve with Agent Router",
@@ -519,6 +523,9 @@ def get_rag_service() -> RAGIngestionService:
             collection_name=QDRANT_COLLECTION,
             chunk_size=1000,
             chunk_overlap=100,
+            embedding_model=RAG_EMBEDDING_MODEL,
+            embedding_provider=RAG_EMBEDDING_PROVIDER,
+            embedding_service_url=RAG_EMBEDDING_SERVICE_URL,
             graph_service=graph_svc
         )
         logger.info("RAG Ingestion Service initialized")
