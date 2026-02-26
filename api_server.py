@@ -702,11 +702,17 @@ async def health_check():
     
     router = get_agent_router()
     models_info = router.list_models()
-    
-    all_healthy = all(model['health_status'] for model in models_info.values())
+
+    has_models = bool(models_info)
+    all_healthy = has_models and all(model['health_status'] for model in models_info.values())
+
+    if not has_models:
+        overall_status = "unhealthy"
+    else:
+        overall_status = "healthy" if all_healthy else "degraded"
     
     payload = {
-        "status": "healthy" if all_healthy else "degraded",
+        "status": overall_status,
         "timestamp": datetime.utcnow().isoformat(),
         "models": {
             model_id: {
@@ -715,6 +721,10 @@ async def health_check():
                 "endpoint": info['endpoint']
             }
             for model_id, info in models_info.items()
+        },
+        "summary": {
+            "total_models": len(models_info),
+            "healthy_models": sum(1 for info in models_info.values() if info['health_status'])
         }
     }
 
