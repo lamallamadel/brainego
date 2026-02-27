@@ -10,9 +10,9 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ./models:/models
-      - ./configs:/configs
-      - ./logs:/logs
+      - max-models:/models
+      - max-configs:/configs
+      - max-logs:/logs
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_VISIBLE_DEVICES=0
@@ -47,9 +47,9 @@ services:
     ports:
       - "8081:8081"
     volumes:
-      - ./models:/models
-      - ./configs:/configs
-      - ./logs:/logs
+      - max-models:/models
+      - max-configs:/configs
+      - max-logs:/logs
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_VISIBLE_DEVICES=0
@@ -84,9 +84,9 @@ services:
     ports:
       - "8082:8082"
     volumes:
-      - ./models:/models
-      - ./configs:/configs
-      - ./logs:/logs
+      - max-models:/models
+      - max-configs:/configs
+      - max-logs:/logs
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - CUDA_VISIBLE_DEVICES=0
@@ -938,6 +938,12 @@ networks:
     name: ai-platform-net
 
 volumes:
+  max-models:
+    driver: local
+  max-configs:
+    driver: local
+  max-logs:
+    driver: local
   qdrant-storage:
     driver: local
   redis-data:
