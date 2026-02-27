@@ -7,6 +7,7 @@ This guide covers deploying the MAX Serve infrastructure with Llama 3.3 8B Instr
 - [Local Development](#local-development)
 - [Production Deployment](#production-deployment)
 - [Cloud Deployment](#cloud-deployment)
+- [Dedicated GPU Host (AFR-5)](#dedicated-gpu-host-afr-5)
 - [Configuration](#configuration)
 - [Monitoring](#monitoring)
 - [Scaling](#scaling)
@@ -146,6 +147,18 @@ LOG_LEVEL=INFO
 RATE_LIMIT_REQUESTS=100
 RATE_LIMIT_WINDOW=60
 ```
+
+
+## Dedicated GPU Host (AFR-5)
+
+For the AFR-5 story (RTX 4090 + 64GB RAM + 500GB NVMe + SSH access), use the dedicated runbook:
+
+- [`GPU_HOST_PROVISIONING.md`](GPU_HOST_PROVISIONING.md)
+
+It includes:
+- A requirement-to-command acceptance matrix
+- Provisioning and SSH hardening steps
+- MAX Serve readiness checks and handover template
 
 ## Cloud Deployment
 
