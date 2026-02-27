@@ -177,6 +177,14 @@ Response:
 
 The `load_test.py` script provides comprehensive performance testing with detailed latency metrics.
 
+For `/v1/chat` end-to-end benchmarking (AFR-30 baseline), use:
+
+```bash
+python tests/perf/benchmark_v1_chat_latency.py --base-url http://localhost:8000 --iterations 20 --concurrency 4
+```
+
+The benchmark writes both JSON and Markdown reports under `tests/perf/artifacts/`.
+
 ### Basic Usage
 
 ```bash
