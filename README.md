@@ -62,6 +62,16 @@ The initialization script will:
 - Start all services
 - Verify service health
 
+### Phase 1 MVP Compose (Core Services Only)
+
+Use `docker-compose.phase1.yaml` to run the Phase 1 baseline stack only: MAX Serve, Qdrant, Redis, Postgres, and MinIO.
+
+```bash
+docker compose -f docker-compose.phase1.yaml up -d
+```
+
+The stack is parameterized with environment variables for ports, credentials, and runtime options, and each service ships with a healthcheck for local MVP readiness.
+
 ### 3. Test the API
 
 ```bash
