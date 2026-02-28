@@ -1,4 +1,4 @@
-.PHONY: help install install-modular download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status grafana grafana-start grafana-stop grafana-ui drift drift-start drift-stop drift-logs drift-check drift-metrics test-unit test-integration test-all codex-help
+.PHONY: help install install-modular download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-init-schema graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status grafana grafana-start grafana-stop grafana-ui drift drift-start drift-stop drift-logs drift-check drift-metrics test-unit test-integration test-all codex-help
 
 help:
 	@echo "MAX Serve + Llama 3.3 8B Infrastructure"
@@ -208,6 +208,12 @@ graph-test:
 graph-example:
 	@echo "Running graph usage examples..."
 	@python examples/graph_example.py
+
+
+graph-init-schema:
+	@echo "Applying base Neo4j schema from configs/neo4j/base_schema.cypher..."
+	@cat configs/neo4j/base_schema.cypher | docker exec -i neo4j cypher-shell -u neo4j -p neo4j_password
+	@echo "Schema applied successfully."
 
 graph-ui:
 	@echo "Opening Neo4j Browser..."
