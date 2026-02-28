@@ -64,7 +64,7 @@ docker compose up -d
 curl http://localhost:9100/health
 
 # Check available servers (requires API key)
-curl -H "Authorization: Bearer sk-test-key-123" http://localhost:9100/mcp/servers
+curl -H "Authorization: Bearer sk-project-agent-key-321" http://localhost:9100/mcp/servers
 ```
 
 ## Architecture
@@ -256,6 +256,11 @@ Get ACL role information for authenticated user.
 - **Description**: Full access to all MCP servers and operations
 - **Permissions**: All resources, tools, operations (read/write/delete)
 - **Rate Limits**: 1000 req/min, 10000 req/hour
+
+#### Project-Agent
+- **Description**: Scoped read-only access for project automation agents
+- **Permissions**: Read-only GitHub + Notion tools for test repositories/workspaces
+- **Rate Limits**: 120 req/min, 1800 req/hour
 
 #### Developer
 - **Description**: Read/write access to code repositories and filesystem
