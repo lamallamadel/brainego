@@ -75,3 +75,32 @@ def load_alert_event_policies(config: Dict[str, Any]) -> Dict[str, DriftAlertEve
         ),
     }
 
+
+
+@dataclass(frozen=True)
+class DriftSeverityPolicy:
+    """Severity multipliers used by drift_detected classification."""
+
+    kl_multiplier: float = 1.0
+    psi_multiplier: float = 1.0
+    accuracy_delta: float = 0.05
+
+
+def load_severity_policies(config: Dict[str, Any]) -> Dict[str, DriftSeverityPolicy]:
+    """Load severity policy table from `alerts.severity` with defaults."""
+
+    severity_cfg = _as_dict(_as_dict(config.get("alerts")).get("severity"))
+
+    def _one(name: str, defaults: DriftSeverityPolicy) -> DriftSeverityPolicy:
+        data = _as_dict(severity_cfg.get(name))
+        return DriftSeverityPolicy(
+            kl_multiplier=data.get("kl_multiplier", defaults.kl_multiplier),
+            psi_multiplier=data.get("psi_multiplier", defaults.psi_multiplier),
+            accuracy_delta=data.get("accuracy_delta", defaults.accuracy_delta),
+        )
+
+    return {
+        "critical": _one("critical", DriftSeverityPolicy(kl_multiplier=2.0, psi_multiplier=2.0, accuracy_delta=0.15)),
+        "warning": _one("warning", DriftSeverityPolicy(kl_multiplier=1.5, psi_multiplier=1.5, accuracy_delta=0.10)),
+        "info": _one("info", DriftSeverityPolicy(kl_multiplier=1.0, psi_multiplier=1.0, accuracy_delta=0.05)),
+    }

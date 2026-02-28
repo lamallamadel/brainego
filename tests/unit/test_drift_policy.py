@@ -46,3 +46,23 @@ def test_load_alert_event_policies_uses_defaults() -> None:
     assert policies["accuracy_drop"].enabled is True
     assert policies["accuracy_drop"].severity == "critical"
     assert policies["accuracy_drop"].min_drop == 0.10
+
+
+def test_load_severity_policies_from_config() -> None:
+    drift_policy = _load_drift_policy_module()
+    policies = drift_policy.load_severity_policies({
+        "alerts": {
+            "severity": {
+                "critical": {"kl_multiplier": 2.5, "psi_multiplier": 2.3, "accuracy_delta": 0.2},
+                "warning": {"kl_multiplier": 1.7, "psi_multiplier": 1.6, "accuracy_delta": 0.11},
+            }
+        }
+    })
+
+    assert policies["critical"].kl_multiplier == 2.5
+    assert policies["critical"].psi_multiplier == 2.3
+    assert policies["critical"].accuracy_delta == 0.2
+    assert policies["warning"].kl_multiplier == 1.7
+    assert policies["warning"].psi_multiplier == 1.6
+    assert policies["warning"].accuracy_delta == 0.11
+    assert policies["info"].accuracy_delta == 0.05

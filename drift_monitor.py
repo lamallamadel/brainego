@@ -18,7 +18,11 @@ import json
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Tuple
 
-from drift_policy import load_thresholds, load_alert_event_policies
+from drift_policy import (
+    load_thresholds,
+    load_alert_event_policies,
+    load_severity_policies,
+)
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -120,6 +124,12 @@ class DriftMonitorConfig(BaseModel):
     accuracy_drop_alert_enabled: bool = Field(default=True)
     accuracy_drop_alert_severity: str = Field(default="critical")
     accuracy_drop_min: float = Field(default=0.10)
+    critical_kl_multiplier: float = Field(default=2.0)
+    critical_psi_multiplier: float = Field(default=2.0)
+    critical_accuracy_drop: float = Field(default=0.15)
+    warning_kl_multiplier: float = Field(default=1.5)
+    warning_psi_multiplier: float = Field(default=1.5)
+    warning_accuracy_drop: float = Field(default=0.10)
     
     # Fine-tuning
     auto_trigger_finetuning: bool = Field(default=True)
@@ -143,6 +153,7 @@ def load_config(config_path: str = "configs/drift-monitor.yaml") -> DriftMonitor
         
         thresholds = load_thresholds(yaml_config)
         alert_event_policies = load_alert_event_policies(yaml_config)
+        severity_policies = load_severity_policies(yaml_config)
 
         # Flatten nested config
         config_dict = {
@@ -168,6 +179,12 @@ def load_config(config_path: str = "configs/drift-monitor.yaml") -> DriftMonitor
             "accuracy_drop_alert_enabled": alert_event_policies["accuracy_drop"].enabled,
             "accuracy_drop_alert_severity": alert_event_policies["accuracy_drop"].severity,
             "accuracy_drop_min": alert_event_policies["accuracy_drop"].min_drop,
+            "critical_kl_multiplier": severity_policies["critical"].kl_multiplier,
+            "critical_psi_multiplier": severity_policies["critical"].psi_multiplier,
+            "critical_accuracy_drop": severity_policies["critical"].accuracy_delta,
+            "warning_kl_multiplier": severity_policies["warning"].kl_multiplier,
+            "warning_psi_multiplier": severity_policies["warning"].psi_multiplier,
+            "warning_accuracy_drop": severity_policies["warning"].accuracy_delta,
             "auto_trigger_finetuning": yaml_config.get("fine_tuning", {}).get("auto_trigger", True),
             "learning_engine_url": yaml_config.get("fine_tuning", {}).get("learning_engine_url", "http://learning-engine:8003"),
             "min_drift_score": yaml_config.get("fine_tuning", {}).get("min_drift_score", 0.3),
@@ -409,6 +426,7 @@ class DriftMonitor:
     
     async def send_slack_alert(
         self,
+        event_name: str,
         severity: str,
         message: str,
         metrics: Dict[str, Any]
@@ -417,6 +435,7 @@ class DriftMonitor:
         Send alert to Slack.
         
         Args:
+            event_name: Event identifier (drift_detected, accuracy_drop)
             severity: Alert severity (info, warning, critical)
             message: Alert message
             metrics: Drift metrics
@@ -448,7 +467,7 @@ class DriftMonitor:
             "attachments": [
                 {
                     "color": colors.get(severity, "#808080"),
-                    "title": f"[{severity.upper()}] Model Drift Detected",
+                    "title": f"[{severity.upper()}] Drift Event: {event_name}",
                     "text": message,
                     "fields": [
                         {
@@ -531,6 +550,7 @@ class DriftMonitor:
                     
                     # Send success alert
                     await self.send_slack_alert(
+                        "finetuning_triggered",
                         "info",
                         f"Automatic fine-tuning triggered due to drift detection.\nJob ID: {result.get('job_id')}",
                         drift_metrics
@@ -705,16 +725,20 @@ class DriftMonitor:
             accuracy_score = max(0, accuracy_delta / (1 - self.config.accuracy_min))
             combined_drift_score = (kl_score + psi_score + accuracy_score) / 3
             
-            # Determine severity
+            # Determine severity from policy multipliers
             severity = None
             if drift_detected:
-                if (kl_divergence > self.config.kl_threshold * 2.0 or
-                    psi > self.config.psi_threshold * 2.0 or
-                    accuracy_delta > 0.15):
+                if (
+                    kl_divergence > self.config.kl_threshold * self.config.critical_kl_multiplier
+                    or psi > self.config.psi_threshold * self.config.critical_psi_multiplier
+                    or accuracy_delta > self.config.critical_accuracy_drop
+                ):
                     severity = "critical"
-                elif (kl_divergence > self.config.kl_threshold * 1.5 or
-                      psi > self.config.psi_threshold * 1.5 or
-                      accuracy_delta > 0.10):
+                elif (
+                    kl_divergence > self.config.kl_threshold * self.config.warning_kl_multiplier
+                    or psi > self.config.psi_threshold * self.config.warning_psi_multiplier
+                    or accuracy_delta > self.config.warning_accuracy_drop
+                ):
                     severity = "warning"
                 else:
                     severity = "info"
@@ -766,7 +790,7 @@ class DriftMonitor:
                     f"Current Accuracy: {current_accuracy:.4f} (minimum: {self.config.accuracy_min})\n"
                     f"Combined Drift Score: {combined_drift_score:.4f}"
                 )
-                await self.send_slack_alert(drift_severity, message, metrics)
+                await self.send_slack_alert("drift_detected", drift_severity, message, metrics)
 
             accuracy_drop_event = accuracy_delta >= self.config.accuracy_drop_min
             if accuracy_drop_event and self.config.accuracy_drop_alert_enabled:
@@ -778,7 +802,7 @@ class DriftMonitor:
                     f"Current Accuracy: {current_accuracy:.4f}\n"
                     f"Accuracy Delta: {accuracy_delta:.4f} (minimum drop: {self.config.accuracy_drop_min:.4f})"
                 )
-                await self.send_slack_alert(accuracy_severity, accuracy_message, metrics)
+                await self.send_slack_alert("accuracy_drop", accuracy_severity, accuracy_message, metrics)
 
             # Trigger fine-tuning if score exceeds threshold
             if drift_detected and combined_drift_score >= self.config.min_drift_score:
