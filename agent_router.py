@@ -68,6 +68,12 @@ class PrometheusMetrics:
             'Total fallback requests',
             ['from_model', 'to_model']
         )
+
+        self.model_fallbacks = Counter(
+            'agent_router_model_fallbacks_total',
+            'Fallback attempts involving each model',
+            ['model', 'role']
+        )
         
         self.fallback_rate = Gauge(
             'agent_router_fallback_rate',
@@ -493,6 +499,15 @@ class AgentRouter:
             self.metrics.fallback_requests.labels(
                 from_model=primary_model_id,
                 to_model=fallback_model_id
+            ).inc()
+
+            self.metrics.model_fallbacks.labels(
+                model=primary_model_id,
+                role='source'
+            ).inc()
+            self.metrics.model_fallbacks.labels(
+                model=fallback_model_id,
+                role='target'
             ).inc()
             
             result = await self._try_model(
