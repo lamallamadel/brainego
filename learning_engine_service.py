@@ -53,6 +53,8 @@ class LearningEngineConfig(BaseModel):
     ewc_lambda_min: float = Field(default=100.0)
     ewc_lambda_max: float = Field(default=1000.0)
     ewc_lambda: float = Field(default=500.0)
+    fisher_history_days: int = Field(default=30)
+    fisher_num_samples: int = Field(default=1000)
     
     # Training configuration
     batch_size: int = Field(default=4)
@@ -95,6 +97,8 @@ def load_config() -> LearningEngineConfig:
         lora_alpha=int(os.getenv("LORA_ALPHA", "32")),
         lora_dropout=float(os.getenv("LORA_DROPOUT", "0.05")),
         ewc_lambda=float(os.getenv("EWC_LAMBDA", "500.0")),
+        fisher_history_days=int(os.getenv("FISHER_HISTORY_DAYS", "30")),
+        fisher_num_samples=int(os.getenv("FISHER_NUM_SAMPLES", "1000")),
         batch_size=int(os.getenv("BATCH_SIZE", "4")),
         learning_rate=float(os.getenv("LEARNING_RATE", "2e-4")),
         num_train_epochs=int(os.getenv("NUM_TRAIN_EPOCHS", "3")),
