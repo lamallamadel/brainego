@@ -1242,7 +1242,16 @@ async def unified_chat(request: UnifiedChatRequest, raw_request: Request):
             use_temporal_decay=request.use_temporal_decay
         ) if request.use_memory else None
     )
-    return await chat_completions(completion_request, raw_request)
+    response = await chat_completions(completion_request, raw_request)
+    if isinstance(response, dict):
+        routing_metadata = response.get("x-routing-metadata", {})
+        logger.info(
+            "Unified chat intent classification: intent=%s model=%s fallback=%s",
+            routing_metadata.get("intent"),
+            routing_metadata.get("model_id"),
+            routing_metadata.get("fallback_used"),
+        )
+    return response
 
 
 @app.get("/v1/models")
