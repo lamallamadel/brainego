@@ -129,7 +129,7 @@ def collect_and_process(
 
             collector = NotionCollector()
             hours_back = config.get("hours_back", 4)
-            
+
             database_id = config.get("database_id")
             if database_id:
                 documents = collector.collect_database_items(
@@ -138,6 +138,43 @@ def collect_and_process(
                 )
             else:
                 documents = collector.collect_recent_pages(hours_back=hours_back)
+
+        elif source == "notion_mcp":
+            from data_collectors.notion_mcp_ingestion import NotionMCPIngestionJob
+            from mcp_client import MCPClientService
+            import yaml
+
+            mcp_config_path = os.getenv("MCP_SERVERS_CONFIG", "configs/mcp-servers.yaml")
+            notion_space = config.get("notion_space", "Docs brainego")
+            project = config.get("project", "brainego")
+            query = config.get("query", "")
+            database_ids = config.get("database_ids", [])
+
+            with open(mcp_config_path, "r", encoding="utf-8") as stream:
+                mcp_config = yaml.safe_load(stream)
+
+            mcp_service = MCPClientService(mcp_config.get("servers", {}))
+            awaitable_initialize = getattr(mcp_service, "initialize")
+            if callable(awaitable_initialize):
+                import asyncio
+                asyncio.run(awaitable_initialize())
+
+            rag_service = RAGIngestionService(
+                qdrant_host=os.getenv("QDRANT_HOST", "localhost"),
+                qdrant_port=int(os.getenv("QDRANT_PORT", "6333")),
+                collection_name="documents"
+            )
+            job = NotionMCPIngestionJob(mcp_service, rag_service)
+            import asyncio
+            job_result = asyncio.run(
+                job.run(
+                    notion_space=notion_space,
+                    project=project,
+                    query=query,
+                    database_ids=database_ids,
+                )
+            )
+            return job_result
         
         elif source == "slack":
             from data_collectors.slack_collector import SlackCollector
