@@ -38,6 +38,7 @@ class ModelConfig:
     capabilities: List[str]
     max_tokens: int
     temperature: float
+    aliases: List[str]
     health_status: bool = False
     consecutive_failures: int = 0
     consecutive_successes: int = 0
@@ -189,6 +190,7 @@ class AgentRouter:
         self.health_check_enabled = False
         self.health_check_task = None
         self.circuit_breakers: Dict[str, Any] = {}
+        self.model_aliases: Dict[str, str] = {}
         
         self._load_config()
         self._initialize_metrics()
@@ -203,14 +205,24 @@ class AgentRouter:
         
         # Load model configurations
         for model_id, model_cfg in config['models'].items():
+            aliases = model_cfg.get('aliases', [])
             self.models[model_id] = ModelConfig(
                 name=model_cfg['name'],
                 endpoint=model_cfg['endpoint'],
                 description=model_cfg['description'],
                 capabilities=model_cfg['capabilities'],
                 max_tokens=model_cfg['max_tokens'],
-                temperature=model_cfg['temperature']
+                temperature=model_cfg['temperature'],
+                aliases=aliases
             )
+            alias_keys = {
+                model_id.lower(),
+                model_cfg['name'].lower(),
+                model_cfg['name'].replace('_', '-').lower(),
+                *[alias.lower() for alias in aliases]
+            }
+            for alias_key in alias_keys:
+                self.model_aliases[alias_key] = model_id
         
         # Load routing configuration
         routing = config['routing']
@@ -416,6 +428,7 @@ class AgentRouter:
         self,
         messages: List[Dict[str, str]],
         prompt: str,
+        preferred_model: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
@@ -442,6 +455,12 @@ class AgentRouter:
         
         # Select primary model
         primary_model_id = self.select_model(intent)
+        explicit_model_used = False
+        if preferred_model:
+            resolved_model_id = self.resolve_model_identifier(preferred_model)
+            if resolved_model_id:
+                primary_model_id = resolved_model_id
+                explicit_model_used = True
         
         # Try primary model first
         result = await self._try_model(
@@ -467,7 +486,8 @@ class AgentRouter:
                 'intent': intent.value,
                 'confidence': confidence,
                 'fallback_used': False,
-                'total_time_seconds': round(total_time, 3)
+                'total_time_seconds': round(total_time, 3),
+                'explicit_model_used': explicit_model_used
             }
             
             return result
@@ -506,7 +526,8 @@ class AgentRouter:
                     'confidence': confidence,
                     'fallback_used': True,
                     'primary_model': primary_model_id,
-                    'total_time_seconds': round(total_time, 3)
+                    'total_time_seconds': round(total_time, 3),
+                    'explicit_model_used': explicit_model_used
                 }
                 
                 logger.info(f"Fallback successful with model {fallback_model_id}")
@@ -654,7 +675,12 @@ class AgentRouter:
                 'capabilities': model.capabilities,
                 'health_status': model.health_status,
                 'max_tokens': model.max_tokens,
-                'temperature': model.temperature
+                'temperature': model.temperature,
+                'aliases': model.aliases
             }
             for model_id, model in self.models.items()
         }
+
+    def resolve_model_identifier(self, model_identifier: str) -> Optional[str]:
+        """Resolve model ID/name/alias to internal model ID."""
+        return self.model_aliases.get(model_identifier.lower())

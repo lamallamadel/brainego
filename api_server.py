@@ -553,27 +553,70 @@ class MetricsStore:
         self.total_latency = 0.0
         self.latencies = []
         self.errors = 0
+        self.tokens_generated = 0
+        self.model_stats: Dict[str, Dict[str, Any]] = {}
 
-    def record_request(self, latency: float, error: bool = False):
+    def record_request(
+        self,
+        latency: float,
+        error: bool = False,
+        model: Optional[str] = None,
+        completion_tokens: int = 0
+    ):
         self.request_count += 1
+        if model:
+            model_bucket = self.model_stats.setdefault(
+                model,
+                {
+                    "request_count": 0,
+                    "errors": 0,
+                    "total_latency": 0.0,
+                    "latencies": [],
+                    "tokens_generated": 0
+                }
+            )
+            model_bucket["request_count"] += 1
+
         if not error:
             self.total_latency += latency
             self.latencies.append(latency)
+            self.tokens_generated += completion_tokens
+
+            if model:
+                model_bucket["total_latency"] += latency
+                model_bucket["latencies"].append(latency)
+                model_bucket["tokens_generated"] += completion_tokens
+
             # Keep only last 1000 latencies
             if len(self.latencies) > 1000:
                 self.latencies = self.latencies[-1000:]
+            if model and len(model_bucket["latencies"]) > 1000:
+                model_bucket["latencies"] = model_bucket["latencies"][-1000:]
         else:
             self.errors += 1
+            if model:
+                model_bucket["errors"] += 1
+
+    @staticmethod
+    def _rate(errors: int, total: int) -> float:
+        return round((errors / total) * 100, 2) if total else 0.0
+
+    @staticmethod
+    def _tokens_per_second(tokens: int, total_latency_ms: float) -> float:
+        return round(tokens / (total_latency_ms / 1000), 2) if total_latency_ms > 0 else 0.0
 
     def get_stats(self) -> Dict[str, Any]:
         if not self.latencies:
             return {
                 "request_count": self.request_count,
                 "errors": self.errors,
+                "error_rate_percent": self._rate(self.errors, self.request_count),
                 "avg_latency_ms": 0,
                 "p50_latency_ms": 0,
                 "p95_latency_ms": 0,
-                "p99_latency_ms": 0
+                "p99_latency_ms": 0,
+                "tokens_generated": self.tokens_generated,
+                "tokens_per_second": self._tokens_per_second(self.tokens_generated, self.total_latency)
             }
         
         sorted_latencies = sorted(self.latencies)
@@ -582,11 +625,33 @@ class MetricsStore:
         return {
             "request_count": self.request_count,
             "errors": self.errors,
+            "error_rate_percent": self._rate(self.errors, self.request_count),
             "avg_latency_ms": round(self.total_latency / len(self.latencies), 2),
             "p50_latency_ms": round(sorted_latencies[int(n * 0.50)], 2),
             "p95_latency_ms": round(sorted_latencies[int(n * 0.95)], 2),
-            "p99_latency_ms": round(sorted_latencies[int(n * 0.99)], 2)
+            "p99_latency_ms": round(sorted_latencies[int(n * 0.99)], 2),
+            "tokens_generated": self.tokens_generated,
+            "tokens_per_second": self._tokens_per_second(self.tokens_generated, self.total_latency)
         }
+
+    def get_model_stats(self) -> Dict[str, Any]:
+        """Return per-model latency, error-rate, and throughput metrics."""
+        model_metrics: Dict[str, Any] = {}
+        for model_name, data in self.model_stats.items():
+            sorted_latencies = sorted(data["latencies"])
+            n = len(sorted_latencies)
+            model_metrics[model_name] = {
+                "request_count": data["request_count"],
+                "errors": data["errors"],
+                "error_rate_percent": self._rate(data["errors"], data["request_count"]),
+                "avg_latency_ms": round(data["total_latency"] / n, 2) if n else 0,
+                "p50_latency_ms": round(sorted_latencies[int(n * 0.50)], 2) if n else 0,
+                "p95_latency_ms": round(sorted_latencies[int(n * 0.95)], 2) if n else 0,
+                "p99_latency_ms": round(sorted_latencies[int(n * 0.99)], 2) if n else 0,
+                "tokens_generated": data["tokens_generated"],
+                "tokens_per_second": self._tokens_per_second(data["tokens_generated"], data["total_latency"])
+            }
+        return model_metrics
 
 
 metrics = MetricsStore()
@@ -816,6 +881,7 @@ async def generate_with_router(
     result = await router.generate(
         messages=messages_dict,
         prompt=prompt,
+        preferred_model=params.get("preferred_model"),
         max_tokens=params.get("max_tokens"),
         temperature=params.get("temperature"),
         top_p=params.get("top_p"),
@@ -980,6 +1046,7 @@ async def get_metrics():
     """Get performance metrics."""
     return {
         "metrics": metrics.get_stats(),
+        "per_model_metrics": metrics.get_model_stats(),
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -1164,6 +1231,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         
         # Call Agent Router
         params = {
+            "preferred_model": request.model,
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "top_p": request.top_p,
@@ -1176,13 +1244,17 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             params=params
         )
         
-        # Calculate latency
-        latency_ms = (time.time() - start_time) * 1000
-        metrics.record_request(latency_ms)
-        
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
         response_model = routing_metadata.get('model_name', request.model)
+
+        # Calculate latency
+        latency_ms = (time.time() - start_time) * 1000
+        metrics.record_request(
+            latency_ms,
+            model=response_model,
+            completion_tokens=completion_tokens
+        )
 
         if request.memory and request.memory.enabled and request.memory.auto_store:
             try:
@@ -1278,10 +1350,10 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         return response_data
         
     except HTTPException:
-        metrics.record_request((time.time() - start_time) * 1000, error=True)
+        metrics.record_request((time.time() - start_time) * 1000, error=True, model=request.model)
         raise
     except Exception as e:
-        metrics.record_request((time.time() - start_time) * 1000, error=True)
+        metrics.record_request((time.time() - start_time) * 1000, error=True, model=request.model)
         logger.error(f"Unexpected error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 

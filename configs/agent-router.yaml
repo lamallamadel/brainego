@@ -5,6 +5,7 @@
 models:
   llama:
     name: "llama-3.3-8b-instruct"
+    aliases: ["llama-3.3-8b-instruct", "llama", "llama-3.3"]
     endpoint: "http://max-serve-llama:8080"
     description: "General purpose conversational model"
     capabilities: ["general", "chat", "qa"]
@@ -13,6 +14,7 @@ models:
     
   qwen-coder:
     name: "qwen2.5-coder-7b-instruct"
+    aliases: ["qwen-2.5-coder-7b", "qwen2.5-coder-7b", "qwen-coder"]
     endpoint: "http://max-serve-qwen:8081"
     description: "Specialized coding and programming model"
     capabilities: ["code", "programming", "debugging"]
@@ -21,6 +23,7 @@ models:
     
   deepseek-r1:
     name: "deepseek-r1-distill-qwen-7b"
+    aliases: ["deepseek-r1-7b", "deepseek-r1", "deepseek-r1-distill-qwen-7b"]
     endpoint: "http://max-serve-deepseek:8082"
     description: "Advanced reasoning and problem-solving model"
     capabilities: ["reasoning", "math", "logic", "analysis"]
