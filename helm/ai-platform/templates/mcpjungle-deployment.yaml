@@ -8,6 +8,10 @@ metadata:
     app.kubernetes.io/name: mcpjungle
     app.kubernetes.io/component: gateway
     app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/path: /metrics
+    prometheus.io/port: "{{ .Values.mcpjungle.service.port }}"
 spec:
   type: {{ .Values.mcpjungle.service.type }}
   ports:
@@ -52,6 +56,11 @@ spec:
               protocol: TCP
           env:
             {{- toYaml .Values.mcpjungle.env | nindent 12 }}
+            - name: API_KEYS
+              valueFrom:
+                secretKeyRef:
+                  name: mcpjungle-credentials
+                  key: apiKeys
           {{- if .Values.mcpjungle.livenessProbe }}
           livenessProbe:
             {{- toYaml .Values.mcpjungle.livenessProbe | nindent 12 }}

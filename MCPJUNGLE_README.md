@@ -112,6 +112,38 @@ curl -H "Authorization: Bearer sk-test-key-123" <endpoint>
 
 ### Endpoints
 
+
+#### POST `/mcp`
+Unified MCP gateway endpoint that supports tool and resource operations via a single authenticated route.
+
+**Request**:
+```json
+{
+  "server_id": "mcp-github",
+  "action": "call_tool",
+  "tool_name": "github_search_repositories",
+  "arguments": {"query": "language:python stars:>1000"}
+}
+```
+
+**Supported actions**: `list_tools`, `call_tool`, `list_resources`, `read_resource`
+
+#### GET `/metrics`
+Public metrics endpoint for CI/staging scraping and dashboards.
+
+**Response**:
+```json
+{
+  "metrics": {
+    "request_count": 42,
+    "mcp_requests": 18,
+    "mcp_errors": 2,
+    "mcp_error_rate": 0.1111
+  },
+  "timestamp": "2026-01-01T00:00:00Z"
+}
+```
+
 #### GET `/mcp/servers`
 List all available MCP servers (filtered by user role).
 
