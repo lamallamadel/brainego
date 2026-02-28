@@ -5,7 +5,7 @@ schedules:
   - name: github_collection
     source: github
     interval: 6h
-    enabled: true
+    enabled: ${ENABLE_GITHUB_INGESTION}
     config:
       # If repo_name is not set, will collect user activity
       repo_name: ${GITHUB_DEFAULT_REPO}
@@ -24,6 +24,19 @@ schedules:
       hours_back: 4
       # Optional: specific database ID
       # database_id: ${NOTION_DATABASE_ID}
+
+
+  # Notion MCP knowledge base ingestion - every 4 hours
+  - name: notion_mcp_docs_brainego_ingestion
+    source: notion_mcp
+    interval: 4h
+    enabled: true
+    config:
+      notion_space: Docs brainego
+      project: brainego
+      query: brainego
+      # Optional: list of database IDs to ingest
+      database_ids: []
 
   # Slack data collection - every 2 hours
   - name: slack_collection
