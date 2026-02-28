@@ -52,6 +52,42 @@ class MemoryBudgetConfigLoader:
                 raise
         
         return configs
+
+    @staticmethod
+    def load_project_overrides(filepath: str) -> Dict[str, Dict[str, WorkspaceConfig]]:
+        """
+        Load project-level overrides grouped by workspace.
+
+        Expected structure:
+        project_overrides:
+          <workspace_id>:
+            <project_id>:
+              ... WorkspaceConfig-compatible fields ...
+        """
+        if not os.path.exists(filepath):
+            raise FileNotFoundError(f"Configuration file not found: {filepath}")
+
+        with open(filepath, 'r') as f:
+            yaml_data = yaml.safe_load(f)
+
+        overrides = yaml_data.get('project_overrides', {}) if yaml_data else {}
+        project_configs: Dict[str, Dict[str, WorkspaceConfig]] = {}
+
+        for workspace_id, projects in overrides.items():
+            project_configs[workspace_id] = {}
+            for project_id, project_data in (projects or {}).items():
+                config = MemoryBudgetConfigLoader._parse_workspace_config(
+                    workspace_id,
+                    project_data
+                )
+                project_configs[workspace_id][project_id] = config
+                logger.info(
+                    "Loaded project override: workspace=%s project=%s",
+                    workspace_id,
+                    project_id
+                )
+
+        return project_configs
     
     @staticmethod
     def _parse_workspace_config(

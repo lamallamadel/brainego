@@ -145,6 +145,7 @@ class MemoryBudgetAllocator:
         self.workspace_configs: Dict[str, WorkspaceConfig] = {
             "default": self.default_config
         }
+        self.project_configs: Dict[Tuple[str, str], WorkspaceConfig] = {}
         self.log_allocations = log_allocations
         
         # Allocation history for analysis
@@ -156,6 +157,38 @@ class MemoryBudgetAllocator:
         """Register a workspace-specific configuration."""
         self.workspace_configs[config.workspace_id] = config
         logger.info(f"Registered workspace config: {config.workspace_id}")
+
+    def register_project(self, workspace_id: str, project_id: str, config: WorkspaceConfig):
+        """Register a project-specific configuration override within a workspace."""
+        self.project_configs[(workspace_id, project_id)] = config
+        logger.info(
+            "Registered project config: workspace=%s, project=%s",
+            workspace_id,
+            project_id
+        )
+
+    def resolve_config(
+        self,
+        workspace_id: str,
+        project_id: Optional[str] = None
+    ) -> Tuple[WorkspaceConfig, str]:
+        """
+        Resolve effective configuration for a request.
+
+        Priority:
+        1) Project-level config (workspace + project)
+        2) Workspace-level config
+        3) Default config
+        """
+        if project_id:
+            project_key = (workspace_id, project_id)
+            if project_key in self.project_configs:
+                return self.project_configs[project_key], "project"
+
+        if workspace_id in self.workspace_configs:
+            return self.workspace_configs[workspace_id], "workspace"
+
+        return self.default_config, "default"
     
     def estimate_query_complexity(self, query: str, context: Optional[Dict[str, Any]] = None) -> QueryComplexity:
         """
@@ -295,6 +328,7 @@ class MemoryBudgetAllocator:
         query: str,
         available_memories: List[MemoryItem],
         workspace_id: str = "default",
+        project_id: Optional[str] = None,
         context: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
@@ -311,8 +345,8 @@ class MemoryBudgetAllocator:
         """
         start_time = time.time()
         
-        # Get workspace configuration
-        config = self.workspace_configs.get(workspace_id, self.default_config)
+        # Resolve configuration (project -> workspace -> default)
+        config, config_scope = self.resolve_config(workspace_id, project_id)
         
         # Estimate query complexity
         complexity = self.estimate_query_complexity(query, context)
@@ -338,9 +372,21 @@ class MemoryBudgetAllocator:
         allocation_result = {
             "query": query,
             "workspace_id": workspace_id,
+            "project_id": project_id,
+            "config_scope": config_scope,
             "complexity": complexity.value,
             "timestamp": current_time.isoformat(),
             "tiers": {},
+            "budget": {
+                "max_total_tokens": config.max_total_tokens,
+                "tier_percentages": {
+                    MemoryTier.WORKING.value: config.working_memory_pct,
+                    MemoryTier.PROJECT.value: config.project_memory_pct,
+                    MemoryTier.LONG_TERM.value: config.long_term_memory_pct,
+                    MemoryTier.RAG.value: config.rag_memory_pct,
+                },
+                "complexity_multiplier": config.complexity_multipliers.get(complexity, 1.0)
+            },
             "total_tokens_allocated": 0,
             "total_memories_selected": 0,
             "processing_time_ms": 0
@@ -532,6 +578,8 @@ class MemoryBudgetAllocator:
         logger.info(
             f"Memory Budget Allocation - "
             f"Workspace: {allocation['workspace_id']}, "
+            f"Project: {allocation.get('project_id') or 'n/a'}, "
+            f"Scope: {allocation.get('config_scope', 'unknown')}, "
             f"Complexity: {allocation['complexity']}, "
             f"Tokens: {allocation['total_tokens_allocated']}, "
             f"Memories: {allocation['total_memories_selected']}, "

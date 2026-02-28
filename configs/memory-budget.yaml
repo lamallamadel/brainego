@@ -230,3 +230,31 @@ performance:
   
   # Auto-export interval (seconds, 0 = disabled)
   auto_export_interval: 3600  # Export every hour
+
+# Project-level overrides within specific workspaces
+project_overrides:
+  default:
+    brainego-core:
+      max_total_tokens: 10240
+      tier_allocation:
+        working_memory_pct: 0.30
+        project_memory_pct: 0.35
+        long_term_memory_pct: 0.15
+        rag_memory_pct: 0.20
+      complexity_multipliers:
+        simple: 0.6
+        medium: 1.1
+        complex: 1.6
+        expert: 2.1
+      scoring_weights:
+        relevance: 0.5
+        importance: 0.35
+        freshness: 0.15
+      freshness:
+        half_life_hours: 240.0
+      promotion:
+        threshold: 0.82
+        access_threshold: 3
+      demotion:
+        threshold: 0.28
+      tokens_per_char: 0.25
