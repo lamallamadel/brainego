@@ -192,6 +192,61 @@ class LoRATrainer:
         
         return samples
     
+    def load_historical_data(
+        self,
+        historical_days: int = 30,
+        recent_days: int = 7
+    ) -> List[Dict[str, str]]:
+        """Load historical feedback data for Fisher approximation."""
+        logger.info(
+            f"Loading historical feedback data from {historical_days}d to {recent_days}d ago..."
+        )
+
+        conn = psycopg2.connect(
+            host=self.config.postgres_host,
+            port=self.config.postgres_port,
+            dbname=self.config.postgres_db,
+            user=self.config.postgres_user,
+            password=self.config.postgres_password
+        )
+
+        cursor = conn.cursor()
+        query = """
+        SELECT 
+            request_data,
+            response_data,
+            feedback_type
+        FROM feedback
+        WHERE created_at >= NOW() - INTERVAL %s
+          AND created_at < NOW() - INTERVAL %s
+          AND feedback_type IN ('thumbs_up', 'thumbs_down')
+        ORDER BY created_at DESC
+        """
+
+        cursor.execute(query, (f"{historical_days} days", f"{recent_days} days"))
+        rows = cursor.fetchall()
+
+        samples = []
+        for row in rows:
+            request_data = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+            response_data = json.loads(row[1]) if isinstance(row[1], str) else row[1]
+
+            messages = request_data.get('messages', [])
+            assistant_response = response_data.get('choices', [{}])[0].get('message', {}).get('content', '')
+
+            samples.append({
+                'input': self._format_messages(messages),
+                'output': assistant_response,
+                'weight': 1.0,
+                'feedback_type': row[2]
+            })
+
+        cursor.close()
+        conn.close()
+
+        logger.info(f"✓ Loaded {len(samples)} historical samples for Fisher")
+        return samples
+
     def _format_messages(self, messages: List[Dict]) -> str:
         """Format messages for training"""
         formatted = []
@@ -301,8 +356,16 @@ class LoRATrainer:
             
             # Calculate Fisher matrix if not exists
             if not self.fisher_calculator.get_fisher_dict():
-                logger.info("Calculating Fisher Information Matrix...")
-                self.fisher_calculator.calculate_fim(samples, num_samples=1000)
+                logger.info("Calculating Fisher Information Matrix from historical data...")
+                historical_samples = self.load_historical_data(
+                    historical_days=getattr(self.config, "fisher_history_days", 30),
+                    recent_days=days
+                )
+                fisher_samples = historical_samples if historical_samples else samples
+                self.fisher_calculator.calculate_fim(
+                    fisher_samples,
+                    num_samples=getattr(self.config, "fisher_num_samples", 1000)
+                )
             
             # Prepare dataset
             dataset = self.prepare_dataset(samples)
@@ -434,8 +497,11 @@ class EWCTrainer(Trainer):
         self.old_params = old_params
         self.ewc_lambda = ewc_lambda
     
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """Compute loss with EWC regularization"""
+        inputs = dict(inputs)
+        inputs.pop("weight", None)
+
         # Standard loss
         outputs = model(**inputs)
         loss = outputs.loss
@@ -443,6 +509,7 @@ class EWCTrainer(Trainer):
         # Add EWC regularization
         if self.fisher_calculator.get_fisher_dict() and self.old_params:
             ewc_loss = self.fisher_calculator.compute_ewc_loss(
+                model,
                 self.old_params,
                 self.ewc_lambda
             )
