@@ -141,14 +141,21 @@ CREATE TABLE IF NOT EXISTS drift_metrics (
     current_accuracy FLOAT NOT NULL,
     drift_detected BOOLEAN NOT NULL,
     severity VARCHAR(20),
+    scope_type VARCHAR(50),
+    scope_value VARCHAR(255),
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Backward-compatible schema migration for existing databases
+ALTER TABLE drift_metrics ADD COLUMN IF NOT EXISTS scope_type VARCHAR(50);
+ALTER TABLE drift_metrics ADD COLUMN IF NOT EXISTS scope_value VARCHAR(255);
 
 -- Create indexes for drift_metrics
 CREATE INDEX IF NOT EXISTS idx_drift_metrics_timestamp ON drift_metrics(timestamp);
 CREATE INDEX IF NOT EXISTS idx_drift_metrics_drift_detected ON drift_metrics(drift_detected);
 CREATE INDEX IF NOT EXISTS idx_drift_metrics_severity ON drift_metrics(severity);
+CREATE INDEX IF NOT EXISTS idx_drift_metrics_scope ON drift_metrics(scope_type, scope_value);
 
 -- Create finetuning_triggers table for tracking automatic fine-tuning triggers
 CREATE TABLE IF NOT EXISTS finetuning_triggers (
