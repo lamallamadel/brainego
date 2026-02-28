@@ -41,8 +41,8 @@ cp .env.mcpjungle.example .env.mcpjungle
 # - GITHUB_TOKEN (for GitHub MCP server)
 # - NOTION_API_KEY (for Notion MCP server)
 # - API_KEYS (customize your API keys)
-# - GITHUB_TEST_OWNER/GITHUB_TEST_REPO (AFR-32 test repo scope)
-# - NOTION_TEST_WORKSPACE_ID/NOTION_TEST_DATABASE_ID (AFR-32 test workspace scope)
+# - GITHUB_TEST_OWNER/GITHUB_TEST_REPO_1/GITHUB_TEST_REPO_2 (AFR-32 test repo scope)
+# - NOTION_TEST_WORKSPACE_ID/NOTION_TEST_DATABASE_ID_1/NOTION_TEST_DATABASE_ID_2 (AFR-32 test workspace scope)
 ```
 
 2. **Configure MCP Servers** (optional):
@@ -318,8 +318,8 @@ Get ACL role information for authenticated user.
 #### Project-Agent
 - **Description**: Project-scoped read-only role for MCP GitHub and Notion test assets
 - **Permissions**:
-  - GitHub: Read-only repository/issues/PR/code access constrained to `${GITHUB_TEST_OWNER}/${GITHUB_TEST_REPO}` in `configs/mcp-servers.yaml`
-  - Notion: Read-only database/page/block access constrained to `${NOTION_TEST_WORKSPACE_ID}` and `${NOTION_TEST_DATABASE_ID}`
+  - GitHub: Read-only repository/issues/PR/code access constrained to `${GITHUB_TEST_OWNER}/${GITHUB_TEST_REPO_1}` and `${GITHUB_TEST_OWNER}/${GITHUB_TEST_REPO_2}` in `configs/mcp-servers.yaml`
+  - Notion: Read-only database/page/block access constrained to `${NOTION_TEST_WORKSPACE_ID}` and `${NOTION_TEST_DATABASE_ID_1}`/`${NOTION_TEST_DATABASE_ID_2}`
 - **Rate Limits**: 80 req/min, 1200 req/hour
 
 #### Readonly (Default)
