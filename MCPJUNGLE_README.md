@@ -41,8 +41,6 @@ cp .env.mcpjungle.example .env.mcpjungle
 # - GITHUB_TOKEN (for GitHub MCP server)
 # - NOTION_API_KEY (for Notion MCP server)
 # - API_KEYS (customize your API keys)
-# - GITHUB_TEST_OWNER/GITHUB_TEST_REPO_1/GITHUB_TEST_REPO_2 (AFR-32 test repo scope)
-# - NOTION_TEST_WORKSPACE_ID/NOTION_TEST_DATABASE_ID_1/NOTION_TEST_DATABASE_ID_2 (AFR-32 test workspace scope)
 ```
 
 2. **Configure MCP Servers** (optional):
@@ -66,7 +64,7 @@ docker compose up -d
 curl http://localhost:9100/health
 
 # Check available servers (requires API key)
-curl -H "Authorization: Bearer sk-test-key-123" http://localhost:9100/mcp/servers
+curl -H "Authorization: Bearer sk-project-agent-key-321" http://localhost:9100/mcp/servers
 ```
 
 ## Architecture
@@ -113,38 +111,6 @@ curl -H "Authorization: Bearer sk-test-key-123" <endpoint>
 ```
 
 ### Endpoints
-
-
-#### POST `/mcp`
-Unified MCP gateway endpoint that supports tool and resource operations via a single authenticated route.
-
-**Request**:
-```json
-{
-  "server_id": "mcp-github",
-  "action": "call_tool",
-  "tool_name": "github_search_repositories",
-  "arguments": {"query": "language:python stars:>1000"}
-}
-```
-
-**Supported actions**: `list_tools`, `call_tool`, `list_resources`, `read_resource`
-
-#### GET `/metrics`
-Public metrics endpoint for CI/staging scraping and dashboards.
-
-**Response**:
-```json
-{
-  "metrics": {
-    "request_count": 42,
-    "mcp_requests": 18,
-    "mcp_errors": 2,
-    "mcp_error_rate": 0.1111
-  },
-  "timestamp": "2026-01-01T00:00:00Z"
-}
-```
 
 #### GET `/mcp/servers`
 List all available MCP servers (filtered by user role).
@@ -291,6 +257,11 @@ Get ACL role information for authenticated user.
 - **Permissions**: All resources, tools, operations (read/write/delete)
 - **Rate Limits**: 1000 req/min, 10000 req/hour
 
+#### Project-Agent
+- **Description**: Scoped read-only access for project automation agents
+- **Permissions**: Read-only GitHub + Notion tools for test repositories/workspaces
+- **Rate Limits**: 120 req/min, 1800 req/hour
+
 #### Developer
 - **Description**: Read/write access to code repositories and filesystem
 - **Permissions**:
@@ -314,13 +285,6 @@ Get ACL role information for authenticated user.
   - Notion: Full access (read/write)
   - Filesystem: File read/write
 - **Rate Limits**: 200 req/min, 3000 req/hour
-
-#### Project-Agent
-- **Description**: Project-scoped read-only role for MCP GitHub and Notion test assets
-- **Permissions**:
-  - GitHub: Read-only repository/issues/PR/code access constrained to `${GITHUB_TEST_OWNER}/${GITHUB_TEST_REPO_1}` and `${GITHUB_TEST_OWNER}/${GITHUB_TEST_REPO_2}` in `configs/mcp-servers.yaml`
-  - Notion: Read-only database/page/block access constrained to `${NOTION_TEST_WORKSPACE_ID}` and `${NOTION_TEST_DATABASE_ID_1}`/`${NOTION_TEST_DATABASE_ID_2}`
-- **Rate Limits**: 80 req/min, 1200 req/hour
 
 #### Readonly (Default)
 - **Description**: Read-only access to all sources
@@ -421,7 +385,6 @@ roles:
 
 api_key_roles:
   sk-dev-key-789: developer
-  sk-project-agent-key-321: project-agent
 ```
 
 ## Example Usage
@@ -652,8 +615,3 @@ For issues and questions:
 ---
 
 **Built with**: FastAPI, MCP SDK, OpenTelemetry, Redis, Qdrant, Jaeger
-
-
-## AFR-32 Manual Validation
-
-See `MCP_AFR32_MANUAL_TEST.md` for an end-to-end manual checklist covering server/tool discovery, simple GitHub/Notion calls, and write-denied ACL verification for `project-agent`.

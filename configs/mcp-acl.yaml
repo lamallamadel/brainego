@@ -180,16 +180,14 @@ roles:
       requests_per_minute: 60
       requests_per_hour: 1000
 
-
   project-agent:
-    description: "Project-scoped read access for MCP GitHub/Notion test environments"
+    description: "Scoped access for project agents to GitHub/Notion test spaces"
     permissions:
       mcp-github:
         resources:
           - "repositories"
           - "issues"
           - "pull_requests"
-          - "commits"
           - "code_search"
         tools:
           - "github_search_repositories"
@@ -203,8 +201,8 @@ roles:
         operations: ["read"]
       mcp-notion:
         resources:
-          - "databases"
           - "pages"
+          - "databases"
           - "blocks"
         tools:
           - "notion_search"
@@ -214,8 +212,8 @@ roles:
           - "notion_get_block_children"
         operations: ["read"]
     rate_limits:
-      requests_per_minute: 80
-      requests_per_hour: 1200
+      requests_per_minute: 120
+      requests_per_hour: 1800
 
 # Default role for unauthenticated or unspecified users
 default_role: readonly

@@ -252,14 +252,6 @@ class HealthResponse(BaseModel):
     services: Dict[str, str]
 
 
-class MCPGatewayRequest(BaseModel):
-    server_id: str = Field(..., description="MCP server ID")
-    action: str = Field(..., description="Action: list_tools, call_tool, list_resources, read_resource")
-    tool_name: Optional[str] = Field(None, description="Tool name for call_tool")
-    uri: Optional[str] = Field(None, description="Resource URI for read_resource")
-    arguments: Dict[str, Any] = Field(default_factory=dict, description="Arguments for call_tool")
-
-
 # Metrics storage
 class MetricsStore:
     def __init__(self):
@@ -269,7 +261,6 @@ class MetricsStore:
         self.errors = 0
         self.auth_failures = 0
         self.mcp_requests = 0
-        self.mcp_errors = 0
 
     def record_request(self, latency: float, error: bool = False, is_mcp: bool = False):
         self.request_count += 1
@@ -282,8 +273,6 @@ class MetricsStore:
                 self.latencies = self.latencies[-1000:]
         else:
             self.errors += 1
-            if is_mcp:
-                self.mcp_errors += 1
 
     def record_auth_failure(self):
         self.auth_failures += 1
@@ -294,8 +283,6 @@ class MetricsStore:
                 "request_count": self.request_count,
                 "mcp_requests": self.mcp_requests,
                 "errors": self.errors,
-                "mcp_errors": self.mcp_errors,
-                "mcp_error_rate": 0,
                 "auth_failures": self.auth_failures,
                 "avg_latency_ms": 0,
                 "p50_latency_ms": 0,
@@ -310,8 +297,6 @@ class MetricsStore:
             "request_count": self.request_count,
             "mcp_requests": self.mcp_requests,
             "errors": self.errors,
-            "mcp_errors": self.mcp_errors,
-            "mcp_error_rate": round((self.mcp_errors / self.mcp_requests) if self.mcp_requests else 0, 4),
             "auth_failures": self.auth_failures,
             "avg_latency_ms": round(self.total_latency / len(self.latencies), 2),
             "p50_latency_ms": round(sorted_latencies[int(n * 0.50)], 2),
@@ -439,109 +424,12 @@ async def health_check():
 
 
 @app.get("/metrics")
-async def get_metrics():
-    """Get performance metrics for CI/staging observability."""
+async def get_metrics(auth: Dict[str, Any] = Depends(verify_api_key)):
+    """Get performance metrics. Requires authentication."""
     return {
         "metrics": metrics.get_stats(),
         "timestamp": datetime.utcnow().isoformat()
     }
-
-
-@app.post("/mcp")
-async def mcp_gateway(request: MCPGatewayRequest, auth: Dict[str, Any] = Depends(verify_api_key)):
-    """Unified MCP gateway endpoint for CI/staging callers."""
-    if not mcp_client:
-        raise HTTPException(status_code=503, detail="MCP client not initialized")
-
-    if not mcp_acl:
-        raise HTTPException(status_code=503, detail="MCP ACL not initialized")
-
-    start_time = time.time()
-    role = auth.get("role", "readonly")
-    identifier = f"{role}:{auth.get('api_key', '')[:10]}"
-
-    try:
-        if request.action == "list_tools":
-            allowed, reason = mcp_acl.validate_request(
-                role=role,
-                server_id=request.server_id,
-                operation_type="tool",
-                operation_name="list",
-                operation="read",
-                identifier=identifier
-            )
-            if not allowed:
-                raise HTTPException(status_code=403, detail=reason)
-            result = await mcp_client.list_tools(request.server_id)
-
-        elif request.action == "call_tool":
-            if not request.tool_name:
-                raise HTTPException(status_code=400, detail="tool_name is required for call_tool")
-
-            write_operations = ["create", "update", "delete", "write", "append", "modify"]
-            is_write = any(op in request.tool_name.lower() for op in write_operations)
-            operation = "write" if is_write else "read"
-
-            allowed, reason = mcp_acl.validate_request(
-                role=role,
-                server_id=request.server_id,
-                operation_type="tool",
-                operation_name=request.tool_name,
-                operation=operation,
-                identifier=identifier
-            )
-            if not allowed:
-                raise HTTPException(status_code=403, detail=reason)
-            result = await mcp_client.call_tool(request.server_id, request.tool_name, request.arguments)
-
-        elif request.action == "list_resources":
-            allowed, reason = mcp_acl.validate_request(
-                role=role,
-                server_id=request.server_id,
-                operation_type="resource",
-                operation_name="list",
-                operation="read",
-                identifier=identifier
-            )
-            if not allowed:
-                raise HTTPException(status_code=403, detail=reason)
-            result = await mcp_client.list_resources(request.server_id)
-
-        elif request.action == "read_resource":
-            if not request.uri:
-                raise HTTPException(status_code=400, detail="uri is required for read_resource")
-            allowed, reason = mcp_acl.validate_request(
-                role=role,
-                server_id=request.server_id,
-                operation_type="resource",
-                operation_name=request.uri,
-                operation="read",
-                identifier=identifier
-            )
-            if not allowed:
-                raise HTTPException(status_code=403, detail=reason)
-            result = await mcp_client.read_resource(request.server_id, request.uri)
-
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail="Unsupported action. Use one of: list_tools, call_tool, list_resources, read_resource"
-            )
-
-        latency_ms = (time.time() - start_time) * 1000
-        metrics.record_request(latency_ms, is_mcp=True)
-        return {
-            "server_id": request.server_id,
-            "action": request.action,
-            "result": result
-        }
-    except HTTPException:
-        metrics.record_request((time.time() - start_time) * 1000, error=True, is_mcp=True)
-        raise
-    except Exception as e:
-        logger.error(f"Error in /mcp gateway endpoint: {e}")
-        metrics.record_request((time.time() - start_time) * 1000, error=True, is_mcp=True)
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 # MCP Endpoints
