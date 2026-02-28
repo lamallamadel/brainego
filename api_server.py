@@ -480,6 +480,7 @@ class FeedbackRequest(BaseModel):
     response: str = Field(..., description="Model response")
     model: str = Field(..., description="Model identifier")
     rating: int = Field(..., description="Feedback rating: 1 (thumbs-up) or -1 (thumbs-down)")
+    reason: Optional[str] = Field(None, description="Optional reason for thumbs-up/down feedback")
     memory_used: int = Field(0, description="Memory used in bytes")
     tools_called: Optional[List[str]] = Field(None, description="List of tools/functions called")
     user_id: Optional[str] = Field(None, description="User identifier")
@@ -708,7 +709,7 @@ class MetricsStore:
                 "p50_latency_ms": 0,
                 "p95_latency_ms": 0,
                 "p99_latency_ms": 0,
-                "memory_telemetry": memory_telemetry
+                "memory_telemetry": memory_telemetry,
                 "tokens_generated": self.tokens_generated,
                 "tokens_per_second": self._tokens_per_second(self.tokens_generated, self.total_latency)
             }
@@ -724,7 +725,7 @@ class MetricsStore:
             "p50_latency_ms": round(sorted_latencies[int(n * 0.50)], 2),
             "p95_latency_ms": round(sorted_latencies[int(n * 0.95)], 2),
             "p99_latency_ms": round(sorted_latencies[int(n * 0.99)], 2),
-            "memory_telemetry": memory_telemetry
+            "memory_telemetry": memory_telemetry,
             "tokens_generated": self.tokens_generated,
             "tokens_per_second": self._tokens_per_second(self.tokens_generated, self.total_latency)
         }
@@ -2635,6 +2636,7 @@ async def add_feedback(request: FeedbackRequest):
         response: Model's response
         model: Model identifier (e.g., "llama-3.3-8b-instruct")
         rating: Feedback rating (1 or -1)
+        reason: Optional textual reason for the rating
         memory_used: Memory usage in bytes (optional)
         tools_called: List of tools/functions used (optional)
         user_id: User identifier (optional)
@@ -2653,6 +2655,7 @@ async def add_feedback(request: FeedbackRequest):
             response=request.response,
             model=request.model,
             rating=request.rating,
+            reason=request.reason,
             memory_used=request.memory_used,
             tools_called=request.tools_called,
             user_id=request.user_id,
