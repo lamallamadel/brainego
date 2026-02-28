@@ -236,7 +236,9 @@ def test_export_finetuning():
                 print(f"\n  Sample Entry:")
                 print(f"    Weight: {sample['weight']}")
                 print(f"    Metadata: {sample['metadata']}")
-                print(f"    Messages: {len(sample['messages'])} messages")
+                print(f"    Instruction: {sample['instruction']}")
+                print(f"    Input chars: {len(sample['input'])}")
+                print(f"    Output chars: {len(sample['output'])}")
         except Exception as e:
             print(f"  (Could not read sample: {e})")
     except Exception as e:

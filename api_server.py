@@ -534,6 +534,9 @@ class FinetuningExportRequest(BaseModel):
     start_date: Optional[str] = Field(None, description="Start date (ISO format)")
     end_date: Optional[str] = Field(None, description="End date (ISO format)")
     format: str = Field("jsonl", description="Export format (jsonl)")
+    min_query_chars: int = Field(10, ge=1, description="Minimum query length")
+    min_response_chars: int = Field(20, ge=1, description="Minimum response length")
+    deduplicate: bool = Field(True, description="Remove duplicate query/response pairs")
 
 
 class FinetuningExportResponse(BaseModel):
@@ -543,6 +546,7 @@ class FinetuningExportResponse(BaseModel):
     positive_samples: int
     negative_samples: int
     total_weight: float
+    filtered_out_samples: int
     start_date: Optional[str]
     end_date: Optional[str]
 
@@ -2864,10 +2868,9 @@ async def export_finetuning_dataset(request: FinetuningExportRequest):
     
     Output format (per line):
     {
-        "messages": [
-            {"role": "user", "content": "..."},
-            {"role": "assistant", "content": "..."}
-        ],
+        "instruction": "Respond to the user input accurately and helpfully.",
+        "input": "...",
+        "output": "...",
         "weight": 2.0,
         "metadata": {
             "model": "...",
@@ -2911,7 +2914,10 @@ async def export_finetuning_dataset(request: FinetuningExportRequest):
             output_path=request.output_path,
             start_date=start_date,
             end_date=end_date,
-            format=request.format
+            format=request.format,
+            min_query_chars=request.min_query_chars,
+            min_response_chars=request.min_response_chars,
+            deduplicate=request.deduplicate,
         )
         
         logger.info(
