@@ -82,32 +82,51 @@ def collect_and_process(
     Returns:
         Collection and processing result
     """
-    from data_collectors.github_collector import GitHubCollector
-    from data_collectors.notion_collector import NotionCollector
-    from data_collectors.slack_collector import SlackCollector
-    from data_collectors.format_normalizer import FormatNormalizer
-    from data_collectors.deduplicator import Deduplicator
-    from rag_service import RAGIngestionService
-    
     try:
         logger.info(f"Starting collection from {source} with config: {config}")
         
         documents = []
         
         if source == "github":
+            github_enabled = str(
+                os.getenv("ENABLE_GITHUB_INGESTION", "true")
+            ).strip().lower() in {"1", "true", "yes", "on"}
+
+            if not github_enabled:
+                logger.info("GitHub ingestion is disabled by ENABLE_GITHUB_INGESTION")
+                return {
+                    "status": "skipped",
+                    "source": source,
+                    "collected": 0,
+                    "processed": 0,
+                    "message": "GitHub ingestion is disabled"
+                }
+
+            from data_collectors.github_collector import GitHubCollector
+
             collector = GitHubCollector()
             repo_name = config.get("repo_name")
             hours_back = config.get("hours_back", 6)
-            
+            include_issues = config.get("include_issues", True)
+            include_prs = config.get("include_prs", True)
+            include_commits = config.get("include_commits", True)
+            include_discussions = config.get("include_discussions", False)
+
             if repo_name:
                 documents = collector.collect_repository_data(
                     repo_name=repo_name,
-                    hours_back=hours_back
+                    hours_back=hours_back,
+                    include_issues=include_issues,
+                    include_prs=include_prs,
+                    include_commits=include_commits,
+                    include_discussions=include_discussions,
                 )
             else:
                 documents = collector.collect_user_activity(hours_back=hours_back)
         
         elif source == "notion":
+            from data_collectors.notion_collector import NotionCollector
+
             collector = NotionCollector()
             hours_back = config.get("hours_back", 4)
             
@@ -121,6 +140,8 @@ def collect_and_process(
                 documents = collector.collect_recent_pages(hours_back=hours_back)
         
         elif source == "slack":
+            from data_collectors.slack_collector import SlackCollector
+
             collector = SlackCollector()
             channel_ids = config.get("channel_ids", [])
             hours_back = config.get("hours_back", 2)
@@ -146,7 +167,11 @@ def collect_and_process(
                 "processed": 0,
                 "message": "No new documents found"
             }
-        
+
+        from data_collectors.format_normalizer import FormatNormalizer
+        from data_collectors.deduplicator import Deduplicator
+        from rag_service import RAGIngestionService
+
         normalizer = FormatNormalizer()
         normalized_docs = normalizer.normalize_batch(documents)
         
