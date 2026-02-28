@@ -29,6 +29,7 @@ from memory_service import MemoryService
 from graph_service import GraphService
 from feedback_service import FeedbackService
 from circuit_breaker import get_all_circuit_breaker_stats
+from internal_mcp_client import InternalMCPGatewayClient
 
 # Configure logging
 logging.basicConfig(
@@ -517,6 +518,22 @@ class FinetuningExportResponse(BaseModel):
     end_date: Optional[str]
 
 
+class MCPToolProxyRequest(BaseModel):
+    server_id: str = Field(..., description="Target MCP server ID")
+    tool_name: str = Field(..., description="MCP tool name")
+    arguments: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Tool call arguments")
+    context: Optional[str] = Field(None, description="Optional caller context for logging")
+
+
+class MCPToolProxyResponse(BaseModel):
+    ok: bool
+    tool_name: str
+    latency_ms: float
+    status_code: int
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
 # Metrics storage
 class MetricsStore:
     def __init__(self):
@@ -569,6 +586,7 @@ memory_service = None
 graph_service = None
 feedback_service = None
 document_ingestion_service = None
+mcp_gateway_client = None
 
 # Graceful shutdown flag
 shutdown_in_progress = False
@@ -677,6 +695,16 @@ def get_feedback_service() -> FeedbackService:
         )
         logger.info("Feedback Service initialized")
     return feedback_service
+
+
+def get_mcp_gateway_client() -> InternalMCPGatewayClient:
+    """Get or initialize internal MCP gateway client."""
+    global mcp_gateway_client
+    if mcp_gateway_client is None:
+        logger.info("Initializing internal MCP gateway client...")
+        mcp_gateway_client = InternalMCPGatewayClient.from_env()
+        logger.info("Internal MCP gateway client initialized")
+    return mcp_gateway_client
 
 
 def format_chat_prompt(messages: List[ChatMessage]) -> str:
@@ -833,7 +861,8 @@ async def root():
             "feedback_delete": "DELETE /v1/feedback/{feedback_id}",
             "feedback_accuracy": "GET /v1/feedback/accuracy",
             "feedback_stats": "GET /v1/feedback/stats",
-            "feedback_export": "POST /v1/feedback/export/finetuning"
+            "feedback_export": "POST /v1/feedback/export/finetuning",
+            "mcp_tool_proxy": "POST /internal/mcp/tools/call"
         },
         "prometheus_metrics": "http://localhost:8001/metrics"
     }
@@ -926,6 +955,23 @@ async def get_circuit_breakers():
         "circuit_breakers": get_all_circuit_breaker_stats(),
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+@app.post("/internal/mcp/tools/call", response_model=MCPToolProxyResponse)
+async def internal_mcp_tool_call(request: MCPToolProxyRequest):
+    """Route internal tool calls to MCP gateway /mcp endpoint with structured result."""
+    client = get_mcp_gateway_client()
+    result = await client.call_tool(
+        server_id=request.server_id,
+        tool_name=request.tool_name,
+        arguments=request.arguments or {},
+        context=request.context or "api.internal",
+    )
+
+    payload = result.to_dict()
+    if not result.ok:
+        return JSONResponse(status_code=result.status_code, content=payload)
+    return payload
 
 
 @app.post("/v1/chat/completions")
