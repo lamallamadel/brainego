@@ -188,6 +188,14 @@ class TrainingRequest(BaseModel):
     force: bool = Field(default=False, description="Force training even if sample count is low")
 
 
+class JsonlTrainingRequest(BaseModel):
+    """JSONL training request payload"""
+    dataset_path: str = Field(..., description="Path to the JSONL dataset file")
+    learning_rate: Optional[float] = Field(default=None, gt=0, description="Learning rate override")
+    epochs: Optional[int] = Field(default=None, gt=0, description="Epoch count override")
+    batch_size: Optional[int] = Field(default=None, gt=0, description="Batch size override")
+
+
 class TrainingResponse(BaseModel):
     """Training response payload"""
     status: str
@@ -271,6 +279,35 @@ async def trigger_training(request: TrainingRequest, background_tasks: Backgroun
         
     except Exception as e:
         logger.error(f"Failed to start training: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/train/jsonl", response_model=TrainingResponse)
+async def trigger_jsonl_training(request: JsonlTrainingRequest, background_tasks: BackgroundTasks):
+    """Trigger LoRA training from a JSONL dataset."""
+    if not trainer:
+        raise HTTPException(status_code=503, detail="Trainer not initialized")
+
+    try:
+        job_id = f"train_jsonl_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        background_tasks.add_task(
+            trainer.train_from_jsonl,
+            dataset_path=request.dataset_path,
+            learning_rate=request.learning_rate,
+            epochs=request.epochs,
+            batch_size=request.batch_size,
+            job_id=job_id,
+        )
+
+        return TrainingResponse(
+            status="started",
+            message=f"JSONL training job started with ID: {job_id}",
+            job_id=job_id
+        )
+
+    except Exception as e:
+        logger.error(f"Failed to start JSONL training: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

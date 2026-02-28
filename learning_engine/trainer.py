@@ -35,6 +35,7 @@ import psycopg2
 
 from .fisher import FisherInformationCalculator
 from .storage import AdapterStorage
+from .data_loader import load_dataset_from_file
 
 logger = logging.getLogger(__name__)
 
@@ -388,38 +389,17 @@ class LoRATrainer:
             # Prepare dataset
             dataset = self.prepare_dataset(samples)
             
-            # Training arguments
             output_dir = f"./lora_checkpoints/{self.training_status['current_job']}"
-            training_args = TrainingArguments(
+            train_result = self._run_training(
+                dataset=dataset,
                 output_dir=output_dir,
-                num_train_epochs=self.config.num_train_epochs,
-                per_device_train_batch_size=self.config.batch_size,
-                gradient_accumulation_steps=self.config.gradient_accumulation_steps,
                 learning_rate=self.config.learning_rate,
-                warmup_steps=self.config.warmup_steps,
-                logging_steps=10,
-                save_strategy="epoch",
-                fp16=True,
-                report_to="none"
-            )
-            
-            # Custom trainer with EWC
-            trainer = EWCTrainer(
-                model=self.model,
-                args=training_args,
-                train_dataset=dataset,
-                data_collator=DataCollatorForLanguageModeling(
-                    tokenizer=self.tokenizer,
-                    mlm=False
-                ),
+                epochs=self.config.num_train_epochs,
+                batch_size=self.config.batch_size,
                 fisher_calculator=self.fisher_calculator,
                 old_params=old_params,
-                ewc_lambda=ewc_lambda
+                ewc_lambda=ewc_lambda,
             )
-            
-            # Train
-            logger.info("Starting training...")
-            train_result = trainer.train()
             
             # Generate new version
             self.current_version = self._increment_version(self.current_version)
@@ -491,6 +471,156 @@ class LoRATrainer:
             major += 1
             minor = 0
         return f"v{major}.{minor}"
+
+    def train_from_jsonl(
+        self,
+        dataset_path: str,
+        learning_rate: Optional[float] = None,
+        epochs: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        job_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Train a base LoRA adapter from a JSONL dataset.
+
+        Args:
+            dataset_path: Path to JSONL file with input/output pairs
+            learning_rate: Optional learning rate override
+            epochs: Optional epoch override
+            batch_size: Optional batch size override
+            job_id: Optional job identifier
+
+        Returns:
+            Training result metadata
+        """
+        logger.info("=" * 60)
+        logger.info("Starting Base LoRA Fine-tuning from JSONL")
+        logger.info("=" * 60)
+
+        self.training_status["is_training"] = True
+        self.training_status["current_job"] = job_id or f"train_jsonl_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        try:
+            if not Path(dataset_path).exists():
+                raise FileNotFoundError(f"Dataset file not found: {dataset_path}")
+
+            samples = load_dataset_from_file(dataset_path)
+            if not samples:
+                raise ValueError("Dataset is empty")
+
+            if self.model is None:
+                self.load_base_model()
+                self.setup_lora()
+
+            dataset = self.prepare_dataset(samples)
+
+            output_dir = f"./lora_checkpoints/{self.training_status['current_job']}"
+            train_result = self._run_training(
+                dataset=dataset,
+                output_dir=output_dir,
+                learning_rate=learning_rate or self.config.learning_rate,
+                epochs=epochs or self.config.num_train_epochs,
+                batch_size=batch_size or self.config.batch_size,
+            )
+
+            self.current_version = self._increment_version(self.current_version)
+            adapter_path = os.path.join(output_dir, "adapter")
+            self.model.save_pretrained(adapter_path)
+
+            self.storage.upload_adapter(
+                local_path=adapter_path,
+                version=self.current_version,
+                metadata={
+                    "job_id": self.training_status['current_job'],
+                    "dataset_path": dataset_path,
+                    "samples": len(samples),
+                    "learning_rate": learning_rate or self.config.learning_rate,
+                    "epochs": epochs or self.config.num_train_epochs,
+                    "batch_size": batch_size or self.config.batch_size,
+                    "train_loss": train_result.training_loss,
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+
+            metrics = {
+                "version": self.current_version,
+                "samples": len(samples),
+                "train_loss": train_result.training_loss,
+                "learning_rate": learning_rate or self.config.learning_rate,
+                "epochs": epochs or self.config.num_train_epochs,
+                "batch_size": batch_size or self.config.batch_size,
+                "duration_seconds": train_result.metrics.get('train_runtime', 0),
+            }
+            self.training_status["metrics"] = metrics
+            self.training_status["last_job"] = self.training_status["current_job"]
+
+            return {
+                "status": "success",
+                "version": self.current_version,
+                "metrics": metrics,
+            }
+
+        except Exception as e:
+            logger.error(f"JSONL training failed: {e}", exc_info=True)
+            return {
+                "status": "failed",
+                "error": str(e)
+            }
+        finally:
+            self.training_status["is_training"] = False
+            self.training_status["current_job"] = None
+
+    def _run_training(
+        self,
+        dataset: Dataset,
+        output_dir: str,
+        learning_rate: float,
+        epochs: int,
+        batch_size: int,
+        fisher_calculator: Optional[FisherInformationCalculator] = None,
+        old_params: Optional[Dict[str, torch.Tensor]] = None,
+        ewc_lambda: float = 0.0,
+    ):
+        """Run training with optional EWC regularization."""
+        training_args = TrainingArguments(
+            output_dir=output_dir,
+            num_train_epochs=epochs,
+            per_device_train_batch_size=batch_size,
+            gradient_accumulation_steps=self.config.gradient_accumulation_steps,
+            learning_rate=learning_rate,
+            warmup_steps=self.config.warmup_steps,
+            logging_steps=10,
+            save_strategy="epoch",
+            fp16=True,
+            report_to="none"
+        )
+
+        if fisher_calculator and old_params:
+            run_trainer = EWCTrainer(
+                model=self.model,
+                args=training_args,
+                train_dataset=dataset,
+                data_collator=DataCollatorForLanguageModeling(
+                    tokenizer=self.tokenizer,
+                    mlm=False
+                ),
+                fisher_calculator=fisher_calculator,
+                old_params=old_params,
+                ewc_lambda=ewc_lambda
+            )
+        else:
+            run_trainer = Trainer(
+                model=self.model,
+                args=training_args,
+                train_dataset=dataset,
+                data_collator=DataCollatorForLanguageModeling(
+                    tokenizer=self.tokenizer,
+                    mlm=False
+                ),
+            )
+
+        logger.info("Starting training...")
+        return run_trainer.train()
     
     def get_status(self) -> Dict[str, Any]:
         """Get current training status"""
