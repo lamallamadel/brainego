@@ -12,6 +12,24 @@ from datetime import datetime
 logger = logging.getLogger(__name__)
 
 
+def _normalize_channel_ids(raw_channel_ids: Any) -> List[str]:
+    """Normalize channel IDs from list or comma-separated string."""
+    if isinstance(raw_channel_ids, str):
+        return [channel.strip() for channel in raw_channel_ids.split(",") if channel.strip()]
+
+    if isinstance(raw_channel_ids, list):
+        normalized: List[str] = []
+        for channel in raw_channel_ids:
+            if channel is None:
+                continue
+            value = str(channel).strip()
+            if value:
+                normalized.append(value)
+        return normalized
+
+    return []
+
+
 def process_document(document: Dict[str, Any]) -> Dict[str, Any]:
     """
     Process a single document through the ingestion pipeline.
@@ -85,6 +103,7 @@ def collect_and_process(
     from data_collectors.github_collector import GitHubCollector
     from data_collectors.notion_collector import NotionCollector
     from data_collectors.slack_collector import SlackCollector
+    from data_collectors.mcp_streaming_collector import MCPStreamingCollector
     from data_collectors.format_normalizer import FormatNormalizer
     from data_collectors.deduplicator import Deduplicator
     from rag_service import RAGIngestionService
@@ -122,9 +141,9 @@ def collect_and_process(
         
         elif source == "slack":
             collector = SlackCollector()
-            channel_ids = config.get("channel_ids", [])
+            channel_ids = _normalize_channel_ids(config.get("channel_ids", []))
             hours_back = config.get("hours_back", 2)
-            
+
             if channel_ids:
                 documents = collector.collect_multiple_channels(
                     channel_ids=channel_ids,
@@ -132,7 +151,25 @@ def collect_and_process(
                 )
             else:
                 logger.warning("No Slack channels specified")
-        
+
+        elif source == "mcp-slack":
+            collector = MCPStreamingCollector(config_path=config.get("mcp_config_path"))
+            channel_ids = _normalize_channel_ids(config.get("channel_ids", []))
+            hours_back = config.get("hours_back", 2)
+            query = config.get("query", "decision OR todo OR action item OR urgent")
+            count = config.get("count", 50)
+
+            import asyncio
+
+            documents = asyncio.run(
+                collector.collect_slack_signals_via_mcp(
+                    query=query,
+                    hours_back=hours_back,
+                    count=count,
+                    channel_ids=channel_ids,
+                )
+            )
+
         else:
             raise ValueError(f"Unknown source: {source}")
         

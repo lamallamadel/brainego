@@ -91,7 +91,18 @@ class CollectionScheduler:
                         "channel_ids": os.getenv("SLACK_CHANNELS", "").split(","),
                         "hours_back": 2
                     }
-                }
+                },
+                {
+                    "name": "mcp_slack_signal_collection",
+                    "source": "mcp-slack",
+                    "interval": "1h",
+                    "config": {
+                        "query": "decision OR todo OR action item OR urgent",
+                        "count": 50,
+                        "channel_ids": os.getenv("SLACK_CHANNELS", "").split(","),
+                        "hours_back": 2,
+                    }
+                },
             ]
         }
     
