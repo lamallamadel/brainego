@@ -15,6 +15,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
+from collections import Counter
 
 from transformers import (
     AutoModelForCausalLM,
@@ -70,6 +71,7 @@ class LoRATrainer:
             "last_job": None,
             "metrics": {}
         }
+        self.last_dataset_diagnostics: Dict[str, Any] = {}
         
         logger.info("LoRA Trainer initialized")
     
@@ -154,27 +156,57 @@ class LoRATrainer:
         cursor.execute(query, (days,))
         rows = cursor.fetchall()
         
-        # Process samples with weights
+        # Process samples with diagnostics and basic cleaning
         samples = []
+        dropped_reasons: Counter = Counter()
+        feedback_distribution: Counter = Counter()
+        intent_distribution: Counter = Counter()
+        project_distribution: Counter = Counter()
+
         for row in rows:
             request_data = json.loads(row[0]) if isinstance(row[0], str) else row[0]
             response_data = json.loads(row[1]) if isinstance(row[1], str) else row[1]
             feedback_type = row[2]
+            feedback_distribution[feedback_type] += 1
             
             # Extract messages
             messages = request_data.get('messages', [])
             assistant_response = response_data.get('choices', [{}])[0].get('message', {}).get('content', '')
-            
+
+            # Basic cleaning rules to remove low-value or broken examples
+            if not messages or not isinstance(messages, list):
+                dropped_reasons["missing_messages"] += 1
+                continue
+
             # Format as training sample
             input_text = self._format_messages(messages)
             output_text = assistant_response
-            
+
+            if not input_text:
+                dropped_reasons["empty_input"] += 1
+                continue
+            if not output_text or not str(output_text).strip():
+                dropped_reasons["empty_output"] += 1
+                continue
+            if len(input_text.strip()) < 15:
+                dropped_reasons["short_input"] += 1
+                continue
+            if len(str(output_text).strip()) < 15:
+                dropped_reasons["short_output"] += 1
+                continue
+            if input_text.strip() == str(output_text).strip():
+                dropped_reasons["duplicate_input_output"] += 1
+                continue
+
+            intent_distribution[self._extract_intent(request_data, response_data)] += 1
+            project_distribution[self._extract_project(request_data, response_data)] += 1
+
             # Apply weights based on feedback
             weight = 2.0 if feedback_type == 'thumbs_up' else 0.5
             
             samples.append({
                 'input': input_text,
-                'output': output_text,
+                'output': str(output_text).strip(),
                 'weight': weight,
                 'feedback_type': feedback_type
             })
@@ -182,13 +214,24 @@ class LoRATrainer:
         cursor.close()
         conn.close()
         
-        logger.info(f"✓ Loaded {len(samples)} training samples")
-        
-        # Log statistics
+        self.last_dataset_diagnostics = {
+            "raw_examples": len(rows),
+            "kept_examples": len(samples),
+            "dropped_examples": len(rows) - len(samples),
+            "drop_reasons": dict(dropped_reasons),
+            "feedback_distribution": dict(feedback_distribution),
+            "intent_distribution": dict(intent_distribution),
+            "project_distribution": dict(project_distribution),
+        }
+
+        logger.info(f"✓ Loaded {len(samples)} training samples (from {len(rows)} raw examples)")
+        logger.info("Dataset diagnostics: %s", self.last_dataset_diagnostics)
+
+        # Log weighted feedback summary for kept samples
         positive = sum(1 for s in samples if s['feedback_type'] == 'thumbs_up')
         negative = len(samples) - positive
-        logger.info(f"  Positive samples: {positive} (2.0x weight)")
-        logger.info(f"  Negative samples: {negative} (0.5x weight)")
+        logger.info(f"  Positive samples kept: {positive} (2.0x weight)")
+        logger.info(f"  Negative samples kept: {negative} (0.5x weight)")
         
         return samples
     
@@ -197,9 +240,46 @@ class LoRATrainer:
         formatted = []
         for msg in messages:
             role = msg.get('role', 'user')
-            content = msg.get('content', '')
+            content = str(msg.get('content', '')).strip()
+            if not content:
+                continue
             formatted.append(f"{role}: {content}")
         return "\n".join(formatted)
+
+    def _extract_intent(self, request_data: Dict[str, Any], response_data: Dict[str, Any]) -> str:
+        """Best-effort intent extraction for diagnostics."""
+        candidates = [
+            request_data.get("intent"),
+            request_data.get("metadata", {}).get("intent") if isinstance(request_data.get("metadata"), dict) else None,
+            response_data.get("intent"),
+            response_data.get("x-routing-metadata"),
+        ]
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                value = candidate.get("intent")
+                if value:
+                    return str(value)
+            if isinstance(candidate, str) and candidate.strip():
+                try:
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, dict) and parsed.get("intent"):
+                        return str(parsed["intent"])
+                except json.JSONDecodeError:
+                    return candidate.strip()
+        return "unknown"
+
+    def _extract_project(self, request_data: Dict[str, Any], response_data: Dict[str, Any]) -> str:
+        """Best-effort project extraction for diagnostics."""
+        metadata = request_data.get("metadata") if isinstance(request_data.get("metadata"), dict) else {}
+        candidates = [
+            request_data.get("project"),
+            metadata.get("project"),
+            response_data.get("project"),
+        ]
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return "unknown"
     
     def prepare_dataset(
         self,
@@ -285,7 +365,8 @@ class LoRATrainer:
                 return {
                     "status": "skipped",
                     "message": msg,
-                    "samples": len(samples)
+                    "samples": len(samples),
+                    "dataset_diagnostics": self.last_dataset_diagnostics,
                 }
             
             # Load base model
@@ -358,6 +439,7 @@ class LoRATrainer:
                     "days": days,
                     "ewc_lambda": ewc_lambda,
                     "train_loss": train_result.training_loss,
+                    "dataset_diagnostics": self.last_dataset_diagnostics,
                     "timestamp": datetime.now().isoformat()
                 }
             )
@@ -368,6 +450,7 @@ class LoRATrainer:
                 "samples": len(samples),
                 "train_loss": train_result.training_loss,
                 "ewc_lambda": ewc_lambda,
+                "dataset_diagnostics": self.last_dataset_diagnostics,
                 "duration_seconds": train_result.metrics.get('train_runtime', 0)
             }
             
