@@ -480,7 +480,7 @@ class FeedbackRequest(BaseModel):
     response: str = Field(..., description="Model response")
     model: str = Field(..., description="Model identifier")
     rating: int = Field(..., description="Feedback rating: 1 (thumbs-up) or -1 (thumbs-down)")
-    reason: Optional[str] = Field(None, description="Optional textual reason for the feedback")
+    reason: Optional[str] = Field(None, description="Optional reason for thumbs-up/down feedback")
     memory_used: int = Field(0, description="Memory used in bytes")
     tools_called: Optional[List[str]] = Field(None, description="List of tools/functions called")
     user_id: Optional[str] = Field(None, description="User identifier")
@@ -2640,6 +2640,7 @@ async def add_feedback(request: FeedbackRequest):
         response: Model's response
         model: Model identifier (e.g., "llama-3.3-8b-instruct")
         rating: Feedback rating (1 or -1)
+        reason: Optional textual reason for the rating
         memory_used: Memory usage in bytes (optional)
         tools_called: List of tools/functions used (optional)
         user_id: User identifier (optional)

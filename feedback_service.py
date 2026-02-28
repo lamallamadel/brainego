@@ -96,7 +96,8 @@ class FeedbackService:
         session_id: Optional[str] = None,
         intent: Optional[str] = None,
         project: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        reason: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Add feedback for a model response.
@@ -114,6 +115,7 @@ class FeedbackService:
             intent: Detected intent (e.g., "code", "reasoning", "general")
             project: Project identifier
             metadata: Additional metadata as JSON
+            reason: Optional textual reason for the rating
         
         Returns:
             Dictionary with feedback_id and status
@@ -132,8 +134,8 @@ class FeedbackService:
                     """
                     INSERT INTO feedback (
                         feedback_id, query, response, model, memory_used,
-                        tools_called, rating, reason, user_id, session_id,
-                        intent, project, metadata
+                        tools_called, rating, user_id, session_id,
+                        intent, project, metadata, reason
                     ) VALUES (
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     )
@@ -141,8 +143,8 @@ class FeedbackService:
                     """,
                     (
                         feedback_id, query, response, model, memory_used,
-                        tools, rating, reason, user_id, session_id,
-                        intent, project, json.dumps(meta)
+                        tools, rating, user_id, session_id,
+                        intent, project, json.dumps(meta), reason
                     )
                 )
                 result = cur.fetchone()
@@ -185,8 +187,8 @@ class FeedbackService:
                     """
                     SELECT 
                         feedback_id, query, response, model, memory_used,
-                        tools_called, rating, reason, timestamp, user_id, session_id,
-                        intent, project, metadata, created_at, updated_at
+                        tools_called, rating, timestamp, user_id, session_id,
+                        intent, project, metadata, reason, created_at, updated_at                      
                     FROM feedback
                     WHERE feedback_id = %s
                     """,
@@ -206,7 +208,8 @@ class FeedbackService:
         rating: Optional[int] = None,
         intent: Optional[str] = None,
         project: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        reason: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Update existing feedback.
