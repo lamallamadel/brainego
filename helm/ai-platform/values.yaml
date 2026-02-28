@@ -1433,3 +1433,20 @@ certManager:
   enabled: true
   email: admin@your-domain.com
   installCRDs: true
+
+# Internal LoRA control plane for MAX Serve hot-swap and rollback
+loraControl:
+  image:
+    repository: python
+    tag: "3.11-slim"
+    pullPolicy: IfNotPresent
+  port: 19080
+  reloadEndpointPath: /internal/lora/reload
+  reloadTimeoutSeconds: 10
+  resources:
+    limits:
+      memory: 256Mi
+      cpu: 200m
+    requests:
+      memory: 128Mi
+      cpu: 100m
