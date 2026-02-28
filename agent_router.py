@@ -5,13 +5,11 @@ Supports Llama 3.3 8B (general), Qwen 2.5 Coder 7B (code), DeepSeek R1 7B (reaso
 """
 
 import os
-import re
 import time
 import logging
 import asyncio
 from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass
-from enum import Enum
 
 import yaml
 import httpx
@@ -19,14 +17,9 @@ from prometheus_client import Counter, Histogram, Gauge, start_http_server
 
 from circuit_breaker import get_circuit_breaker, CircuitBreakerConfig, CircuitBreakerError
 
+from intent_classifier import Intent, IntentClassifier
+
 logger = logging.getLogger(__name__)
-
-
-class Intent(str, Enum):
-    """Intent classification types."""
-    CODE = "code"
-    REASONING = "reasoning"
-    GENERAL = "general"
 
 
 @dataclass
