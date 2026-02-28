@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS feedback (
     memory_used INTEGER DEFAULT 0,
     tools_called TEXT[] DEFAULT ARRAY[]::TEXT[],
     rating INTEGER NOT NULL CHECK (rating IN (-1, 1)),
+    reason TEXT,
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     user_id VARCHAR(255),
     session_id VARCHAR(255),
@@ -78,6 +79,7 @@ RETURNS TABLE (
     response TEXT,
     model VARCHAR,
     rating INTEGER,
+    reason TEXT,
     weight NUMERIC,
     timestamp TIMESTAMP WITH TIME ZONE,
     intent VARCHAR,
@@ -90,6 +92,7 @@ BEGIN
         f.response,
         f.model,
         f.rating,
+        f.reason,
         CASE 
             WHEN f.rating = 1 THEN 2.0
             WHEN f.rating = -1 THEN 0.5

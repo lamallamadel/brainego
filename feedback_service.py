@@ -90,6 +90,7 @@ class FeedbackService:
         response: str,
         model: str,
         rating: int,
+        reason: Optional[str] = None,
         memory_used: int = 0,
         tools_called: Optional[List[str]] = None,
         user_id: Optional[str] = None,
@@ -106,6 +107,7 @@ class FeedbackService:
             response: Model's response
             model: Model identifier
             rating: Feedback rating (1 for thumbs-up, -1 for thumbs-down)
+            reason: Optional textual reason provided by the user
             memory_used: Memory usage in bytes
             tools_called: List of tools/functions called during response
             user_id: Optional user identifier
@@ -131,16 +133,16 @@ class FeedbackService:
                     """
                     INSERT INTO feedback (
                         feedback_id, query, response, model, memory_used,
-                        tools_called, rating, user_id, session_id,
+                        tools_called, rating, reason, user_id, session_id,
                         intent, project, metadata
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     )
                     RETURNING id, timestamp
                     """,
                     (
                         feedback_id, query, response, model, memory_used,
-                        tools, rating, user_id, session_id,
+                        tools, rating, reason, user_id, session_id,
                         intent, project, json.dumps(meta)
                     )
                 )
@@ -184,7 +186,7 @@ class FeedbackService:
                     """
                     SELECT 
                         feedback_id, query, response, model, memory_used,
-                        tools_called, rating, timestamp, user_id, session_id,
+                        tools_called, rating, reason, timestamp, user_id, session_id,
                         intent, project, metadata, created_at, updated_at
                     FROM feedback
                     WHERE feedback_id = %s
