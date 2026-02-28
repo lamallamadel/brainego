@@ -10,6 +10,7 @@ configs/grafana/
 │   ├── platform-overview.json
 │   ├── learning-engine.json
 │   ├── mcp-activity.json
+│   ├── model-routing-overview.json
 │   ├── kong-dashboard.json
 │   ├── drift-overview.json
 │   └── ...
@@ -171,6 +172,36 @@ Monitors MCP (Model Context Protocol) server activity and performance.
 - Load balancing between MCP servers
 - Tracking tool usage patterns
 - Detecting anomalous behavior
+
+---
+
+### 4. Model Routing Overview (`model-routing-overview.json`)
+
+**UID**: `model-routing-overview`  
+**Tags**: `routing`, `models`, `latency`, `fallback`  
+**Refresh**: 30s
+
+Focused dashboard for model selection quality and fallback behavior.
+
+**Metrics Displayed**:
+- **Traffic per Routed Model**
+  - Source: `agent_router_routed_requests_total{status="success"}`
+  - Shows final traffic distribution by model (including fallback destinations)
+- **Latency P95 by Intent**
+  - Source: `agent_router_latency_seconds_bucket`
+  - Shows p95 latency split by intent (`code`, `reasoning`, `general`)
+- **Fallback Rate by Primary Model**
+  - Source: `agent_router_fallback_rate`
+  - Gauge/time-series trend of fallback rate per initially-selected model
+- **Global Fallback Ratio (5m)**
+  - Source: Routed requests with `fallback_used="true"` over all successful routed requests
+- **Failed Routing Decisions (1h)**
+  - Source: `agent_router_routed_requests_total{status="failed"}`
+
+**Use Cases**:
+- Tune intent-to-model routing policies
+- Spot unstable primary models with increasing fallback ratios
+- Compare routing latency profiles by intent
 
 ---
 

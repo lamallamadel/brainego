@@ -80,6 +80,12 @@ class PrometheusMetrics:
             'Current fallback rate',
             ['model']
         )
+
+        self.routed_requests = Counter(
+            'agent_router_routed_requests_total',
+            'Total routed requests by final model, intent, fallback usage, and status',
+            ['model', 'intent', 'fallback_used', 'status']
+        )
         
         # Latency histograms
         self.latency_seconds = Histogram(
@@ -189,6 +195,8 @@ class AgentRouter:
         self.health_check_enabled = False
         self.health_check_task = None
         self.circuit_breakers: Dict[str, Any] = {}
+        self._routing_attempts: Dict[str, int] = {}
+        self._routing_fallbacks: Dict[str, int] = {}
         self.model_aliases: Dict[str, str] = {}
         
         self._load_config()
@@ -259,6 +267,18 @@ class AgentRouter:
         for model_id, model in self.models.items():
             self.metrics.model_health.labels(model=model_id).set(1 if model.health_status else 0)
             self.metrics.fallback_rate.labels(model=model_id).set(0)
+            self._routing_attempts[model_id] = 0
+            self._routing_fallbacks[model_id] = 0
+
+    def _update_fallback_rate(self, model_id: str, used_fallback: bool):
+        """Update fallback rate gauge for a routed request."""
+        self._routing_attempts[model_id] = self._routing_attempts.get(model_id, 0) + 1
+        if used_fallback:
+            self._routing_fallbacks[model_id] = self._routing_fallbacks.get(model_id, 0) + 1
+
+        attempts = self._routing_attempts[model_id]
+        fallback_count = self._routing_fallbacks.get(model_id, 0)
+        self.metrics.fallback_rate.labels(model=model_id).set(fallback_count / attempts if attempts else 0)
     
     def _initialize_circuit_breakers(self):
         """Initialize circuit breakers for each model."""
@@ -473,11 +493,18 @@ class AgentRouter:
         )
         
         if result['success']:
+            self._update_fallback_rate(primary_model_id, used_fallback=False)
             total_time = time.time() - start_time
             self.metrics.latency_seconds.labels(
                 model=primary_model_id,
                 intent=intent.value
             ).observe(total_time)
+            self.metrics.routed_requests.labels(
+                model=primary_model_id,
+                intent=intent.value,
+                fallback_used='false',
+                status='success'
+            ).inc()
             
             result['metadata'] = {
                 'model_id': primary_model_id,
@@ -493,6 +520,7 @@ class AgentRouter:
         
         # Try fallback chain
         fallback_chain = self.get_fallback_chain(primary_model_id)
+        self._update_fallback_rate(primary_model_id, used_fallback=True)
         logger.warning(f"Primary model {primary_model_id} failed, trying fallback chain: {fallback_chain}")
         
         for fallback_model_id in fallback_chain:
@@ -526,6 +554,12 @@ class AgentRouter:
                     model=fallback_model_id,
                     intent=intent.value
                 ).observe(total_time)
+                self.metrics.routed_requests.labels(
+                    model=fallback_model_id,
+                    intent=intent.value,
+                    fallback_used='true',
+                    status='success'
+                ).inc()
                 
                 result['metadata'] = {
                     'model_id': fallback_model_id,
@@ -545,6 +579,12 @@ class AgentRouter:
         self.metrics.errors_total.labels(
             model='all',
             error_type='all_models_failed'
+        ).inc()
+        self.metrics.routed_requests.labels(
+            model='all',
+            intent=intent.value,
+            fallback_used='true',
+            status='failed'
         ).inc()
         
         logger.error("All models failed")
