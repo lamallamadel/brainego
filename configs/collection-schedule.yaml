@@ -48,6 +48,17 @@ schedules:
       channel_ids: ${SLACK_CHANNELS}
       hours_back: 2
 
+  # Slack MCP signal extraction - every hour
+  - name: mcp_slack_signal_collection
+    source: mcp-slack
+    interval: 1h
+    enabled: true
+    config:
+      query: "decision OR todo OR action item OR urgent"
+      count: 50
+      channel_ids: ${SLACK_CHANNELS}
+      hours_back: 2
+
 # Deduplication settings
 deduplication:
   enabled: true
