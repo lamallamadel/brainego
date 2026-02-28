@@ -30,4 +30,6 @@ def test_unified_chat_endpoint_maps_to_chat_completion_options():
     assert "auto_store=request.store_memory" in API_SERVER_SOURCE
     assert "use_temporal_decay=request.use_temporal_decay" in API_SERVER_SOURCE
     assert ") if request.use_memory else None" in API_SERVER_SOURCE
-    assert "return await chat_completions(completion_request, raw_request)" in API_SERVER_SOURCE
+    assert "response = await chat_completions(completion_request, raw_request)" in API_SERVER_SOURCE
+    assert "Unified chat intent classification: intent=%s model=%s fallback=%s" in API_SERVER_SOURCE
+    assert "return response" in API_SERVER_SOURCE
