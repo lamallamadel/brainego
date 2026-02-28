@@ -1,0 +1,28 @@
+# Memory scoring profiles for retrieval ranking.
+#
+# Select profile with:
+#   MEMORY_SCORING_PROFILE=balanced|history_heavy|recent_context_heavy
+# Optional path override:
+#   MEMORY_SCORING_CONFIG_PATH=configs/memory-scoring-profiles.yaml
+#
+# Any explicit env var always wins over profile values:
+#   MEMORY_COSINE_WEIGHT, MEMORY_TEMPORAL_WEIGHT, MEMORY_TEMPORAL_DECAY_FACTOR
+
+profiles:
+  balanced:
+    description: "Default production profile with moderate recency bias."
+    cosine_weight: 0.70
+    temporal_weight: 0.30
+    temporal_decay_factor: 0.10
+
+  history_heavy:
+    description: "Favor long-term semantic relevance over recency."
+    cosine_weight: 0.82
+    temporal_weight: 0.18
+    temporal_decay_factor: 0.05
+
+  recent_context_heavy:
+    description: "Strongly favor recent memories for fast-moving conversations."
+    cosine_weight: 0.58
+    temporal_weight: 0.42
+    temporal_decay_factor: 0.18

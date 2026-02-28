@@ -33,6 +33,7 @@ import httpx
 
 from rag_service import RAGIngestionService
 from memory_service import MemoryService
+from memory_scoring_config import load_memory_scoring_config
 from mcp_client import MCPClientService
 from mcp_acl import MCPACLManager
 from telemetry import init_telemetry, get_tracer, shutdown_telemetry
@@ -261,11 +262,14 @@ class MetricsStore:
         self.errors = 0
         self.auth_failures = 0
         self.mcp_requests = 0
+        self.mcp_errors = 0
 
     def record_request(self, latency: float, error: bool = False, is_mcp: bool = False):
         self.request_count += 1
         if is_mcp:
             self.mcp_requests += 1
+            if error:
+                self.mcp_errors += 1
         if not error:
             self.total_latency += latency
             self.latencies.append(latency)
@@ -282,6 +286,8 @@ class MetricsStore:
             return {
                 "request_count": self.request_count,
                 "mcp_requests": self.mcp_requests,
+                "mcp_errors": self.mcp_errors,
+                "mcp_error_rate": 0,
                 "errors": self.errors,
                 "auth_failures": self.auth_failures,
                 "avg_latency_ms": 0,
@@ -296,6 +302,8 @@ class MetricsStore:
         return {
             "request_count": self.request_count,
             "mcp_requests": self.mcp_requests,
+            "mcp_errors": self.mcp_errors,
+            "mcp_error_rate": round(self.mcp_errors / self.mcp_requests, 4) if self.mcp_requests else 0,
             "errors": self.errors,
             "auth_failures": self.auth_failures,
             "avg_latency_ms": round(self.total_latency / len(self.latencies), 2),
@@ -329,6 +337,7 @@ def get_memory_service() -> MemoryService:
     global memory_service
     if memory_service is None:
         logger.info("Initializing Memory Service...")
+        scoring_config = load_memory_scoring_config()
         memory_service = MemoryService(
             qdrant_host=QDRANT_HOST,
             qdrant_port=QDRANT_PORT,
@@ -337,9 +346,9 @@ def get_memory_service() -> MemoryService:
             redis_db=REDIS_DB,
             memory_collection="memories",
             embedding_model="sentence-transformers/all-MiniLM-L6-v2",
-            temporal_decay_factor=float(os.getenv("MEMORY_TEMPORAL_DECAY_FACTOR", "0.1")),
-            cosine_weight=float(os.getenv("MEMORY_COSINE_WEIGHT", "0.7")),
-            temporal_weight=float(os.getenv("MEMORY_TEMPORAL_WEIGHT", "0.3"))
+            temporal_decay_factor=scoring_config["temporal_decay_factor"],
+            cosine_weight=scoring_config["cosine_weight"],
+            temporal_weight=scoring_config["temporal_weight"]
         )
         logger.info("Memory Service initialized")
     return memory_service
@@ -424,8 +433,8 @@ async def health_check():
 
 
 @app.get("/metrics")
-async def get_metrics(auth: Dict[str, Any] = Depends(verify_api_key)):
-    """Get performance metrics. Requires authentication."""
+async def get_metrics():
+    """Get performance metrics. Public endpoint for CI/staging scrapers."""
     return {
         "metrics": metrics.get_stats(),
         "timestamp": datetime.utcnow().isoformat()
@@ -433,6 +442,47 @@ async def get_metrics(auth: Dict[str, Any] = Depends(verify_api_key)):
 
 
 # MCP Endpoints
+
+@app.post("/mcp")
+async def unified_mcp_gateway(
+    request: Dict[str, Any],
+    auth: Dict[str, Any] = Depends(verify_api_key)
+):
+    """Unified MCP endpoint supporting list_tools/call_tool/list_resources/read_resource."""
+    action = request.get("action")
+    server_id = request.get("server_id")
+
+    if not action:
+        raise HTTPException(status_code=400, detail="Missing required field: action")
+    if not server_id:
+        raise HTTPException(status_code=400, detail="Missing required field: server_id")
+
+    if action == "list_tools":
+        return await list_mcp_tools(MCPResourceRequest(server_id=server_id), auth)
+
+    if action == "call_tool":
+        tool_name = request.get("tool_name")
+        if not tool_name:
+            raise HTTPException(status_code=400, detail="Missing required field: tool_name")
+        return await call_mcp_tool(
+            MCPToolRequest(
+                server_id=server_id,
+                tool_name=tool_name,
+                arguments=request.get("arguments") or {}
+            ),
+            auth
+        )
+
+    if action == "list_resources":
+        return await list_mcp_resources(MCPResourceRequest(server_id=server_id), auth)
+
+    if action == "read_resource":
+        uri = request.get("uri")
+        if not uri:
+            raise HTTPException(status_code=400, detail="Missing required field: uri")
+        return await read_mcp_resource(MCPResourceRequest(server_id=server_id, uri=uri), auth)
+
+    raise HTTPException(status_code=400, detail=f"Unsupported action: {action}")
 
 @app.get("/mcp/servers")
 async def list_mcp_servers(auth: Dict[str, Any] = Depends(verify_api_key)):

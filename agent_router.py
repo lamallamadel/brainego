@@ -5,13 +5,11 @@ Supports Llama 3.3 8B (general), Qwen 2.5 Coder 7B (code), DeepSeek R1 7B (reaso
 """
 
 import os
-import re
 import time
 import logging
 import asyncio
 from typing import List, Dict, Optional, Any, Tuple
 from dataclasses import dataclass
-from enum import Enum
 
 import yaml
 import httpx
@@ -19,14 +17,9 @@ from prometheus_client import Counter, Histogram, Gauge, start_http_server
 
 from circuit_breaker import get_circuit_breaker, CircuitBreakerConfig, CircuitBreakerError
 
+from intent_classifier import Intent, IntentClassifier
+
 logger = logging.getLogger(__name__)
-
-
-class Intent(str, Enum):
-    """Intent classification types."""
-    CODE = "code"
-    REASONING = "reasoning"
-    GENERAL = "general"
 
 
 @dataclass
@@ -38,6 +31,7 @@ class ModelConfig:
     capabilities: List[str]
     max_tokens: int
     temperature: float
+    aliases: List[str]
     health_status: bool = False
     consecutive_failures: int = 0
     consecutive_successes: int = 0
@@ -74,11 +68,23 @@ class PrometheusMetrics:
             'Total fallback requests',
             ['from_model', 'to_model']
         )
+
+        self.model_fallbacks = Counter(
+            'agent_router_model_fallbacks_total',
+            'Fallback attempts involving each model',
+            ['model', 'role']
+        )
         
         self.fallback_rate = Gauge(
             'agent_router_fallback_rate',
             'Current fallback rate',
             ['model']
+        )
+
+        self.routed_requests = Counter(
+            'agent_router_routed_requests_total',
+            'Total routed requests by final model, intent, fallback usage, and status',
+            ['model', 'intent', 'fallback_used', 'status']
         )
         
         # Latency histograms
@@ -147,14 +153,21 @@ class IntentClassifier:
         # Count keyword matches
         code_matches = len(self.code_pattern.findall(text))
         reasoning_matches = len(self.reasoning_pattern.findall(text))
-        
+
+        # Lightweight structural heuristics
+        if "```" in text:
+            code_matches += 2
+        if any(token in text_lower for token in ["step by step", "first," , "therefore", "hypothesis"]):
+            reasoning_matches += 1
+
         # Calculate confidence scores
         total_words = len(text_lower.split())
         if total_words == 0:
             return Intent.GENERAL, 1.0
-        
-        code_score = min(code_matches / max(total_words * 0.1, 1), 1.0)
-        reasoning_score = min(reasoning_matches / max(total_words * 0.1, 1), 1.0)
+
+        normalizer = max(total_words * 0.1, 1)
+        code_score = min(code_matches / normalizer, 1.0)
+        reasoning_score = min(reasoning_matches / normalizer, 1.0)
         
         # Determine intent
         if code_score >= self.thresholds['medium'] and code_score >= reasoning_score:
@@ -182,6 +195,9 @@ class AgentRouter:
         self.health_check_enabled = False
         self.health_check_task = None
         self.circuit_breakers: Dict[str, Any] = {}
+        self._routing_attempts: Dict[str, int] = {}
+        self._routing_fallbacks: Dict[str, int] = {}
+        self.model_aliases: Dict[str, str] = {}
         
         self._load_config()
         self._initialize_metrics()
@@ -196,14 +212,24 @@ class AgentRouter:
         
         # Load model configurations
         for model_id, model_cfg in config['models'].items():
+            aliases = model_cfg.get('aliases', [])
             self.models[model_id] = ModelConfig(
                 name=model_cfg['name'],
                 endpoint=model_cfg['endpoint'],
                 description=model_cfg['description'],
                 capabilities=model_cfg['capabilities'],
                 max_tokens=model_cfg['max_tokens'],
-                temperature=model_cfg['temperature']
+                temperature=model_cfg['temperature'],
+                aliases=aliases
             )
+            alias_keys = {
+                model_id.lower(),
+                model_cfg['name'].lower(),
+                model_cfg['name'].replace('_', '-').lower(),
+                *[alias.lower() for alias in aliases]
+            }
+            for alias_key in alias_keys:
+                self.model_aliases[alias_key] = model_id
         
         # Load routing configuration
         routing = config['routing']
@@ -241,6 +267,18 @@ class AgentRouter:
         for model_id, model in self.models.items():
             self.metrics.model_health.labels(model=model_id).set(1 if model.health_status else 0)
             self.metrics.fallback_rate.labels(model=model_id).set(0)
+            self._routing_attempts[model_id] = 0
+            self._routing_fallbacks[model_id] = 0
+
+    def _update_fallback_rate(self, model_id: str, used_fallback: bool):
+        """Update fallback rate gauge for a routed request."""
+        self._routing_attempts[model_id] = self._routing_attempts.get(model_id, 0) + 1
+        if used_fallback:
+            self._routing_fallbacks[model_id] = self._routing_fallbacks.get(model_id, 0) + 1
+
+        attempts = self._routing_attempts[model_id]
+        fallback_count = self._routing_fallbacks.get(model_id, 0)
+        self.metrics.fallback_rate.labels(model=model_id).set(fallback_count / attempts if attempts else 0)
     
     def _initialize_circuit_breakers(self):
         """Initialize circuit breakers for each model."""
@@ -383,6 +421,16 @@ class AgentRouter:
         logger.debug(f"Selected model {model_id} for intent {intent.value}")
         return model_id
     
+
+    def get_routing_plan(self, intent: Intent) -> Dict[str, Any]:
+        """Return primary model and fallback chain for a given intent."""
+        primary_model_id = self.select_model(intent)
+        return {
+            "intent": intent.value,
+            "primary_model": primary_model_id,
+            "fallback_chain": self.get_fallback_chain(primary_model_id)
+        }
+
     def get_fallback_chain(self, model_id: str) -> List[str]:
         """
         Get fallback chain for a model.
@@ -399,6 +447,7 @@ class AgentRouter:
         self,
         messages: List[Dict[str, str]],
         prompt: str,
+        preferred_model: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
@@ -425,6 +474,12 @@ class AgentRouter:
         
         # Select primary model
         primary_model_id = self.select_model(intent)
+        explicit_model_used = False
+        if preferred_model:
+            resolved_model_id = self.resolve_model_identifier(preferred_model)
+            if resolved_model_id:
+                primary_model_id = resolved_model_id
+                explicit_model_used = True
         
         # Try primary model first
         result = await self._try_model(
@@ -438,11 +493,18 @@ class AgentRouter:
         )
         
         if result['success']:
+            self._update_fallback_rate(primary_model_id, used_fallback=False)
             total_time = time.time() - start_time
             self.metrics.latency_seconds.labels(
                 model=primary_model_id,
                 intent=intent.value
             ).observe(total_time)
+            self.metrics.routed_requests.labels(
+                model=primary_model_id,
+                intent=intent.value,
+                fallback_used='false',
+                status='success'
+            ).inc()
             
             result['metadata'] = {
                 'model_id': primary_model_id,
@@ -450,19 +512,30 @@ class AgentRouter:
                 'intent': intent.value,
                 'confidence': confidence,
                 'fallback_used': False,
-                'total_time_seconds': round(total_time, 3)
+                'total_time_seconds': round(total_time, 3),
+                'explicit_model_used': explicit_model_used
             }
             
             return result
         
         # Try fallback chain
         fallback_chain = self.get_fallback_chain(primary_model_id)
+        self._update_fallback_rate(primary_model_id, used_fallback=True)
         logger.warning(f"Primary model {primary_model_id} failed, trying fallback chain: {fallback_chain}")
         
         for fallback_model_id in fallback_chain:
             self.metrics.fallback_requests.labels(
                 from_model=primary_model_id,
                 to_model=fallback_model_id
+            ).inc()
+
+            self.metrics.model_fallbacks.labels(
+                model=primary_model_id,
+                role='source'
+            ).inc()
+            self.metrics.model_fallbacks.labels(
+                model=fallback_model_id,
+                role='target'
             ).inc()
             
             result = await self._try_model(
@@ -481,6 +554,12 @@ class AgentRouter:
                     model=fallback_model_id,
                     intent=intent.value
                 ).observe(total_time)
+                self.metrics.routed_requests.labels(
+                    model=fallback_model_id,
+                    intent=intent.value,
+                    fallback_used='true',
+                    status='success'
+                ).inc()
                 
                 result['metadata'] = {
                     'model_id': fallback_model_id,
@@ -489,7 +568,8 @@ class AgentRouter:
                     'confidence': confidence,
                     'fallback_used': True,
                     'primary_model': primary_model_id,
-                    'total_time_seconds': round(total_time, 3)
+                    'total_time_seconds': round(total_time, 3),
+                    'explicit_model_used': explicit_model_used
                 }
                 
                 logger.info(f"Fallback successful with model {fallback_model_id}")
@@ -499,6 +579,12 @@ class AgentRouter:
         self.metrics.errors_total.labels(
             model='all',
             error_type='all_models_failed'
+        ).inc()
+        self.metrics.routed_requests.labels(
+            model='all',
+            intent=intent.value,
+            fallback_used='true',
+            status='failed'
         ).inc()
         
         logger.error("All models failed")
@@ -637,7 +723,12 @@ class AgentRouter:
                 'capabilities': model.capabilities,
                 'health_status': model.health_status,
                 'max_tokens': model.max_tokens,
-                'temperature': model.temperature
+                'temperature': model.temperature,
+                'aliases': model.aliases
             }
             for model_id, model in self.models.items()
         }
+
+    def resolve_model_identifier(self, model_identifier: str) -> Optional[str]:
+        """Resolve model ID/name/alias to internal model ID."""
+        return self.model_aliases.get(model_identifier.lower())

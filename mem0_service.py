@@ -9,6 +9,7 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 from memory_service import MemoryService
+from memory_scoring_config import load_memory_scoring_config
 
 logger = logging.getLogger(__name__)
 logging.basicConfig(level=logging.INFO)
@@ -33,6 +34,7 @@ class MemorySearchRequest(BaseModel):
 
 
 app = FastAPI(title="Mem0 Service", version="1.0.0")
+scoring_config = load_memory_scoring_config()
 
 memory_service = MemoryService(
     qdrant_host=os.getenv("QDRANT_HOST", "qdrant"),
@@ -41,9 +43,9 @@ memory_service = MemoryService(
     redis_port=int(os.getenv("REDIS_PORT", "6379")),
     redis_db=int(os.getenv("REDIS_DB", "0")),
     memory_collection=os.getenv("QDRANT_COLLECTION", "memories"),
-    temporal_decay_factor=float(os.getenv("MEMORY_TEMPORAL_DECAY_FACTOR", "0.1")),
-    cosine_weight=float(os.getenv("MEMORY_COSINE_WEIGHT", "0.7")),
-    temporal_weight=float(os.getenv("MEMORY_TEMPORAL_WEIGHT", "0.3")),
+    temporal_decay_factor=scoring_config["temporal_decay_factor"],
+    cosine_weight=scoring_config["cosine_weight"],
+    temporal_weight=scoring_config["temporal_weight"],
 )
 
 

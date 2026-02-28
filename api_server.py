@@ -22,13 +22,15 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import httpx
 
-from agent_router import AgentRouter
+from agent_router import AgentRouter, Intent
 from document_ingestion_service import DocumentIngestionService
 from rag_service import RAGIngestionService
 from memory_service import MemoryService
+from memory_scoring_config import load_memory_scoring_config
 from graph_service import GraphService
 from feedback_service import FeedbackService
 from circuit_breaker import get_all_circuit_breaker_stats
+from internal_mcp_client import InternalMCPGatewayClient
 
 # Configure logging
 logging.basicConfig(
@@ -61,6 +63,8 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "ai_password")
 RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
 RAG_EMBEDDING_PROVIDER = os.getenv("RAG_EMBEDDING_PROVIDER", "local")
 RAG_EMBEDDING_SERVICE_URL = os.getenv("RAG_EMBEDDING_SERVICE_URL", "http://embedding-service:8003")
+MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://mcpjungle:9100")
+MCP_GATEWAY_API_KEY = os.getenv("MCP_GATEWAY_API_KEY", "")
 
 # Create FastAPI app
 app = FastAPI(
@@ -187,6 +191,16 @@ class UnifiedChatRequest(BaseModel):
     )
 
 
+
+
+class MCPGatewayRequest(BaseModel):
+    action: str = Field(..., description="MCP action: list_tools/call_tool/list_resources/read_resource")
+    server_id: str = Field(..., description="MCP server identifier")
+    tool_name: Optional[str] = Field(None, description="Required for call_tool")
+    uri: Optional[str] = Field(None, description="Required for read_resource")
+    arguments: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Optional tool arguments")
+
+
 class ChatCompletionChoice(BaseModel):
     index: int
     message: ChatMessage
@@ -295,6 +309,16 @@ class RAGQueryRequest(BaseModel):
     top_p: Optional[float] = Field(0.9, ge=0.0, le=1.0, description="Nucleus sampling parameter")
     max_tokens: Optional[int] = Field(2048, ge=1, description="Maximum tokens to generate")
     include_context: Optional[bool] = Field(True, description="Whether to include retrieved context in response")
+    include_graph_context: Optional[bool] = Field(
+        True,
+        description="Whether to enrich retrieval with Neo4j graph context when available",
+    )
+    graph_limit: int = Field(
+        5,
+        ge=1,
+        le=20,
+        description="Maximum number of graph neighbors to retrieve per extracted entity",
+    )
 
 
 class RAGQueryResponse(BaseModel):
@@ -303,6 +327,11 @@ class RAGQueryResponse(BaseModel):
     created: int
     query: str
     context: Optional[List[Dict[str, Any]]] = Field(None, description="Retrieved context chunks")
+    graph_context: Optional[Dict[str, Any]] = Field(None, description="Optional Neo4j graph context")
+    graph_context_formatted: Optional[str] = Field(
+        None,
+        description="Formatted graph relationships injected into the LLM prompt",
+    )
     response: str = Field(..., description="Generated response augmented with context")
     usage: ChatCompletionUsage
     retrieval_stats: Dict[str, Any] = Field(..., description="Statistics about retrieval")
@@ -517,6 +546,22 @@ class FinetuningExportResponse(BaseModel):
     end_date: Optional[str]
 
 
+class MCPToolProxyRequest(BaseModel):
+    server_id: str = Field(..., description="Target MCP server ID")
+    tool_name: str = Field(..., description="MCP tool name")
+    arguments: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Tool call arguments")
+    context: Optional[str] = Field(None, description="Optional caller context for logging")
+
+
+class MCPToolProxyResponse(BaseModel):
+    ok: bool
+    tool_name: str
+    latency_ms: float
+    status_code: int
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
 # Metrics storage
 class MetricsStore:
     def __init__(self):
@@ -530,15 +575,57 @@ class MetricsStore:
         self.memory_scores = []
 
     def record_request(self, latency: float, error: bool = False):
+        self.tokens_generated = 0
+        self.model_stats: Dict[str, Dict[str, Any]] = {}
+
+    def record_request(
+        self,
+        latency: float,
+        error: bool = False,
+        model: Optional[str] = None,
+        completion_tokens: int = 0
+    ):
         self.request_count += 1
+        if model:
+            model_bucket = self.model_stats.setdefault(
+                model,
+                {
+                    "request_count": 0,
+                    "errors": 0,
+                    "total_latency": 0.0,
+                    "latencies": [],
+                    "tokens_generated": 0
+                }
+            )
+            model_bucket["request_count"] += 1
+
         if not error:
             self.total_latency += latency
             self.latencies.append(latency)
+            self.tokens_generated += completion_tokens
+
+            if model:
+                model_bucket["total_latency"] += latency
+                model_bucket["latencies"].append(latency)
+                model_bucket["tokens_generated"] += completion_tokens
+
             # Keep only last 1000 latencies
             if len(self.latencies) > 1000:
                 self.latencies = self.latencies[-1000:]
+            if model and len(model_bucket["latencies"]) > 1000:
+                model_bucket["latencies"] = model_bucket["latencies"][-1000:]
         else:
             self.errors += 1
+            if model:
+                model_bucket["errors"] += 1
+
+    @staticmethod
+    def _rate(errors: int, total: int) -> float:
+        return round((errors / total) * 100, 2) if total else 0.0
+
+    @staticmethod
+    def _tokens_per_second(tokens: int, total_latency_ms: float) -> float:
+        return round(tokens / (total_latency_ms / 1000), 2) if total_latency_ms > 0 else 0.0
 
     def record_memory_telemetry(
         self,
@@ -616,11 +703,14 @@ class MetricsStore:
             return {
                 "request_count": self.request_count,
                 "errors": self.errors,
+                "error_rate_percent": self._rate(self.errors, self.request_count),
                 "avg_latency_ms": 0,
                 "p50_latency_ms": 0,
                 "p95_latency_ms": 0,
                 "p99_latency_ms": 0,
                 "memory_telemetry": memory_telemetry
+                "tokens_generated": self.tokens_generated,
+                "tokens_per_second": self._tokens_per_second(self.tokens_generated, self.total_latency)
             }
         
         sorted_latencies = sorted(self.latencies)
@@ -629,12 +719,34 @@ class MetricsStore:
         return {
             "request_count": self.request_count,
             "errors": self.errors,
+            "error_rate_percent": self._rate(self.errors, self.request_count),
             "avg_latency_ms": round(self.total_latency / len(self.latencies), 2),
             "p50_latency_ms": round(sorted_latencies[int(n * 0.50)], 2),
             "p95_latency_ms": round(sorted_latencies[int(n * 0.95)], 2),
             "p99_latency_ms": round(sorted_latencies[int(n * 0.99)], 2),
             "memory_telemetry": memory_telemetry
+            "tokens_generated": self.tokens_generated,
+            "tokens_per_second": self._tokens_per_second(self.tokens_generated, self.total_latency)
         }
+
+    def get_model_stats(self) -> Dict[str, Any]:
+        """Return per-model latency, error-rate, and throughput metrics."""
+        model_metrics: Dict[str, Any] = {}
+        for model_name, data in self.model_stats.items():
+            sorted_latencies = sorted(data["latencies"])
+            n = len(sorted_latencies)
+            model_metrics[model_name] = {
+                "request_count": data["request_count"],
+                "errors": data["errors"],
+                "error_rate_percent": self._rate(data["errors"], data["request_count"]),
+                "avg_latency_ms": round(data["total_latency"] / n, 2) if n else 0,
+                "p50_latency_ms": round(sorted_latencies[int(n * 0.50)], 2) if n else 0,
+                "p95_latency_ms": round(sorted_latencies[int(n * 0.95)], 2) if n else 0,
+                "p99_latency_ms": round(sorted_latencies[int(n * 0.99)], 2) if n else 0,
+                "tokens_generated": data["tokens_generated"],
+                "tokens_per_second": self._tokens_per_second(data["tokens_generated"], data["total_latency"])
+            }
+        return model_metrics
 
 
 metrics = MetricsStore()
@@ -646,6 +758,7 @@ memory_service = None
 graph_service = None
 feedback_service = None
 document_ingestion_service = None
+mcp_gateway_client = None
 
 # Graceful shutdown flag
 shutdown_in_progress = False
@@ -708,6 +821,7 @@ def get_memory_service() -> MemoryService:
     global memory_service
     if memory_service is None:
         logger.info("Initializing Memory Service...")
+        scoring_config = load_memory_scoring_config()
         memory_service = MemoryService(
             qdrant_host=QDRANT_HOST,
             qdrant_port=QDRANT_PORT,
@@ -716,9 +830,9 @@ def get_memory_service() -> MemoryService:
             redis_db=REDIS_DB,
             memory_collection="memories",
             embedding_model="sentence-transformers/all-MiniLM-L6-v2",
-            temporal_decay_factor=float(os.getenv("MEMORY_TEMPORAL_DECAY_FACTOR", "0.1")),
-            cosine_weight=float(os.getenv("MEMORY_COSINE_WEIGHT", "0.7")),
-            temporal_weight=float(os.getenv("MEMORY_TEMPORAL_WEIGHT", "0.3"))
+            temporal_decay_factor=scoring_config["temporal_decay_factor"],
+            cosine_weight=scoring_config["cosine_weight"],
+            temporal_weight=scoring_config["temporal_weight"]
         )
         logger.info("Memory Service initialized")
     return memory_service
@@ -754,6 +868,16 @@ def get_feedback_service() -> FeedbackService:
         )
         logger.info("Feedback Service initialized")
     return feedback_service
+
+
+def get_mcp_gateway_client() -> InternalMCPGatewayClient:
+    """Get or initialize internal MCP gateway client."""
+    global mcp_gateway_client
+    if mcp_gateway_client is None:
+        logger.info("Initializing internal MCP gateway client...")
+        mcp_gateway_client = InternalMCPGatewayClient.from_env()
+        logger.info("Internal MCP gateway client initialized")
+    return mcp_gateway_client
 
 
 def format_chat_prompt(messages: List[ChatMessage]) -> str:
@@ -853,6 +977,7 @@ async def generate_with_router(
     result = await router.generate(
         messages=messages_dict,
         prompt=prompt,
+        preferred_model=params.get("preferred_model"),
         max_tokens=params.get("max_tokens"),
         temperature=params.get("temperature"),
         top_p=params.get("top_p"),
@@ -910,7 +1035,8 @@ async def root():
             "feedback_delete": "DELETE /v1/feedback/{feedback_id}",
             "feedback_accuracy": "GET /v1/feedback/accuracy",
             "feedback_stats": "GET /v1/feedback/stats",
-            "feedback_export": "POST /v1/feedback/export/finetuning"
+            "feedback_export": "POST /v1/feedback/export/finetuning",
+            "mcp_tool_proxy": "POST /internal/mcp/tools/call"
         },
         "prometheus_metrics": "http://localhost:8001/metrics"
     }
@@ -987,11 +1113,36 @@ async def health_check():
     return JSONResponse(content=payload, status_code=status_code)
 
 
+@app.post("/v1/mcp")
+async def proxy_mcp_gateway(request: MCPGatewayRequest):
+    """Proxy MCP calls through the MCPJungle gateway service."""
+    headers = {"content-type": "application/json"}
+    if MCP_GATEWAY_API_KEY:
+        headers["authorization"] = f"Bearer {MCP_GATEWAY_API_KEY}"
+
+    payload = request.model_dump(exclude_none=True)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{MCP_GATEWAY_URL}/mcp",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"MCP gateway unreachable: {exc}")
+
+
 @app.get("/metrics")
 async def get_metrics():
     """Get performance metrics."""
     return {
         "metrics": metrics.get_stats(),
+        "per_model_metrics": metrics.get_model_stats(),
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -1003,6 +1154,23 @@ async def get_circuit_breakers():
         "circuit_breakers": get_all_circuit_breaker_stats(),
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+@app.post("/internal/mcp/tools/call", response_model=MCPToolProxyResponse)
+async def internal_mcp_tool_call(request: MCPToolProxyRequest):
+    """Route internal tool calls to MCP gateway /mcp endpoint with structured result."""
+    client = get_mcp_gateway_client()
+    result = await client.call_tool(
+        server_id=request.server_id,
+        tool_name=request.tool_name,
+        arguments=request.arguments or {},
+        context=request.context or "api.internal",
+    )
+
+    payload = result.to_dict()
+    if not result.ok:
+        return JSONResponse(status_code=result.status_code, content=payload)
+    return payload
 
 
 @app.post("/v1/chat/completions")
@@ -1159,6 +1327,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         
         # Call Agent Router
         params = {
+            "preferred_model": request.model,
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "top_p": request.top_p,
@@ -1171,13 +1340,17 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             params=params
         )
         
-        # Calculate latency
-        latency_ms = (time.time() - start_time) * 1000
-        metrics.record_request(latency_ms)
-        
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
         response_model = routing_metadata.get('model_name', request.model)
+
+        # Calculate latency
+        latency_ms = (time.time() - start_time) * 1000
+        metrics.record_request(
+            latency_ms,
+            model=response_model,
+            completion_tokens=completion_tokens
+        )
 
         if request.memory and request.memory.enabled and request.memory.auto_store:
             try:
@@ -1275,10 +1448,10 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         return response_data
         
     except HTTPException:
-        metrics.record_request((time.time() - start_time) * 1000, error=True)
+        metrics.record_request((time.time() - start_time) * 1000, error=True, model=request.model)
         raise
     except Exception as e:
-        metrics.record_request((time.time() - start_time) * 1000, error=True)
+        metrics.record_request((time.time() - start_time) * 1000, error=True, model=request.model)
         logger.error(f"Unexpected error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1321,7 +1494,16 @@ async def unified_chat(request: UnifiedChatRequest, raw_request: Request):
             use_temporal_decay=request.use_temporal_decay
         ) if request.use_memory else None
     )
-    return await chat_completions(completion_request, raw_request)
+    response = await chat_completions(completion_request, raw_request)
+    if isinstance(response, dict):
+        routing_metadata = response.get("x-routing-metadata", {})
+        logger.info(
+            "Unified chat intent classification: intent=%s model=%s fallback=%s",
+            routing_metadata.get("intent"),
+            routing_metadata.get("model_id"),
+            routing_metadata.get("fallback_used"),
+        )
+    return response
 
 
 @app.get("/v1/models")
@@ -1363,6 +1545,11 @@ async def router_info():
             "code": router.routing_config.primary_model.get("code"),
             "reasoning": router.routing_config.primary_model.get("reasoning"),
             "general": router.routing_config.primary_model.get("general")
+        },
+        "routing_plans": {
+            "code": router.get_routing_plan(Intent.CODE),
+            "reasoning": router.get_routing_plan(Intent.REASONING),
+            "general": router.get_routing_plan(Intent.GENERAL)
         },
         "fallback_chains": router.routing_config.fallback_chains,
         "health_check": {
@@ -1633,10 +1820,44 @@ async def rag_query(request: RAGQueryRequest):
             limit=request.k,
             filters=request.filters
         )
+
+        graph_context = None
+        graph_context_formatted = ""
+        relationships_found = 0
+        entities_in_graph = 0
+
+        should_enrich_with_graph = bool(
+            request.include_graph_context and service.graph_service is not None
+        )
+
+        if should_enrich_with_graph:
+            try:
+                enriched_results = service.search_with_graph_enrichment(
+                    query=request.query,
+                    limit=request.k,
+                    filters=request.filters,
+                    graph_depth=1,
+                    graph_limit=request.graph_limit,
+                )
+                if enriched_results.get("enriched"):
+                    results = enriched_results.get("vector_results", results)
+                    graph_context = enriched_results.get("graph_context")
+                    graph_context_formatted = service.format_graph_context_for_llm(graph_context)
+                    graph_stats = enriched_results.get("stats", {})
+                    relationships_found = graph_stats.get("relationships_found", 0)
+                    entities_in_graph = graph_stats.get("entities_in_graph", 0)
+            except Exception as graph_error:
+                logger.warning("Graph enrichment unavailable, using vector-only retrieval: %s", graph_error)
+
         retrieval_time_ms = (time.time() - retrieval_start) * 1000
-        
-        logger.info(f"Retrieved {len(results)} context chunks in {retrieval_time_ms:.2f}ms")
-        
+
+        logger.info(
+            "Retrieved %s context chunks in %.2fms (graph relationships=%s)",
+            len(results),
+            retrieval_time_ms,
+            relationships_found,
+        )
+
         if not results:
             logger.warning("No context found for query, generating response without RAG")
             context_text = ""
@@ -1644,36 +1865,42 @@ async def rag_query(request: RAGQueryRequest):
                 "chunks_retrieved": 0,
                 "retrieval_time_ms": round(retrieval_time_ms, 2),
                 "top_score": None,
-                "avg_score": None
+                "avg_score": None,
+                "entities_in_graph": entities_in_graph,
+                "relationships_found": relationships_found,
             }
         else:
             context_chunks = []
             for idx, result in enumerate(results):
                 chunk_text = f"[Context {idx + 1}]\n{result['text']}\n"
                 context_chunks.append(chunk_text)
-            
+
             context_text = "\n".join(context_chunks)
-            
+
             scores = [r['score'] for r in results]
             retrieval_stats = {
                 "chunks_retrieved": len(results),
                 "retrieval_time_ms": round(retrieval_time_ms, 2),
                 "top_score": round(scores[0], 4) if scores else None,
                 "avg_score": round(sum(scores) / len(scores), 4) if scores else None,
-                "min_score": round(min(scores), 4) if scores else None
+                "min_score": round(min(scores), 4) if scores else None,
+                "entities_in_graph": entities_in_graph,
+                "relationships_found": relationships_found,
             }
-        
+
         messages_list = []
-        
-        if context_text:
-            system_message = ChatMessage(
-                role="system",
-                content=(
-                    "You are a helpful assistant. Use the following context to answer the user's question. "
-                    "If the context doesn't contain relevant information, say so and provide the best answer you can.\n\n"
-                    f"Context:\n{context_text}"
-                )
+
+        if context_text or graph_context_formatted:
+            system_content = (
+                "You are a helpful assistant. Use the following context to answer the user's question. "
+                "If the context doesn't contain relevant information, say so and provide the best answer you can.\n\n"
             )
+            if context_text:
+                system_content += f"Document Context:\n{context_text}\n\n"
+            if graph_context_formatted:
+                system_content += f"{graph_context_formatted}\n"
+
+            system_message = ChatMessage(role="system", content=system_content)
             messages_list.append(system_message)
         else:
             system_message = ChatMessage(
@@ -1729,6 +1956,8 @@ async def rag_query(request: RAGQueryRequest):
             created=int(time.time()),
             query=request.query,
             context=context_data,
+            graph_context=graph_context if request.include_context else None,
+            graph_context_formatted=graph_context_formatted if request.include_context else None,
             response=generated_text,
             usage=ChatCompletionUsage(
                 prompt_tokens=prompt_tokens,

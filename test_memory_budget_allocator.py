@@ -207,6 +207,33 @@ def test_workspace_registration():
     return True
 
 
+def test_project_registration_and_resolution():
+    """Test registering and resolving project-level configuration overrides."""
+    allocator = MemoryBudgetAllocator(log_allocations=False)
+
+    project_config = WorkspaceConfig(
+        workspace_id="default",
+        max_total_tokens=10000,
+        project_memory_pct=0.35,
+        working_memory_pct=0.30,
+        long_term_memory_pct=0.15,
+        rag_memory_pct=0.20
+    )
+
+    allocator.register_project("default", "brainego-core", project_config)
+
+    resolved, scope = allocator.resolve_config("default", "brainego-core")
+    assert scope == "project"
+    assert resolved.max_total_tokens == 10000
+
+    resolved_workspace, scope_workspace = allocator.resolve_config("default", None)
+    assert scope_workspace == "workspace"
+    assert resolved_workspace.workspace_id == "default"
+
+    print("✓ Project registration and config resolution works")
+    return True
+
+
 def test_config_loader():
     """Test configuration loader."""
     try:
@@ -218,6 +245,13 @@ def test_config_loader():
         assert len(configs) > 0
         assert "default" in configs
         assert isinstance(configs["default"], WorkspaceConfig)
+
+        project_overrides = MemoryBudgetConfigLoader.load_project_overrides(
+            'configs/memory-budget.yaml'
+        )
+        assert "default" in project_overrides
+        assert "brainego-core" in project_overrides["default"]
+        assert isinstance(project_overrides["default"]["brainego-core"], WorkspaceConfig)
         
         print(f"✓ Config loader works (loaded {len(configs)} workspaces)")
         return True
@@ -256,6 +290,47 @@ def test_allocation_statistics():
     assert "averages" in stats
     
     print(f"✓ Allocation statistics works (allocations: {stats['total_allocations']})")
+    return True
+
+
+def test_allocation_contains_budget_scope_metadata():
+    """Test allocation metadata includes budget source and project context."""
+    allocator = MemoryBudgetAllocator(log_allocations=False)
+    now = datetime.now(timezone.utc)
+    memories = [
+        MemoryItem(
+            memory_id="m1",
+            text="A memory item for budget metadata checks",
+            tier=MemoryTier.PROJECT,
+            timestamp=now,
+            relevance_score=0.9,
+            importance_score=0.8,
+        )
+    ]
+
+    project_config = WorkspaceConfig(
+        workspace_id="default",
+        max_total_tokens=12000,
+        working_memory_pct=0.30,
+        project_memory_pct=0.35,
+        long_term_memory_pct=0.15,
+        rag_memory_pct=0.20
+    )
+    allocator.register_project("default", "brainego-core", project_config)
+
+    result = allocator.allocate_memory_budget(
+        query="Summarize current design constraints",
+        available_memories=memories,
+        workspace_id="default",
+        project_id="brainego-core",
+    )
+
+    assert result["project_id"] == "brainego-core"
+    assert result["config_scope"] == "project"
+    assert "budget" in result
+    assert result["budget"]["max_total_tokens"] == 12000
+
+    print("✓ Allocation metadata includes project scope and budget details")
     return True
 
 
