@@ -10,6 +10,49 @@ This AGENTS.md is the operational reference for setup, commands, and style.
 
 ---
 
+## Linear Batch Tasks & PR Workflow (INST-01)
+
+When an agent is asked to process multiple Linear issues in one run, the following workflow is mandatory.
+
+### Git workflow
+
+- Work on a single feature branch unless explicitly instructed otherwise.
+- Process requested Linear issues strictly in the order provided.
+- Do not start the next issue before all of the following are true for the current issue:
+  1. code changes are complete,
+  2. relevant tests pass,
+  3. one git commit is created for the current issue.
+
+### Commit rules
+
+- Exactly one commit per Linear issue.
+- Commit message format:
+
+  `<type>(<issue>): <summary>`
+
+- Example:
+
+  `feat(LIN-104): add campaign metadata validator`
+
+### Pull request rules
+
+- Open exactly one PR after all requested issues are complete.
+- PR title format:
+
+  `batch(linear): LIN-101 LIN-104 LIN-109 LIN-115`
+
+- PR body must contain one section per issue with:
+  - what changed
+  - tests run
+  - risk / notes
+
+### Stop conditions
+
+- If one issue is blocked, stop immediately and report the blocker.
+- Never silently skip an issue.
+
+---
+
 ## Codex Resource Unavailability Pattern (Formal & General)
 
 **Problem:** Codex Cloud is completely offline (zero network, zero shell access for pip/docker/etc).
