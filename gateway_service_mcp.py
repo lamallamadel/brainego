@@ -33,6 +33,7 @@ import httpx
 
 from rag_service import RAGIngestionService
 from memory_service import MemoryService
+from memory_scoring_config import load_memory_scoring_config
 from mcp_client import MCPClientService
 from mcp_acl import MCPACLManager
 from telemetry import init_telemetry, get_tracer, shutdown_telemetry
@@ -336,6 +337,7 @@ def get_memory_service() -> MemoryService:
     global memory_service
     if memory_service is None:
         logger.info("Initializing Memory Service...")
+        scoring_config = load_memory_scoring_config()
         memory_service = MemoryService(
             qdrant_host=QDRANT_HOST,
             qdrant_port=QDRANT_PORT,
@@ -344,9 +346,9 @@ def get_memory_service() -> MemoryService:
             redis_db=REDIS_DB,
             memory_collection="memories",
             embedding_model="sentence-transformers/all-MiniLM-L6-v2",
-            temporal_decay_factor=float(os.getenv("MEMORY_TEMPORAL_DECAY_FACTOR", "0.1")),
-            cosine_weight=float(os.getenv("MEMORY_COSINE_WEIGHT", "0.7")),
-            temporal_weight=float(os.getenv("MEMORY_TEMPORAL_WEIGHT", "0.3"))
+            temporal_decay_factor=scoring_config["temporal_decay_factor"],
+            cosine_weight=scoring_config["cosine_weight"],
+            temporal_weight=scoring_config["temporal_weight"]
         )
         logger.info("Memory Service initialized")
     return memory_service

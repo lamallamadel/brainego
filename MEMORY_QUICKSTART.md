@@ -184,6 +184,30 @@ httpx.post(f"{API_URL}/memory/search", json={
 })
 ```
 
+
+### Scoring Profiles
+
+Use profile-based defaults for memory ranking:
+
+```bash
+# Balanced default
+export MEMORY_SCORING_PROFILE=balanced
+
+# Favor long-term/history relevance
+export MEMORY_SCORING_PROFILE=history_heavy
+
+# Favor very recent context
+export MEMORY_SCORING_PROFILE=recent_context_heavy
+```
+
+Fine-grained overrides are still available:
+
+```bash
+export MEMORY_COSINE_WEIGHT=0.70
+export MEMORY_TEMPORAL_WEIGHT=0.30
+export MEMORY_TEMPORAL_DECAY_FACTOR=0.10
+```
+
 ## Next Steps
 
 - Read the [full documentation](MEMORY_README.md)
