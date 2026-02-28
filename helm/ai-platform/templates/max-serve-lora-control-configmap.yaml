@@ -1,0 +1,153 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: max-serve-lora-control
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/component: inference
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  lora_control.py: |
+    #!/usr/bin/env python3
+    import json
+    import os
+    import urllib.error
+    import urllib.request
+    from datetime import datetime, timezone
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+    STATE_PATH = os.environ.get("LORA_STATE_PATH", "/var/run/lora-control/state.json")
+    UPSTREAM_RELOAD_URL = os.environ.get("MAX_SERVE_RELOAD_URL")
+    REQUEST_TIMEOUT = float(os.environ.get("MAX_SERVE_RELOAD_TIMEOUT_SECONDS", "10"))
+
+
+    def _now_iso() -> str:
+      return datetime.now(timezone.utc).isoformat()
+
+
+    def _read_state() -> dict:
+      if not os.path.exists(STATE_PATH):
+        return {}
+      with open(STATE_PATH, "r", encoding="utf-8") as state_file:
+        return json.load(state_file)
+
+
+    def _write_state(state: dict) -> None:
+      os.makedirs(os.path.dirname(STATE_PATH), exist_ok=True)
+      with open(STATE_PATH, "w", encoding="utf-8") as state_file:
+        json.dump(state, state_file)
+
+
+    def _send_reload_request(adapter_path: str, adapter_version: str) -> dict:
+      if not UPSTREAM_RELOAD_URL:
+        raise RuntimeError("MAX_SERVE_RELOAD_URL is required")
+
+      payload = {
+        "adapter_path": adapter_path,
+        "adapter_version": adapter_version,
+      }
+      req = urllib.request.Request(
+        UPSTREAM_RELOAD_URL,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+      )
+
+      with urllib.request.urlopen(req, timeout=REQUEST_TIMEOUT) as response:  # nosec B310
+        body = response.read().decode("utf-8")
+        return {
+          "status": response.status,
+          "body": body,
+        }
+
+
+    class LoraControlHandler(BaseHTTPRequestHandler):
+      def _json_response(self, status: int, payload: dict) -> None:
+        response_bytes = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(response_bytes)))
+        self.end_headers()
+        self.wfile.write(response_bytes)
+
+      def _parse_json_body(self) -> dict:
+        length = int(self.headers.get("Content-Length", "0"))
+        if length == 0:
+          return {}
+        return json.loads(self.rfile.read(length).decode("utf-8"))
+
+      def do_GET(self):
+        if self.path != "/internal/lora/state":
+          self._json_response(404, {"error": "not_found"})
+          return
+
+        self._json_response(200, {"state": _read_state()})
+
+      def do_POST(self):
+        if self.path not in {"/internal/lora/reload", "/internal/lora/rollback"}:
+          self._json_response(404, {"error": "not_found"})
+          return
+
+        try:
+          state = _read_state()
+          if self.path == "/internal/lora/reload":
+            body = self._parse_json_body()
+            adapter_path = body["adapter_path"]
+            adapter_version = body["adapter_version"]
+          else:
+            previous = state.get("previous_adapter")
+            if not previous:
+              raise ValueError("No previous adapter available for rollback")
+            adapter_path = previous["adapter_path"]
+            adapter_version = previous["adapter_version"]
+
+          upstream = _send_reload_request(adapter_path, adapter_version)
+
+          active = state.get("active_adapter")
+          state["previous_adapter"] = active
+          state["active_adapter"] = {
+            "adapter_path": adapter_path,
+            "adapter_version": adapter_version,
+            "applied_at": _now_iso(),
+          }
+          _write_state(state)
+
+          self._json_response(
+            200,
+            {
+              "result": "ok",
+              "active_adapter": state["active_adapter"],
+              "previous_adapter": state.get("previous_adapter"),
+              "upstream": upstream,
+            },
+          )
+        except KeyError as exc:
+          self._json_response(400, {"error": f"missing_field:{exc.args[0]}"})
+        except ValueError as exc:
+          self._json_response(409, {"error": str(exc)})
+        except urllib.error.HTTPError as exc:
+          self._json_response(
+            502,
+            {
+              "error": "max_serve_http_error",
+              "status": exc.code,
+              "details": exc.read().decode("utf-8", errors="replace"),
+            },
+          )
+        except urllib.error.URLError as exc:
+          self._json_response(503, {"error": "max_serve_unreachable", "details": str(exc.reason)})
+        except RuntimeError as exc:
+          self._json_response(500, {"error": str(exc)})
+
+      def log_message(self, fmt, *args):
+        return
+
+
+    def main():
+      control_port = int(os.environ.get("LORA_CONTROL_PORT", "19080"))
+      server = ThreadingHTTPServer(("0.0.0.0", control_port), LoraControlHandler)
+      server.serve_forever()
+
+
+    if __name__ == "__main__":
+      main()
