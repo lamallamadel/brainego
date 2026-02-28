@@ -38,7 +38,8 @@ servers:
     security:
       read_only: true
       allowed_repositories:
-        - "${GITHUB_TEST_OWNER}/${GITHUB_TEST_REPO}"
+        - "${GITHUB_TEST_OWNER}/${GITHUB_TEST_REPO_1}"
+        - "${GITHUB_TEST_OWNER}/${GITHUB_TEST_REPO_2}"
       blocked_tools:
         - "github_create_issue"
 
@@ -76,7 +77,8 @@ servers:
       allowed_workspace_ids:
         - "${NOTION_TEST_WORKSPACE_ID}"
       allowed_database_ids:
-        - "${NOTION_TEST_DATABASE_ID}"
+        - "${NOTION_TEST_DATABASE_ID_1}"
+        - "${NOTION_TEST_DATABASE_ID_2}"
       blocked_tools:
         - "notion_create_page"
         - "notion_update_page"

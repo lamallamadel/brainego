@@ -13,9 +13,11 @@ This checklist validates:
   - `GITHUB_TOKEN`
   - `NOTION_API_KEY`
   - `GITHUB_TEST_OWNER`
-  - `GITHUB_TEST_REPO`
+  - `GITHUB_TEST_REPO_1`
+  - `GITHUB_TEST_REPO_2`
   - `NOTION_TEST_WORKSPACE_ID`
-  - `NOTION_TEST_DATABASE_ID`
+  - `NOTION_TEST_DATABASE_ID_1`
+  - `NOTION_TEST_DATABASE_ID_2`
 - Gateway running at `http://localhost:9100`
 - API key `sk-project-agent-key-321` mapped to role `project-agent`
 
@@ -81,7 +83,7 @@ curl -sS -X POST \
     "tool_name": "github_get_repository",
     "arguments": {
       "owner": "'$GITHUB_TEST_OWNER'",
-      "repo": "'$GITHUB_TEST_REPO'"
+      "repo": "'$GITHUB_TEST_REPO_1'"
     }
   }' \
   http://localhost:9100/mcp/tools/call | jq
@@ -100,7 +102,7 @@ curl -sS -X POST \
     "server_id": "mcp-notion",
     "tool_name": "notion_query_database",
     "arguments": {
-      "database_id": "'$NOTION_TEST_DATABASE_ID'",
+      "database_id": "'$NOTION_TEST_DATABASE_ID_1'",
       "page_size": 1
     }
   }' \
@@ -123,7 +125,7 @@ curl -sS -X POST \
     "tool_name": "github_create_issue",
     "arguments": {
       "owner": "'$GITHUB_TEST_OWNER'",
-      "repo": "'$GITHUB_TEST_REPO'",
+      "repo": "'$GITHUB_TEST_REPO_1'",
       "title": "ACL test - should fail"
     }
   }' \
@@ -143,7 +145,7 @@ curl -sS -X POST \
     "server_id": "mcp-notion",
     "tool_name": "notion_create_page",
     "arguments": {
-      "parent": {"database_id": "'$NOTION_TEST_DATABASE_ID'"},
+      "parent": {"database_id": "'$NOTION_TEST_DATABASE_ID_1'"},
       "properties": {}
     }
   }' \
