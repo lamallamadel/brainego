@@ -32,6 +32,18 @@ def test_memory_metadata_and_context_response_fields_exist():
     """Response should include memory telemetry fields when memory is active."""
     assert "response_data[\"x-memory-metadata\"] = memory_metadata" in API_SERVER_SOURCE
     assert "response_data[\"memory_context\"] = memory_context_data" in API_SERVER_SOURCE
+    assert "metrics.record_memory_telemetry(memory_metadata, memory_context_data)" in API_SERVER_SOURCE
+
+
+def test_memory_telemetry_aggregates_are_exposed_in_metrics_store():
+    """Metrics store should expose memory hit rate/context size/score distributions."""
+    assert "self.memory_requests = 0" in API_SERVER_SOURCE
+    assert "self.memory_hits = 0" in API_SERVER_SOURCE
+    assert "self.memory_context_items_total = 0" in API_SERVER_SOURCE
+    assert "self.memory_scores = []" in API_SERVER_SOURCE
+    assert '"memory_hit_rate"' in API_SERVER_SOURCE
+    assert '"avg_memory_context_size"' in API_SERVER_SOURCE
+    assert '"score_distribution"' in API_SERVER_SOURCE
 
 
 
