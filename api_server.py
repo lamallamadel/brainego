@@ -22,13 +22,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import httpx
 
-from agent_router import AgentRouter
+from agent_router import AgentRouter, Intent
 from document_ingestion_service import DocumentIngestionService
 from rag_service import RAGIngestionService
 from memory_service import MemoryService
 from graph_service import GraphService
 from feedback_service import FeedbackService
 from circuit_breaker import get_all_circuit_breaker_stats
+from internal_mcp_client import InternalMCPGatewayClient
 
 # Configure logging
 logging.basicConfig(
@@ -61,6 +62,8 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "ai_password")
 RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
 RAG_EMBEDDING_PROVIDER = os.getenv("RAG_EMBEDDING_PROVIDER", "local")
 RAG_EMBEDDING_SERVICE_URL = os.getenv("RAG_EMBEDDING_SERVICE_URL", "http://embedding-service:8003")
+MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://mcpjungle:9100")
+MCP_GATEWAY_API_KEY = os.getenv("MCP_GATEWAY_API_KEY", "")
 
 # Create FastAPI app
 app = FastAPI(
@@ -185,6 +188,16 @@ class UnifiedChatRequest(BaseModel):
         False,
         description="Include retrieved RAG and memory context in non-streaming responses"
     )
+
+
+
+
+class MCPGatewayRequest(BaseModel):
+    action: str = Field(..., description="MCP action: list_tools/call_tool/list_resources/read_resource")
+    server_id: str = Field(..., description="MCP server identifier")
+    tool_name: Optional[str] = Field(None, description="Required for call_tool")
+    uri: Optional[str] = Field(None, description="Required for read_resource")
+    arguments: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Optional tool arguments")
 
 
 class ChatCompletionChoice(BaseModel):
@@ -517,6 +530,22 @@ class FinetuningExportResponse(BaseModel):
     end_date: Optional[str]
 
 
+class MCPToolProxyRequest(BaseModel):
+    server_id: str = Field(..., description="Target MCP server ID")
+    tool_name: str = Field(..., description="MCP tool name")
+    arguments: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Tool call arguments")
+    context: Optional[str] = Field(None, description="Optional caller context for logging")
+
+
+class MCPToolProxyResponse(BaseModel):
+    ok: bool
+    tool_name: str
+    latency_ms: float
+    status_code: int
+    data: Optional[Dict[str, Any]] = None
+    error: Optional[str] = None
+
+
 # Metrics storage
 class MetricsStore:
     def __init__(self):
@@ -524,27 +553,70 @@ class MetricsStore:
         self.total_latency = 0.0
         self.latencies = []
         self.errors = 0
+        self.tokens_generated = 0
+        self.model_stats: Dict[str, Dict[str, Any]] = {}
 
-    def record_request(self, latency: float, error: bool = False):
+    def record_request(
+        self,
+        latency: float,
+        error: bool = False,
+        model: Optional[str] = None,
+        completion_tokens: int = 0
+    ):
         self.request_count += 1
+        if model:
+            model_bucket = self.model_stats.setdefault(
+                model,
+                {
+                    "request_count": 0,
+                    "errors": 0,
+                    "total_latency": 0.0,
+                    "latencies": [],
+                    "tokens_generated": 0
+                }
+            )
+            model_bucket["request_count"] += 1
+
         if not error:
             self.total_latency += latency
             self.latencies.append(latency)
+            self.tokens_generated += completion_tokens
+
+            if model:
+                model_bucket["total_latency"] += latency
+                model_bucket["latencies"].append(latency)
+                model_bucket["tokens_generated"] += completion_tokens
+
             # Keep only last 1000 latencies
             if len(self.latencies) > 1000:
                 self.latencies = self.latencies[-1000:]
+            if model and len(model_bucket["latencies"]) > 1000:
+                model_bucket["latencies"] = model_bucket["latencies"][-1000:]
         else:
             self.errors += 1
+            if model:
+                model_bucket["errors"] += 1
+
+    @staticmethod
+    def _rate(errors: int, total: int) -> float:
+        return round((errors / total) * 100, 2) if total else 0.0
+
+    @staticmethod
+    def _tokens_per_second(tokens: int, total_latency_ms: float) -> float:
+        return round(tokens / (total_latency_ms / 1000), 2) if total_latency_ms > 0 else 0.0
 
     def get_stats(self) -> Dict[str, Any]:
         if not self.latencies:
             return {
                 "request_count": self.request_count,
                 "errors": self.errors,
+                "error_rate_percent": self._rate(self.errors, self.request_count),
                 "avg_latency_ms": 0,
                 "p50_latency_ms": 0,
                 "p95_latency_ms": 0,
-                "p99_latency_ms": 0
+                "p99_latency_ms": 0,
+                "tokens_generated": self.tokens_generated,
+                "tokens_per_second": self._tokens_per_second(self.tokens_generated, self.total_latency)
             }
         
         sorted_latencies = sorted(self.latencies)
@@ -553,11 +625,33 @@ class MetricsStore:
         return {
             "request_count": self.request_count,
             "errors": self.errors,
+            "error_rate_percent": self._rate(self.errors, self.request_count),
             "avg_latency_ms": round(self.total_latency / len(self.latencies), 2),
             "p50_latency_ms": round(sorted_latencies[int(n * 0.50)], 2),
             "p95_latency_ms": round(sorted_latencies[int(n * 0.95)], 2),
-            "p99_latency_ms": round(sorted_latencies[int(n * 0.99)], 2)
+            "p99_latency_ms": round(sorted_latencies[int(n * 0.99)], 2),
+            "tokens_generated": self.tokens_generated,
+            "tokens_per_second": self._tokens_per_second(self.tokens_generated, self.total_latency)
         }
+
+    def get_model_stats(self) -> Dict[str, Any]:
+        """Return per-model latency, error-rate, and throughput metrics."""
+        model_metrics: Dict[str, Any] = {}
+        for model_name, data in self.model_stats.items():
+            sorted_latencies = sorted(data["latencies"])
+            n = len(sorted_latencies)
+            model_metrics[model_name] = {
+                "request_count": data["request_count"],
+                "errors": data["errors"],
+                "error_rate_percent": self._rate(data["errors"], data["request_count"]),
+                "avg_latency_ms": round(data["total_latency"] / n, 2) if n else 0,
+                "p50_latency_ms": round(sorted_latencies[int(n * 0.50)], 2) if n else 0,
+                "p95_latency_ms": round(sorted_latencies[int(n * 0.95)], 2) if n else 0,
+                "p99_latency_ms": round(sorted_latencies[int(n * 0.99)], 2) if n else 0,
+                "tokens_generated": data["tokens_generated"],
+                "tokens_per_second": self._tokens_per_second(data["tokens_generated"], data["total_latency"])
+            }
+        return model_metrics
 
 
 metrics = MetricsStore()
@@ -569,6 +663,7 @@ memory_service = None
 graph_service = None
 feedback_service = None
 document_ingestion_service = None
+mcp_gateway_client = None
 
 # Graceful shutdown flag
 shutdown_in_progress = False
@@ -679,6 +774,16 @@ def get_feedback_service() -> FeedbackService:
     return feedback_service
 
 
+def get_mcp_gateway_client() -> InternalMCPGatewayClient:
+    """Get or initialize internal MCP gateway client."""
+    global mcp_gateway_client
+    if mcp_gateway_client is None:
+        logger.info("Initializing internal MCP gateway client...")
+        mcp_gateway_client = InternalMCPGatewayClient.from_env()
+        logger.info("Internal MCP gateway client initialized")
+    return mcp_gateway_client
+
+
 def format_chat_prompt(messages: List[ChatMessage]) -> str:
     """Format messages into Llama 3.3 chat format."""
     prompt_parts = []
@@ -776,6 +881,7 @@ async def generate_with_router(
     result = await router.generate(
         messages=messages_dict,
         prompt=prompt,
+        preferred_model=params.get("preferred_model"),
         max_tokens=params.get("max_tokens"),
         temperature=params.get("temperature"),
         top_p=params.get("top_p"),
@@ -833,7 +939,8 @@ async def root():
             "feedback_delete": "DELETE /v1/feedback/{feedback_id}",
             "feedback_accuracy": "GET /v1/feedback/accuracy",
             "feedback_stats": "GET /v1/feedback/stats",
-            "feedback_export": "POST /v1/feedback/export/finetuning"
+            "feedback_export": "POST /v1/feedback/export/finetuning",
+            "mcp_tool_proxy": "POST /internal/mcp/tools/call"
         },
         "prometheus_metrics": "http://localhost:8001/metrics"
     }
@@ -910,11 +1017,36 @@ async def health_check():
     return JSONResponse(content=payload, status_code=status_code)
 
 
+@app.post("/v1/mcp")
+async def proxy_mcp_gateway(request: MCPGatewayRequest):
+    """Proxy MCP calls through the MCPJungle gateway service."""
+    headers = {"content-type": "application/json"}
+    if MCP_GATEWAY_API_KEY:
+        headers["authorization"] = f"Bearer {MCP_GATEWAY_API_KEY}"
+
+    payload = request.model_dump(exclude_none=True)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{MCP_GATEWAY_URL}/mcp",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"MCP gateway unreachable: {exc}")
+
+
 @app.get("/metrics")
 async def get_metrics():
     """Get performance metrics."""
     return {
         "metrics": metrics.get_stats(),
+        "per_model_metrics": metrics.get_model_stats(),
         "timestamp": datetime.utcnow().isoformat()
     }
 
@@ -926,6 +1058,23 @@ async def get_circuit_breakers():
         "circuit_breakers": get_all_circuit_breaker_stats(),
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+@app.post("/internal/mcp/tools/call", response_model=MCPToolProxyResponse)
+async def internal_mcp_tool_call(request: MCPToolProxyRequest):
+    """Route internal tool calls to MCP gateway /mcp endpoint with structured result."""
+    client = get_mcp_gateway_client()
+    result = await client.call_tool(
+        server_id=request.server_id,
+        tool_name=request.tool_name,
+        arguments=request.arguments or {},
+        context=request.context or "api.internal",
+    )
+
+    payload = result.to_dict()
+    if not result.ok:
+        return JSONResponse(status_code=result.status_code, content=payload)
+    return payload
 
 
 @app.post("/v1/chat/completions")
@@ -1082,6 +1231,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         
         # Call Agent Router
         params = {
+            "preferred_model": request.model,
             "max_tokens": request.max_tokens,
             "temperature": request.temperature,
             "top_p": request.top_p,
@@ -1094,13 +1244,17 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             params=params
         )
         
-        # Calculate latency
-        latency_ms = (time.time() - start_time) * 1000
-        metrics.record_request(latency_ms)
-        
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
         response_model = routing_metadata.get('model_name', request.model)
+
+        # Calculate latency
+        latency_ms = (time.time() - start_time) * 1000
+        metrics.record_request(
+            latency_ms,
+            model=response_model,
+            completion_tokens=completion_tokens
+        )
 
         if request.memory and request.memory.enabled and request.memory.auto_store:
             try:
@@ -1196,10 +1350,10 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         return response_data
         
     except HTTPException:
-        metrics.record_request((time.time() - start_time) * 1000, error=True)
+        metrics.record_request((time.time() - start_time) * 1000, error=True, model=request.model)
         raise
     except Exception as e:
-        metrics.record_request((time.time() - start_time) * 1000, error=True)
+        metrics.record_request((time.time() - start_time) * 1000, error=True, model=request.model)
         logger.error(f"Unexpected error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -1293,6 +1447,11 @@ async def router_info():
             "code": router.routing_config.primary_model.get("code"),
             "reasoning": router.routing_config.primary_model.get("reasoning"),
             "general": router.routing_config.primary_model.get("general")
+        },
+        "routing_plans": {
+            "code": router.get_routing_plan(Intent.CODE),
+            "reasoning": router.get_routing_plan(Intent.REASONING),
+            "general": router.get_routing_plan(Intent.GENERAL)
         },
         "fallback_chains": router.routing_config.fallback_chains,
         "health_check": {

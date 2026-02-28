@@ -31,6 +31,7 @@ class ModelConfig:
     capabilities: List[str]
     max_tokens: int
     temperature: float
+    aliases: List[str]
     health_status: bool = False
     consecutive_failures: int = 0
     consecutive_successes: int = 0
@@ -110,6 +111,62 @@ class PrometheusMetrics:
         )
 
 
+class IntentClassifier:
+    """Classify user intent based on message content."""
+    
+    def __init__(self, config: Dict[str, Any]):
+        self.code_keywords = set(config['code_keywords'])
+        self.reasoning_keywords = set(config['reasoning_keywords'])
+        self.thresholds = config['thresholds']
+        
+        # Compile regex patterns for faster matching
+        self.code_pattern = re.compile(
+            r'\b(' + '|'.join(map(re.escape, self.code_keywords)) + r')\b',
+            re.IGNORECASE
+        )
+        self.reasoning_pattern = re.compile(
+            r'\b(' + '|'.join(map(re.escape, self.reasoning_keywords)) + r')\b',
+            re.IGNORECASE
+        )
+    
+    def classify(self, text: str) -> Tuple[Intent, float]:
+        """
+        Classify intent from text.
+        
+        Returns:
+            Tuple of (intent, confidence_score)
+        """
+        text_lower = text.lower()
+        
+        # Count keyword matches
+        code_matches = len(self.code_pattern.findall(text))
+        reasoning_matches = len(self.reasoning_pattern.findall(text))
+
+        # Lightweight structural heuristics
+        if "```" in text:
+            code_matches += 2
+        if any(token in text_lower for token in ["step by step", "first," , "therefore", "hypothesis"]):
+            reasoning_matches += 1
+
+        # Calculate confidence scores
+        total_words = len(text_lower.split())
+        if total_words == 0:
+            return Intent.GENERAL, 1.0
+
+        normalizer = max(total_words * 0.1, 1)
+        code_score = min(code_matches / normalizer, 1.0)
+        reasoning_score = min(reasoning_matches / normalizer, 1.0)
+        
+        # Determine intent
+        if code_score >= self.thresholds['medium'] and code_score >= reasoning_score:
+            return Intent.CODE, code_score
+        elif reasoning_score >= self.thresholds['medium']:
+            return Intent.REASONING, reasoning_score
+        else:
+            # Default to general
+            return Intent.GENERAL, 1.0 - max(code_score, reasoning_score)
+
+
 class AgentRouter:
     """
     Agent router with intent classification and model selection.
@@ -126,6 +183,7 @@ class AgentRouter:
         self.health_check_enabled = False
         self.health_check_task = None
         self.circuit_breakers: Dict[str, Any] = {}
+        self.model_aliases: Dict[str, str] = {}
         
         self._load_config()
         self._initialize_metrics()
@@ -140,14 +198,24 @@ class AgentRouter:
         
         # Load model configurations
         for model_id, model_cfg in config['models'].items():
+            aliases = model_cfg.get('aliases', [])
             self.models[model_id] = ModelConfig(
                 name=model_cfg['name'],
                 endpoint=model_cfg['endpoint'],
                 description=model_cfg['description'],
                 capabilities=model_cfg['capabilities'],
                 max_tokens=model_cfg['max_tokens'],
-                temperature=model_cfg['temperature']
+                temperature=model_cfg['temperature'],
+                aliases=aliases
             )
+            alias_keys = {
+                model_id.lower(),
+                model_cfg['name'].lower(),
+                model_cfg['name'].replace('_', '-').lower(),
+                *[alias.lower() for alias in aliases]
+            }
+            for alias_key in alias_keys:
+                self.model_aliases[alias_key] = model_id
         
         # Load routing configuration
         routing = config['routing']
@@ -327,6 +395,16 @@ class AgentRouter:
         logger.debug(f"Selected model {model_id} for intent {intent.value}")
         return model_id
     
+
+    def get_routing_plan(self, intent: Intent) -> Dict[str, Any]:
+        """Return primary model and fallback chain for a given intent."""
+        primary_model_id = self.select_model(intent)
+        return {
+            "intent": intent.value,
+            "primary_model": primary_model_id,
+            "fallback_chain": self.get_fallback_chain(primary_model_id)
+        }
+
     def get_fallback_chain(self, model_id: str) -> List[str]:
         """
         Get fallback chain for a model.
@@ -343,6 +421,7 @@ class AgentRouter:
         self,
         messages: List[Dict[str, str]],
         prompt: str,
+        preferred_model: Optional[str] = None,
         max_tokens: Optional[int] = None,
         temperature: Optional[float] = None,
         top_p: Optional[float] = None,
@@ -369,6 +448,12 @@ class AgentRouter:
         
         # Select primary model
         primary_model_id = self.select_model(intent)
+        explicit_model_used = False
+        if preferred_model:
+            resolved_model_id = self.resolve_model_identifier(preferred_model)
+            if resolved_model_id:
+                primary_model_id = resolved_model_id
+                explicit_model_used = True
         
         # Try primary model first
         result = await self._try_model(
@@ -394,7 +479,8 @@ class AgentRouter:
                 'intent': intent.value,
                 'confidence': confidence,
                 'fallback_used': False,
-                'total_time_seconds': round(total_time, 3)
+                'total_time_seconds': round(total_time, 3),
+                'explicit_model_used': explicit_model_used
             }
             
             return result
@@ -433,7 +519,8 @@ class AgentRouter:
                     'confidence': confidence,
                     'fallback_used': True,
                     'primary_model': primary_model_id,
-                    'total_time_seconds': round(total_time, 3)
+                    'total_time_seconds': round(total_time, 3),
+                    'explicit_model_used': explicit_model_used
                 }
                 
                 logger.info(f"Fallback successful with model {fallback_model_id}")
@@ -581,7 +668,12 @@ class AgentRouter:
                 'capabilities': model.capabilities,
                 'health_status': model.health_status,
                 'max_tokens': model.max_tokens,
-                'temperature': model.temperature
+                'temperature': model.temperature,
+                'aliases': model.aliases
             }
             for model_id, model in self.models.items()
         }
+
+    def resolve_model_identifier(self, model_identifier: str) -> Optional[str]:
+        """Resolve model ID/name/alias to internal model ID."""
+        return self.model_aliases.get(model_identifier.lower())

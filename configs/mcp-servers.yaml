@@ -35,6 +35,17 @@ servers:
     enabled: true
     timeout: 30
     max_retries: 3
+    security:
+      # Restrict MCP GitHub access to test repositories only.
+      # Comma-separated values are resolved by the operator from .env.mcpjungle.
+      allowed_repositories:
+        - "${GITHUB_TEST_OWNER}/${GITHUB_TEST_REPO_1}"
+        - "${GITHUB_TEST_OWNER}/${GITHUB_TEST_REPO_2}"
+      allowed_owners:
+        - "${GITHUB_TEST_OWNER}"
+      denied_operations:
+        - "delete"
+        - "admin"
 
   mcp-notion:
     name: "Notion MCP Server"
@@ -65,6 +76,15 @@ servers:
     enabled: true
     timeout: 30
     max_retries: 3
+    security:
+      # Restrict MCP Notion access to a dedicated test workspace and test databases.
+      allowed_workspace_ids:
+        - "${NOTION_TEST_WORKSPACE_ID}"
+      allowed_database_ids:
+        - "${NOTION_TEST_DATABASE_ID_1}"
+        - "${NOTION_TEST_DATABASE_ID_2}"
+      denied_operations:
+        - "delete"
 
   mcp-filesystem:
     name: "Filesystem MCP Server"

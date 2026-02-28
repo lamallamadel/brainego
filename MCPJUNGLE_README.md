@@ -64,7 +64,7 @@ docker compose up -d
 curl http://localhost:9100/health
 
 # Check available servers (requires API key)
-curl -H "Authorization: Bearer sk-test-key-123" http://localhost:9100/mcp/servers
+curl -H "Authorization: Bearer sk-project-agent-key-321" http://localhost:9100/mcp/servers
 ```
 
 ## Architecture
@@ -111,6 +111,29 @@ curl -H "Authorization: Bearer sk-test-key-123" <endpoint>
 ```
 
 ### Endpoints
+
+#### POST `/mcp`
+Unified MCP endpoint for core operations in CI/staging.
+
+**Request (list tools)**:
+```json
+{
+  "action": "list_tools",
+  "server_id": "mcp-github"
+}
+```
+
+**Request (call tool)**:
+```json
+{
+  "action": "call_tool",
+  "server_id": "mcp-github",
+  "tool_name": "github_search_repositories",
+  "arguments": {"query": "language:python stars:>1000"}
+}
+```
+
+Supported actions: `list_tools`, `call_tool`, `list_resources`, `read_resource`.
 
 #### GET `/mcp/servers`
 List all available MCP servers (filtered by user role).
@@ -256,6 +279,11 @@ Get ACL role information for authenticated user.
 - **Description**: Full access to all MCP servers and operations
 - **Permissions**: All resources, tools, operations (read/write/delete)
 - **Rate Limits**: 1000 req/min, 10000 req/hour
+
+#### Project-Agent
+- **Description**: Scoped read-only access for project automation agents
+- **Permissions**: Read-only GitHub + Notion tools for test repositories/workspaces
+- **Rate Limits**: 120 req/min, 1800 req/hour
 
 #### Developer
 - **Description**: Read/write access to code repositories and filesystem
@@ -506,10 +534,11 @@ docker compose logs -f jaeger
 ### Metrics
 
 ```bash
-# Get performance metrics
-curl -H "Authorization: Bearer sk-admin-key-456" \
-  http://localhost:9100/metrics
+# Get performance metrics (public in CI/staging)
+curl http://localhost:9100/metrics
 ```
+
+Example response fields include `mcp_requests`, `mcp_errors`, and `mcp_error_rate`.
 
 ### Health Checks
 

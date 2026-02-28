@@ -17,6 +17,14 @@ from data_collectors.ingestion_queue import IngestionQueue
 logger = logging.getLogger(__name__)
 
 
+def _is_enabled(value: Optional[str], default: bool = True) -> bool:
+    """Parse boolean-like configuration values."""
+    if value is None:
+        return default
+
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
 class CollectionScheduler:
     """Manages scheduled data collection jobs."""
     
@@ -91,7 +99,18 @@ class CollectionScheduler:
                         "channel_ids": os.getenv("SLACK_CHANNELS", "").split(","),
                         "hours_back": 2
                     }
-                }
+                },
+                {
+                    "name": "mcp_slack_signal_collection",
+                    "source": "mcp-slack",
+                    "interval": "1h",
+                    "config": {
+                        "query": "decision OR todo OR action item OR urgent",
+                        "count": 50,
+                        "channel_ids": os.getenv("SLACK_CHANNELS", "").split(","),
+                        "hours_back": 2,
+                    }
+                },
             ]
         }
     
@@ -108,6 +127,14 @@ class CollectionScheduler:
         source = job_config.get("source")
         interval = job_config.get("interval", "1h")
         config = job_config.get("config", {})
+
+        if not _is_enabled(job_config.get("enabled"), default=True):
+            logger.info(f"Skipping disabled job: {name}")
+            return
+
+        if source == "github" and not _is_enabled(os.getenv("ENABLE_GITHUB_INGESTION"), default=True):
+            logger.info("GitHub ingestion is disabled by ENABLE_GITHUB_INGESTION")
+            return
         
         def job_func():
             logger.info(f"Running scheduled job: {name}")
