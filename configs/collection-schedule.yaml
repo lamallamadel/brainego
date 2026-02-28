@@ -5,7 +5,7 @@ schedules:
   - name: github_collection
     source: github
     interval: 6h
-    enabled: true
+    enabled: ${ENABLE_GITHUB_INGESTION}
     config:
       # If repo_name is not set, will collect user activity
       repo_name: ${GITHUB_DEFAULT_REPO}
