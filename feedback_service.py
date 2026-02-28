@@ -5,10 +5,9 @@ Handles thumbs-up/down feedback, PostgreSQL storage, accuracy tracking,
 and weekly fine-tuning dataset export.
 """
 
-import os
 import json
 import logging
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Set, Tuple
 from datetime import datetime, timedelta
 import uuid
 
@@ -90,6 +89,7 @@ class FeedbackService:
         response: str,
         model: str,
         rating: int,
+        reason: Optional[str] = None,
         memory_used: int = 0,
         tools_called: Optional[List[str]] = None,
         user_id: Optional[str] = None,
@@ -107,6 +107,7 @@ class FeedbackService:
             response: Model's response
             model: Model identifier
             rating: Feedback rating (1 for thumbs-up, -1 for thumbs-down)
+            reason: Optional textual reason provided by the user
             memory_used: Memory usage in bytes
             tools_called: List of tools/functions called during response
             user_id: Optional user identifier
@@ -187,7 +188,7 @@ class FeedbackService:
                     SELECT 
                         feedback_id, query, response, model, memory_used,
                         tools_called, rating, timestamp, user_id, session_id,
-                        intent, project, metadata, reason, created_at, updated_at
+                        intent, project, metadata, reason, created_at, updated_at                      
                     FROM feedback
                     WHERE feedback_id = %s
                     """,
@@ -425,13 +426,59 @@ class FeedbackService:
                 return dataset
         finally:
             self._return_connection(conn)
+
+    @staticmethod
+    def _normalize_training_text(value: Optional[str]) -> str:
+        """Normalize text fields used to build SFT training samples."""
+        if value is None:
+            return ""
+        return " ".join(str(value).split()).strip()
+
+    def _filter_training_examples(
+        self,
+        dataset: List[Dict[str, Any]],
+        min_query_chars: int = 10,
+        min_response_chars: int = 20,
+        deduplicate: bool = True,
+    ) -> List[Dict[str, Any]]:
+        """
+        Filter noisy examples from interaction feedback.
+
+        Excludes entries with empty or too-short prompt/response and optionally
+        de-duplicates repeated pairs.
+        """
+        filtered: List[Dict[str, Any]] = []
+        seen: Set[Tuple[str, str]] = set()
+
+        for sample in dataset:
+            query = self._normalize_training_text(sample.get("query"))
+            response = self._normalize_training_text(sample.get("response"))
+
+            if len(query) < min_query_chars or len(response) < min_response_chars:
+                continue
+
+            if deduplicate:
+                fingerprint = (query.casefold(), response.casefold())
+                if fingerprint in seen:
+                    continue
+                seen.add(fingerprint)
+
+            normalized_sample = dict(sample)
+            normalized_sample["query"] = query
+            normalized_sample["response"] = response
+            filtered.append(normalized_sample)
+
+        return filtered
     
     def export_finetuning_dataset(
         self,
         output_path: str,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
-        format: str = "jsonl"
+        format: str = "jsonl",
+        min_query_chars: int = 10,
+        min_response_chars: int = 20,
+        deduplicate: bool = True,
     ) -> Dict[str, Any]:
         """
         Export fine-tuning dataset to file.
@@ -445,16 +492,21 @@ class FeedbackService:
         Returns:
             Export statistics
         """
-        dataset = self.get_weekly_finetuning_dataset(start_date, end_date)
+        raw_dataset = self.get_weekly_finetuning_dataset(start_date, end_date)
+        dataset = self._filter_training_examples(
+            raw_dataset,
+            min_query_chars=min_query_chars,
+            min_response_chars=min_response_chars,
+            deduplicate=deduplicate,
+        )
         
         if format == "jsonl":
             with open(output_path, "w") as f:
                 for sample in dataset:
                     training_sample = {
-                        "messages": [
-                            {"role": "user", "content": sample["query"]},
-                            {"role": "assistant", "content": sample["response"]}
-                        ],
+                        "instruction": "Respond to the user input accurately and helpfully.",
+                        "input": sample["query"],
+                        "output": sample["response"],
                         "weight": sample["weight"],
                         "metadata": {
                             "model": sample["model"],
@@ -481,6 +533,7 @@ class FeedbackService:
             "positive_samples": positive_count,
             "negative_samples": negative_count,
             "total_weight": round(total_weight, 2),
+            "filtered_out_samples": len(raw_dataset) - len(dataset),
             "start_date": start_date.isoformat() if start_date else None,
             "end_date": end_date.isoformat() if end_date else None
         }
