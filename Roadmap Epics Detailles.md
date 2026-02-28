@@ -80,6 +80,15 @@ Exposer un point d'entrée unique et valider le flux complet.
 
 > **Objectif** : Connecter les sources de données externes via MCP, implémenter le routage multi-modèle, et structurer les connaissances en graphe.
 
+### Gouvernance Linear — Traçabilité post-Codex
+
+Pour distinguer clairement les tickets Phase 2 réalisés sous la nouvelle gouvernance, appliquer la convention suivante dans Linear pour **chaque issue Phase 2** :
+
+- Ajouter le label : `post-codex`
+- Renseigner le champ custom : `Delivery Era = post-codex`
+
+Règle opérationnelle : un ticket Phase 2 n'est pas considéré comme prêt pour le reporting (burnup, vélocité, analyse historique) tant que ce label + ce champ ne sont pas positionnés.
+
 ***
 
 ### Epic 2.1 — MCP Gateway (MCPJungle)
