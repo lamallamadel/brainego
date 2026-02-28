@@ -333,7 +333,10 @@ class LoRATrainer:
         days: int = 7,
         ewc_lambda: float = 500.0,
         force: bool = False,
-        job_id: Optional[str] = None
+        job_id: Optional[str] = None,
+        dataset_id: Optional[str] = None,
+        author: Optional[str] = None,
+        validation_metrics: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Train LoRA adapter from feedback data with EWC regularization.
@@ -419,6 +422,13 @@ class LoRATrainer:
                     "days": days,
                     "ewc_lambda": ewc_lambda,
                     "train_loss": train_result.training_loss,
+                    "dataset_id": dataset_id or self.training_status['current_job'],
+                    "validation_metrics": validation_metrics or {
+                        "train_loss": train_result.training_loss
+                    },
+                    "author": author or "learning-engine",
+                    "timestamp": datetime.now().isoformat(),
+                },
                     "dataset_diagnostics": self.last_dataset_diagnostics,
                     "timestamp": datetime.now().isoformat()
                 }

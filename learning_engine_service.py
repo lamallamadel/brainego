@@ -68,6 +68,7 @@ class LearningEngineConfig(BaseModel):
     minio_secret_key: str = Field(default="minioadmin123")
     minio_bucket: str = Field(default="lora-adapters")
     minio_secure: bool = Field(default=False)
+    lora_project: str = Field(default="default")
     
     # Database configuration
     postgres_host: str = Field(default="postgres")
@@ -101,6 +102,7 @@ def load_config() -> LearningEngineConfig:
         minio_access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
         minio_secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin123"),
         minio_bucket=os.getenv("MINIO_BUCKET", "lora-adapters"),
+        lora_project=os.getenv("LORA_PROJECT", "default"),
         postgres_host=os.getenv("POSTGRES_HOST", "postgres"),
         postgres_port=int(os.getenv("POSTGRES_PORT", "5432")),
         postgres_db=os.getenv("POSTGRES_DB", "ai_platform"),
@@ -133,7 +135,9 @@ async def lifespan(app: FastAPI):
             access_key=config.minio_access_key,
             secret_key=config.minio_secret_key,
             bucket_name=config.minio_bucket,
-            secure=config.minio_secure
+            secure=config.minio_secure,
+            model_name=config.model_name,
+            project_name=config.lora_project,
         )
         logger.info("✓ Storage initialized")
         
@@ -186,6 +190,9 @@ class TrainingRequest(BaseModel):
     days: int = Field(default=7, description="Number of days to look back for training data")
     ewc_lambda: Optional[float] = Field(default=None, description="EWC lambda value (overrides config)")
     force: bool = Field(default=False, description="Force training even if sample count is low")
+    dataset_id: Optional[str] = Field(default=None, description="Training dataset identifier")
+    author: Optional[str] = Field(default=None, description="Author for this adapter version")
+    validation_metrics: Dict[str, Any] = Field(default_factory=dict, description="Validation metrics metadata")
 
 
 class JsonlTrainingRequest(BaseModel):
@@ -268,7 +275,10 @@ async def trigger_training(request: TrainingRequest, background_tasks: Backgroun
             days=request.days,
             ewc_lambda=request.ewc_lambda or config.ewc_lambda,
             force=request.force,
-            job_id=job_id
+            job_id=job_id,
+            dataset_id=request.dataset_id,
+            author=request.author,
+            validation_metrics=request.validation_metrics,
         )
         
         return TrainingResponse(
@@ -344,13 +354,13 @@ async def calculate_fisher(request: FisherRequest, background_tasks: BackgroundT
 
 
 @app.get("/adapters", response_model=AdapterListResponse)
-async def list_adapters():
+async def list_adapters(model_name: Optional[str] = None, project: Optional[str] = None):
     """List all available LoRA adapters"""
     if not storage:
         raise HTTPException(status_code=503, detail="Storage not initialized")
     
     try:
-        adapters = await storage.list_adapters()
+        adapters = await storage.list_adapters(model_name=model_name, project_name=project)
         return AdapterListResponse(
             adapters=adapters,
             total=len(adapters)
@@ -362,13 +372,13 @@ async def list_adapters():
 
 
 @app.get("/adapters/{version}")
-async def get_adapter_info(version: str):
+async def get_adapter_info(version: str, model_name: Optional[str] = None, project: Optional[str] = None):
     """Get information about a specific adapter"""
     if not storage:
         raise HTTPException(status_code=503, detail="Storage not initialized")
     
     try:
-        info = await storage.get_adapter_metadata(version)
+        info = await storage.get_adapter_metadata(version, model_name=model_name, project_name=project)
         if not info:
             raise HTTPException(status_code=404, detail=f"Adapter {version} not found")
         
@@ -382,14 +392,14 @@ async def get_adapter_info(version: str):
 
 
 @app.post("/adapters/{version}/deploy")
-async def deploy_adapter(version: str):
+async def deploy_adapter(version: str, model_name: Optional[str] = None, project: Optional[str] = None):
     """Deploy an adapter to MAX Serve (hot-swap)"""
     if not storage:
         raise HTTPException(status_code=503, detail="Storage not initialized")
     
     try:
         # Download adapter
-        local_path = await storage.download_adapter(version)
+        local_path = await storage.download_adapter(version, model_name=model_name, project_name=project)
         
         # Hot-swap with MAX Serve
         # This would integrate with MAX Serve API to load the adapter
