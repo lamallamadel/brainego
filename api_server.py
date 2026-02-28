@@ -524,6 +524,10 @@ class MetricsStore:
         self.total_latency = 0.0
         self.latencies = []
         self.errors = 0
+        self.memory_requests = 0
+        self.memory_hits = 0
+        self.memory_context_items_total = 0
+        self.memory_scores = []
 
     def record_request(self, latency: float, error: bool = False):
         self.request_count += 1
@@ -536,7 +540,78 @@ class MetricsStore:
         else:
             self.errors += 1
 
+    def record_memory_telemetry(
+        self,
+        memory_metadata: Optional[Dict[str, Any]],
+        memory_context: Optional[List[Dict[str, Any]]] = None
+    ):
+        """Record request-level memory telemetry for dashboarding."""
+        if not memory_metadata or not memory_metadata.get("enabled"):
+            return
+
+        self.memory_requests += 1
+
+        memories_retrieved = int(memory_metadata.get("memories_retrieved", 0) or 0)
+        if memories_retrieved > 0:
+            self.memory_hits += 1
+
+        context_size = len(memory_context or [])
+        self.memory_context_items_total += context_size
+
+        avg_score = memory_metadata.get("avg_score")
+        top_score = memory_metadata.get("top_score")
+        if isinstance(avg_score, (int, float)):
+            self.memory_scores.append(float(avg_score))
+        if isinstance(top_score, (int, float)):
+            self.memory_scores.append(float(top_score))
+
+        if len(self.memory_scores) > 2000:
+            self.memory_scores = self.memory_scores[-2000:]
+
     def get_stats(self) -> Dict[str, Any]:
+        memory_telemetry = {
+            "memory_requests": self.memory_requests,
+            "memory_hits": self.memory_hits,
+            "memory_hit_rate": round(self.memory_hits / self.memory_requests, 4)
+            if self.memory_requests
+            else 0.0,
+            "avg_memory_context_size": round(
+                self.memory_context_items_total / self.memory_requests,
+                4
+            ) if self.memory_requests else 0.0,
+            "score_distribution": {
+                "0.0-0.2": 0,
+                "0.2-0.4": 0,
+                "0.4-0.6": 0,
+                "0.6-0.8": 0,
+                "0.8-1.0": 0
+            },
+            "avg_memory_score": 0.0,
+            "p50_memory_score": 0.0,
+            "p95_memory_score": 0.0
+        }
+
+        if self.memory_scores:
+            sorted_scores = sorted(self.memory_scores)
+            score_count = len(sorted_scores)
+            memory_telemetry["avg_memory_score"] = round(sum(sorted_scores) / score_count, 4)
+            memory_telemetry["p50_memory_score"] = round(sorted_scores[int(score_count * 0.50)], 4)
+            memory_telemetry["p95_memory_score"] = round(sorted_scores[int(score_count * 0.95)], 4)
+
+            distribution = memory_telemetry["score_distribution"]
+            for score in sorted_scores:
+                clamped_score = max(0.0, min(1.0, score))
+                if clamped_score < 0.2:
+                    distribution["0.0-0.2"] += 1
+                elif clamped_score < 0.4:
+                    distribution["0.2-0.4"] += 1
+                elif clamped_score < 0.6:
+                    distribution["0.4-0.6"] += 1
+                elif clamped_score < 0.8:
+                    distribution["0.6-0.8"] += 1
+                else:
+                    distribution["0.8-1.0"] += 1
+
         if not self.latencies:
             return {
                 "request_count": self.request_count,
@@ -544,7 +619,8 @@ class MetricsStore:
                 "avg_latency_ms": 0,
                 "p50_latency_ms": 0,
                 "p95_latency_ms": 0,
-                "p99_latency_ms": 0
+                "p99_latency_ms": 0,
+                "memory_telemetry": memory_telemetry
             }
         
         sorted_latencies = sorted(self.latencies)
@@ -556,7 +632,8 @@ class MetricsStore:
             "avg_latency_ms": round(self.total_latency / len(self.latencies), 2),
             "p50_latency_ms": round(sorted_latencies[int(n * 0.50)], 2),
             "p95_latency_ms": round(sorted_latencies[int(n * 0.95)], 2),
-            "p99_latency_ms": round(sorted_latencies[int(n * 0.99)], 2)
+            "p99_latency_ms": round(sorted_latencies[int(n * 0.99)], 2),
+            "memory_telemetry": memory_telemetry
         }
 
 
@@ -1185,7 +1262,9 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             response_data["x-memory-metadata"] = memory_metadata
             if memory_context_data is not None:
                 response_data["memory_context"] = memory_context_data
-        
+
+        metrics.record_memory_telemetry(memory_metadata, memory_context_data)
+
         logger.info(
             f"Request completed in {latency_ms:.2f}ms "
             f"[model={routing_metadata.get('model_id')}, "
