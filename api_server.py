@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import httpx
 
-from agent_router import AgentRouter
+from agent_router import AgentRouter, Intent
 from document_ingestion_service import DocumentIngestionService
 from rag_service import RAGIngestionService
 from memory_service import MemoryService
@@ -61,6 +61,8 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "ai_password")
 RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
 RAG_EMBEDDING_PROVIDER = os.getenv("RAG_EMBEDDING_PROVIDER", "local")
 RAG_EMBEDDING_SERVICE_URL = os.getenv("RAG_EMBEDDING_SERVICE_URL", "http://embedding-service:8003")
+MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://mcpjungle:9100")
+MCP_GATEWAY_API_KEY = os.getenv("MCP_GATEWAY_API_KEY", "")
 
 # Create FastAPI app
 app = FastAPI(
@@ -185,6 +187,16 @@ class UnifiedChatRequest(BaseModel):
         False,
         description="Include retrieved RAG and memory context in non-streaming responses"
     )
+
+
+
+
+class MCPGatewayRequest(BaseModel):
+    action: str = Field(..., description="MCP action: list_tools/call_tool/list_resources/read_resource")
+    server_id: str = Field(..., description="MCP server identifier")
+    tool_name: Optional[str] = Field(None, description="Required for call_tool")
+    uri: Optional[str] = Field(None, description="Required for read_resource")
+    arguments: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Optional tool arguments")
 
 
 class ChatCompletionChoice(BaseModel):
@@ -910,6 +922,30 @@ async def health_check():
     return JSONResponse(content=payload, status_code=status_code)
 
 
+@app.post("/v1/mcp")
+async def proxy_mcp_gateway(request: MCPGatewayRequest):
+    """Proxy MCP calls through the MCPJungle gateway service."""
+    headers = {"content-type": "application/json"}
+    if MCP_GATEWAY_API_KEY:
+        headers["authorization"] = f"Bearer {MCP_GATEWAY_API_KEY}"
+
+    payload = request.model_dump(exclude_none=True)
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(
+                f"{MCP_GATEWAY_URL}/mcp",
+                headers=headers,
+                json=payload,
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as exc:
+        raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"MCP gateway unreachable: {exc}")
+
+
 @app.get("/metrics")
 async def get_metrics():
     """Get performance metrics."""
@@ -1284,6 +1320,11 @@ async def router_info():
             "code": router.routing_config.primary_model.get("code"),
             "reasoning": router.routing_config.primary_model.get("reasoning"),
             "general": router.routing_config.primary_model.get("general")
+        },
+        "routing_plans": {
+            "code": router.get_routing_plan(Intent.CODE),
+            "reasoning": router.get_routing_plan(Intent.REASONING),
+            "general": router.get_routing_plan(Intent.GENERAL)
         },
         "fallback_chains": router.routing_config.fallback_chains,
         "health_check": {

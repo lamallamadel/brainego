@@ -147,14 +147,21 @@ class IntentClassifier:
         # Count keyword matches
         code_matches = len(self.code_pattern.findall(text))
         reasoning_matches = len(self.reasoning_pattern.findall(text))
-        
+
+        # Lightweight structural heuristics
+        if "```" in text:
+            code_matches += 2
+        if any(token in text_lower for token in ["step by step", "first," , "therefore", "hypothesis"]):
+            reasoning_matches += 1
+
         # Calculate confidence scores
         total_words = len(text_lower.split())
         if total_words == 0:
             return Intent.GENERAL, 1.0
-        
-        code_score = min(code_matches / max(total_words * 0.1, 1), 1.0)
-        reasoning_score = min(reasoning_matches / max(total_words * 0.1, 1), 1.0)
+
+        normalizer = max(total_words * 0.1, 1)
+        code_score = min(code_matches / normalizer, 1.0)
+        reasoning_score = min(reasoning_matches / normalizer, 1.0)
         
         # Determine intent
         if code_score >= self.thresholds['medium'] and code_score >= reasoning_score:
@@ -383,6 +390,16 @@ class AgentRouter:
         logger.debug(f"Selected model {model_id} for intent {intent.value}")
         return model_id
     
+
+    def get_routing_plan(self, intent: Intent) -> Dict[str, Any]:
+        """Return primary model and fallback chain for a given intent."""
+        primary_model_id = self.select_model(intent)
+        return {
+            "intent": intent.value,
+            "primary_model": primary_model_id,
+            "fallback_chain": self.get_fallback_chain(primary_model_id)
+        }
+
     def get_fallback_chain(self, model_id: str) -> List[str]:
         """
         Get fallback chain for a model.
