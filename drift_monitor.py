@@ -32,6 +32,11 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
+from drift_intent_metrics import (
+    calculate_population_stability_index,
+    get_intent_distribution,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -310,7 +315,7 @@ class DriftMonitor:
     
     def calculate_psi(
         self,
-        baseline_distribution: Dict[str, int],
+        reference_distribution: Dict[str, int],
         current_distribution: Dict[str, int]
     ) -> float:
         """
@@ -322,34 +327,17 @@ class DriftMonitor:
         PSI > 0.2: Significant change (drift detected)
         
         Args:
-            baseline_distribution: Baseline intent counts
+            reference_distribution: Reference-window intent counts
             current_distribution: Current intent counts
         
         Returns:
             PSI value
         """
-        # Ensure all categories are present in both distributions
-        all_intents = set(baseline_distribution.keys()) | set(current_distribution.keys())
-        
-        psi = 0.0
-        epsilon = 1e-10
-        
-        # Calculate total counts
-        baseline_total = sum(baseline_distribution.values()) or 1
-        current_total = sum(current_distribution.values()) or 1
-        
-        for intent in all_intents:
-            baseline_count = baseline_distribution.get(intent, 0)
-            current_count = current_distribution.get(intent, 0)
-            
-            # Calculate percentages
-            baseline_pct = (baseline_count / baseline_total) + epsilon
-            current_pct = (current_count / current_total) + epsilon
-            
-            # PSI formula: (actual% - expected%) * ln(actual% / expected%)
-            psi += (current_pct - baseline_pct) * np.log(current_pct / baseline_pct)
-        
-        return float(psi)
+        return calculate_population_stability_index(
+            reference_distribution=reference_distribution,
+            current_distribution=current_distribution,
+            categories=self.config.intent_categories,
+        )
     
     def get_intent_distribution(self, feedback_data: List[Dict]) -> Dict[str, int]:
         """
@@ -361,13 +349,10 @@ class DriftMonitor:
         Returns:
             Dictionary mapping intent to count
         """
-        distribution = {}
-        for record in feedback_data:
-            intent = record.get('intent', 'unknown')
-            if intent:
-                distribution[intent] = distribution.get(intent, 0) + 1
-        
-        return distribution
+        return get_intent_distribution(
+            feedback_data,
+            categories=self.config.intent_categories,
+        )
     
     def calculate_accuracy_metrics(self, feedback_data: List[Dict]) -> Dict[str, float]:
         """
