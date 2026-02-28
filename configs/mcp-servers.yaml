@@ -35,6 +35,12 @@ servers:
     enabled: true
     timeout: 30
     max_retries: 3
+    security:
+      read_only: true
+      allowed_repositories:
+        - "${GITHUB_TEST_OWNER}/${GITHUB_TEST_REPO}"
+      blocked_tools:
+        - "github_create_issue"
 
   mcp-notion:
     name: "Notion MCP Server"
@@ -65,6 +71,16 @@ servers:
     enabled: true
     timeout: 30
     max_retries: 3
+    security:
+      read_only: true
+      allowed_workspace_ids:
+        - "${NOTION_TEST_WORKSPACE_ID}"
+      allowed_database_ids:
+        - "${NOTION_TEST_DATABASE_ID}"
+      blocked_tools:
+        - "notion_create_page"
+        - "notion_update_page"
+        - "notion_append_block_children"
 
   mcp-filesystem:
     name: "Filesystem MCP Server"

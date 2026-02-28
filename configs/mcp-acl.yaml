@@ -180,6 +180,43 @@ roles:
       requests_per_minute: 60
       requests_per_hour: 1000
 
+
+  project-agent:
+    description: "Project-scoped read access for MCP GitHub/Notion test environments"
+    permissions:
+      mcp-github:
+        resources:
+          - "repositories"
+          - "issues"
+          - "pull_requests"
+          - "commits"
+          - "code_search"
+        tools:
+          - "github_search_repositories"
+          - "github_get_repository"
+          - "github_list_issues"
+          - "github_get_issue"
+          - "github_list_pull_requests"
+          - "github_get_pull_request"
+          - "github_search_code"
+          - "github_get_file_contents"
+        operations: ["read"]
+      mcp-notion:
+        resources:
+          - "databases"
+          - "pages"
+          - "blocks"
+        tools:
+          - "notion_search"
+          - "notion_get_page"
+          - "notion_get_database"
+          - "notion_query_database"
+          - "notion_get_block_children"
+        operations: ["read"]
+    rate_limits:
+      requests_per_minute: 80
+      requests_per_hour: 1200
+
 # Default role for unauthenticated or unspecified users
 default_role: readonly
 
@@ -189,6 +226,7 @@ api_key_roles:
   sk-admin-key-456: admin
   sk-dev-key-789: developer
   sk-test-key-123: analyst
+  sk-project-agent-key-321: project-agent
 
 # User/agent to role mappings (for JWT-based auth)
 user_roles:
@@ -196,6 +234,7 @@ user_roles:
   developer@example.com: developer
   analyst@example.com: analyst
   writer@example.com: writer
+  project-agent@example.com: project-agent
 
 # Rate limiting settings
 rate_limiting:

@@ -41,6 +41,8 @@ cp .env.mcpjungle.example .env.mcpjungle
 # - GITHUB_TOKEN (for GitHub MCP server)
 # - NOTION_API_KEY (for Notion MCP server)
 # - API_KEYS (customize your API keys)
+# - GITHUB_TEST_OWNER/GITHUB_TEST_REPO (AFR-32 test repo scope)
+# - NOTION_TEST_WORKSPACE_ID/NOTION_TEST_DATABASE_ID (AFR-32 test workspace scope)
 ```
 
 2. **Configure MCP Servers** (optional):
@@ -313,6 +315,13 @@ Get ACL role information for authenticated user.
   - Filesystem: File read/write
 - **Rate Limits**: 200 req/min, 3000 req/hour
 
+#### Project-Agent
+- **Description**: Project-scoped read-only role for MCP GitHub and Notion test assets
+- **Permissions**:
+  - GitHub: Read-only repository/issues/PR/code access constrained to `${GITHUB_TEST_OWNER}/${GITHUB_TEST_REPO}` in `configs/mcp-servers.yaml`
+  - Notion: Read-only database/page/block access constrained to `${NOTION_TEST_WORKSPACE_ID}` and `${NOTION_TEST_DATABASE_ID}`
+- **Rate Limits**: 80 req/min, 1200 req/hour
+
 #### Readonly (Default)
 - **Description**: Read-only access to all sources
 - **Permissions**: Read-only across all servers
@@ -412,6 +421,7 @@ roles:
 
 api_key_roles:
   sk-dev-key-789: developer
+  sk-project-agent-key-321: project-agent
 ```
 
 ## Example Usage
@@ -642,3 +652,8 @@ For issues and questions:
 ---
 
 **Built with**: FastAPI, MCP SDK, OpenTelemetry, Redis, Qdrant, Jaeger
+
+
+## AFR-32 Manual Validation
+
+See `MCP_AFR32_MANUAL_TEST.md` for an end-to-end manual checklist covering server/tool discovery, simple GitHub/Notion calls, and write-denied ACL verification for `project-agent`.
