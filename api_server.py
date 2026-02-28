@@ -308,6 +308,16 @@ class RAGQueryRequest(BaseModel):
     top_p: Optional[float] = Field(0.9, ge=0.0, le=1.0, description="Nucleus sampling parameter")
     max_tokens: Optional[int] = Field(2048, ge=1, description="Maximum tokens to generate")
     include_context: Optional[bool] = Field(True, description="Whether to include retrieved context in response")
+    include_graph_context: Optional[bool] = Field(
+        True,
+        description="Whether to enrich retrieval with Neo4j graph context when available",
+    )
+    graph_limit: int = Field(
+        5,
+        ge=1,
+        le=20,
+        description="Maximum number of graph neighbors to retrieve per extracted entity",
+    )
 
 
 class RAGQueryResponse(BaseModel):
@@ -316,6 +326,11 @@ class RAGQueryResponse(BaseModel):
     created: int
     query: str
     context: Optional[List[Dict[str, Any]]] = Field(None, description="Retrieved context chunks")
+    graph_context: Optional[Dict[str, Any]] = Field(None, description="Optional Neo4j graph context")
+    graph_context_formatted: Optional[str] = Field(
+        None,
+        description="Formatted graph relationships injected into the LLM prompt",
+    )
     response: str = Field(..., description="Generated response augmented with context")
     usage: ChatCompletionUsage
     retrieval_stats: Dict[str, Any] = Field(..., description="Statistics about retrieval")
@@ -1722,10 +1737,44 @@ async def rag_query(request: RAGQueryRequest):
             limit=request.k,
             filters=request.filters
         )
+
+        graph_context = None
+        graph_context_formatted = ""
+        relationships_found = 0
+        entities_in_graph = 0
+
+        should_enrich_with_graph = bool(
+            request.include_graph_context and service.graph_service is not None
+        )
+
+        if should_enrich_with_graph:
+            try:
+                enriched_results = service.search_with_graph_enrichment(
+                    query=request.query,
+                    limit=request.k,
+                    filters=request.filters,
+                    graph_depth=1,
+                    graph_limit=request.graph_limit,
+                )
+                if enriched_results.get("enriched"):
+                    results = enriched_results.get("vector_results", results)
+                    graph_context = enriched_results.get("graph_context")
+                    graph_context_formatted = service.format_graph_context_for_llm(graph_context)
+                    graph_stats = enriched_results.get("stats", {})
+                    relationships_found = graph_stats.get("relationships_found", 0)
+                    entities_in_graph = graph_stats.get("entities_in_graph", 0)
+            except Exception as graph_error:
+                logger.warning("Graph enrichment unavailable, using vector-only retrieval: %s", graph_error)
+
         retrieval_time_ms = (time.time() - retrieval_start) * 1000
-        
-        logger.info(f"Retrieved {len(results)} context chunks in {retrieval_time_ms:.2f}ms")
-        
+
+        logger.info(
+            "Retrieved %s context chunks in %.2fms (graph relationships=%s)",
+            len(results),
+            retrieval_time_ms,
+            relationships_found,
+        )
+
         if not results:
             logger.warning("No context found for query, generating response without RAG")
             context_text = ""
@@ -1733,36 +1782,42 @@ async def rag_query(request: RAGQueryRequest):
                 "chunks_retrieved": 0,
                 "retrieval_time_ms": round(retrieval_time_ms, 2),
                 "top_score": None,
-                "avg_score": None
+                "avg_score": None,
+                "entities_in_graph": entities_in_graph,
+                "relationships_found": relationships_found,
             }
         else:
             context_chunks = []
             for idx, result in enumerate(results):
                 chunk_text = f"[Context {idx + 1}]\n{result['text']}\n"
                 context_chunks.append(chunk_text)
-            
+
             context_text = "\n".join(context_chunks)
-            
+
             scores = [r['score'] for r in results]
             retrieval_stats = {
                 "chunks_retrieved": len(results),
                 "retrieval_time_ms": round(retrieval_time_ms, 2),
                 "top_score": round(scores[0], 4) if scores else None,
                 "avg_score": round(sum(scores) / len(scores), 4) if scores else None,
-                "min_score": round(min(scores), 4) if scores else None
+                "min_score": round(min(scores), 4) if scores else None,
+                "entities_in_graph": entities_in_graph,
+                "relationships_found": relationships_found,
             }
-        
+
         messages_list = []
-        
-        if context_text:
-            system_message = ChatMessage(
-                role="system",
-                content=(
-                    "You are a helpful assistant. Use the following context to answer the user's question. "
-                    "If the context doesn't contain relevant information, say so and provide the best answer you can.\n\n"
-                    f"Context:\n{context_text}"
-                )
+
+        if context_text or graph_context_formatted:
+            system_content = (
+                "You are a helpful assistant. Use the following context to answer the user's question. "
+                "If the context doesn't contain relevant information, say so and provide the best answer you can.\n\n"
             )
+            if context_text:
+                system_content += f"Document Context:\n{context_text}\n\n"
+            if graph_context_formatted:
+                system_content += f"{graph_context_formatted}\n"
+
+            system_message = ChatMessage(role="system", content=system_content)
             messages_list.append(system_message)
         else:
             system_message = ChatMessage(
@@ -1818,6 +1873,8 @@ async def rag_query(request: RAGQueryRequest):
             created=int(time.time()),
             query=request.query,
             context=context_data,
+            graph_context=graph_context if request.include_context else None,
+            graph_context_formatted=graph_context_formatted if request.include_context else None,
             response=generated_text,
             usage=ChatCompletionUsage(
                 prompt_tokens=prompt_tokens,
