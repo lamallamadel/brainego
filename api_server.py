@@ -28,6 +28,8 @@ from graph_service import GraphService
 from feedback_service import FeedbackService
 from circuit_breaker import get_all_circuit_breaker_stats
 from internal_mcp_client import InternalMCPGatewayClient
+from security_heuristics import detect_prompt_injection_patterns
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -1108,6 +1110,16 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         rag_metadata = None
         memory_context_data = None
         memory_metadata = None
+        security_metadata = detect_prompt_injection_patterns(request.messages)
+
+        if security_metadata["suspicious"]:
+            logger.warning(
+                "Suspicious prompt pattern detected: categories=%s risk_score=%s user=%s",
+                security_metadata.get("matched_categories"),
+                security_metadata.get("risk_score"),
+                request.user,
+            )
+
         if request.memory and request.memory.enabled:
             latest_user_message = next(
                 (msg.content for msg in reversed(request.messages) if msg.role == "user"),
@@ -1239,6 +1251,9 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             prompt=prompt,
             params=params
         )
+
+        routing_metadata = dict(routing_metadata or {})
+        routing_metadata["security"] = security_metadata
         
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
@@ -1304,6 +1319,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             "object": "chat.completion",
             "created": created,
             "model": response_model,
+            "x-security-metadata": security_metadata,
             "choices": [
                 {
                     "index": 0,
