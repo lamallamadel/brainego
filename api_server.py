@@ -25,6 +25,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import httpx
+from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
 from agent_router import AgentRouter, Intent
 from document_ingestion_service import DocumentIngestionService
 from rag_service import RAGIngestionService
@@ -139,6 +140,7 @@ WORKSPACE_OPTIONAL_PATHS = {
     "/",
     "/health",
     "/metrics",
+    "/metrics/json",
     "/circuit-breakers",
 }
 WORKSPACE_OPTIONAL_PREFIXES = ("/docs", "/redoc", "/openapi.json")
@@ -548,6 +550,11 @@ def _is_workspace_enforced_path(path: str) -> bool:
     if path in WORKSPACE_REQUIRED_EXACT_PATHS:
         return True
     return path.startswith(WORKSPACE_REQUIRED_PREFIXES)
+
+
+def _is_usage_metered_path(path: str) -> bool:
+    """Return True when endpoint should contribute to usage metering."""
+    return _is_workspace_enforced_path(path)
 
 
 def get_current_workspace_id() -> str:
@@ -1413,7 +1420,158 @@ class MetricsStore:
                 "tokens_per_second": self._tokens_per_second(data["tokens_generated"], data["total_latency"])
             }
         return model_metrics
+
+
+class UsageMeteringMetrics:
+    """Prometheus counters/histograms for per-workspace and per-user usage metering."""
+
+    def __init__(self) -> None:
+        self.requests_total = Counter(
+            "api_usage_requests_total",
+            "Total metered API requests by workspace/user/endpoint/status.",
+            ["workspace_id", "user_id", "endpoint", "method", "status_code"],
+        )
+        self.tokens_total = Counter(
+            "api_usage_tokens_total",
+            "Total token usage by workspace/user and direction (input/output).",
+            ["workspace_id", "user_id", "endpoint", "model", "direction"],
+        )
+        self.tool_calls_total = Counter(
+            "api_usage_tool_calls_total",
+            "Total MCP tool calls by workspace/user/tool and status.",
+            ["workspace_id", "user_id", "server_id", "tool_name", "status"],
+        )
+        self.errors_total = Counter(
+            "api_usage_errors_total",
+            "Total metered API errors by workspace/user/endpoint/error type.",
+            ["workspace_id", "user_id", "endpoint", "method", "error_type"],
+        )
+        self.latency_seconds = Histogram(
+            "api_usage_latency_seconds",
+            "Metered API request latency by workspace/user/endpoint.",
+            ["workspace_id", "user_id", "endpoint", "method"],
+            buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
+        )
+
+    @staticmethod
+    def _sanitize_label(value: Optional[str], fallback: str) -> str:
+        if isinstance(value, str):
+            normalized = value.strip()
+            if normalized:
+                return normalized[:120]
+        return fallback
+
+    def record_request(
+        self,
+        *,
+        workspace_id: Optional[str],
+        user_id: Optional[str],
+        endpoint: Optional[str],
+        method: Optional[str],
+        status_code: int,
+        latency_seconds: float,
+    ) -> None:
+        workspace_label = self._sanitize_label(workspace_id, "unknown_workspace")
+        user_label = self._sanitize_label(user_id, "anonymous")
+        endpoint_label = self._sanitize_label(endpoint, "unknown_endpoint")
+        method_label = self._sanitize_label(
+            method.upper() if isinstance(method, str) else None,
+            "UNKNOWN",
+        )
+        try:
+            normalized_status_code = int(status_code)
+        except (TypeError, ValueError):
+            normalized_status_code = 500
+        status_label = str(normalized_status_code)
+
+        self.requests_total.labels(
+            workspace_id=workspace_label,
+            user_id=user_label,
+            endpoint=endpoint_label,
+            method=method_label,
+            status_code=status_label,
+        ).inc()
+
+        self.latency_seconds.labels(
+            workspace_id=workspace_label,
+            user_id=user_label,
+            endpoint=endpoint_label,
+            method=method_label,
+        ).observe(max(float(latency_seconds), 0.0))
+
+        if normalized_status_code >= 400:
+            self.errors_total.labels(
+                workspace_id=workspace_label,
+                user_id=user_label,
+                endpoint=endpoint_label,
+                method=method_label,
+                error_type=f"http_{normalized_status_code}",
+            ).inc()
+
+    def record_tokens(
+        self,
+        *,
+        workspace_id: Optional[str],
+        user_id: Optional[str],
+        endpoint: Optional[str],
+        model: Optional[str],
+        prompt_tokens: int = 0,
+        completion_tokens: int = 0,
+    ) -> None:
+        workspace_label = self._sanitize_label(workspace_id, "unknown_workspace")
+        user_label = self._sanitize_label(user_id, "anonymous")
+        endpoint_label = self._sanitize_label(endpoint, "unknown_endpoint")
+        model_label = self._sanitize_label(model, "unknown_model")
+
+        if prompt_tokens > 0:
+            self.tokens_total.labels(
+                workspace_id=workspace_label,
+                user_id=user_label,
+                endpoint=endpoint_label,
+                model=model_label,
+                direction="input",
+            ).inc(int(prompt_tokens))
+
+        if completion_tokens > 0:
+            self.tokens_total.labels(
+                workspace_id=workspace_label,
+                user_id=user_label,
+                endpoint=endpoint_label,
+                model=model_label,
+                direction="output",
+            ).inc(int(completion_tokens))
+
+    def record_tool_call(
+        self,
+        *,
+        workspace_id: Optional[str],
+        user_id: Optional[str],
+        server_id: Optional[str],
+        tool_name: Optional[str],
+        status_code: int,
+        ok: bool,
+    ) -> None:
+        workspace_label = self._sanitize_label(workspace_id, "unknown_workspace")
+        user_label = self._sanitize_label(user_id, "anonymous")
+        server_label = self._sanitize_label(server_id, "unknown_server")
+        tool_label = self._sanitize_label(tool_name, "unknown_tool")
+        try:
+            normalized_status_code = int(status_code)
+        except (TypeError, ValueError):
+            normalized_status_code = 500
+        status_label = "success" if ok and normalized_status_code < 400 else "error"
+
+        self.tool_calls_total.labels(
+            workspace_id=workspace_label,
+            user_id=user_label,
+            server_id=server_label,
+            tool_name=tool_label,
+            status=status_label,
+        ).inc()
+
+
 metrics = MetricsStore()
+usage_metering = UsageMeteringMetrics()
 # Initialize services (lazy loading)
 agent_router = None
 rag_service = None
@@ -2136,6 +2294,18 @@ def _record_tool_call_audit(
     }
 
     try:
+        usage_metering.record_tool_call(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            server_id=server_id,
+            tool_name=tool_name,
+            status_code=status_code,
+            ok=ok,
+        )
+    except Exception as metrics_exc:
+        logger.warning("Failed to record usage tool call metric: %s", metrics_exc)
+
+    try:
         get_audit_service().add_event(
             event_type="tool_call",
             request_id=request_id,
@@ -2200,6 +2370,18 @@ async def audit_request_middleware(request: Request, call_next):
             workspace_id = getattr(request.state, "workspace_id", None) or workspace_id
         user_id = auth_user_id or user_id
         duration_ms = round((time.time() - started_at) * 1000, 2)
+        if _is_usage_metered_path(endpoint):
+            try:
+                usage_metering.record_request(
+                    workspace_id=workspace_id,
+                    user_id=user_id,
+                    endpoint=endpoint,
+                    method=method,
+                    status_code=status_code,
+                    latency_seconds=duration_ms / 1000.0,
+                )
+            except Exception as metrics_exc:
+                logger.warning("Failed to record usage request metric: %s", metrics_exc)
         safe_request_payload, request_redactions = _redact_value_for_audit(request_payload)
         safe_audit_error, error_redactions = _redact_value_for_audit(audit_error or "")
         metadata = {
@@ -2328,6 +2510,7 @@ async def root():
             "models": "/v1/models",
             "health": "/health",
             "metrics": "/metrics",
+            "metrics_json": "/metrics/json",
             "router_info": "/router/info",
             "rag_ingest": "/v1/rag/ingest",
             "rag_ingest_batch": "/v1/rag/ingest/batch",
@@ -2355,7 +2538,7 @@ async def root():
             "audit_export": "GET /audit?format=json|csv",
             "mcp_tool_proxy": "POST /internal/mcp/tools/call"
         },
-        "prometheus_metrics": "http://localhost:8001/metrics"
+        "prometheus_metrics": "http://localhost:8000/metrics"
     }
 @app.get("/health")
 async def health_check():
@@ -2565,7 +2748,13 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
         raise HTTPException(status_code=502, detail=f"MCP gateway unreachable: {safe_error}")
 @app.get("/metrics")
 async def get_metrics():
-    """Get performance metrics."""
+    """Prometheus metrics endpoint for scraping."""
+    return Response(content=generate_latest(), media_type=CONTENT_TYPE_LATEST)
+
+
+@app.get("/metrics/json")
+async def get_metrics_json():
+    """Backward-compatible JSON metrics summary."""
     return {
         "metrics": metrics.get_stats(),
         "per_model_metrics": metrics.get_model_stats(),
@@ -3056,6 +3245,14 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             model=response_model,
             completion_tokens=completion_tokens,
             user_id=effective_user_id,
+        )
+        usage_metering.record_tokens(
+            workspace_id=workspace_id,
+            user_id=effective_user_id,
+            endpoint="/v1/chat/completions",
+            model=response_model,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
         )
         if request.memory and request.memory.enabled and request.memory.auto_store:
             try:
@@ -3738,7 +3935,14 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
             ),
             retrieval_stats=retrieval_stats
         )
-        
+        usage_metering.record_tokens(
+            workspace_id=workspace_id,
+            user_id=metering_user_id,
+            endpoint="/v1/rag/query",
+            model=routing_metadata.get("model_name") or routing_metadata.get("model_id"),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
         metrics.record_request((time.time() - start_time) * 1000, user_id=metering_user_id)
         
         return response
@@ -4033,7 +4237,14 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
             ),
             retrieval_stats=retrieval_stats
         )
-        
+        usage_metering.record_tokens(
+            workspace_id=workspace_id,
+            user_id=metering_user_id,
+            endpoint="/v1/rag/query/graph-enriched",
+            model=routing_metadata.get("model_name") or routing_metadata.get("model_id"),
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
         metrics.record_request((time.time() - start_time) * 1000, user_id=metering_user_id)
         
         return response

@@ -179,7 +179,7 @@ async def test_max_model_switching(api_client):
 @pytest.mark.integration
 @pytest.mark.asyncio
 async def test_max_performance_metrics(api_client):
-    """Test performance metrics collection with MAX runtime."""
+    """Test Prometheus + JSON metrics exposure with MAX runtime."""
     # Make multiple requests
     for _ in range(5):
         await api_client.post(
@@ -193,7 +193,16 @@ async def test_max_performance_metrics(api_client):
     # Get metrics
     metrics_response = await api_client.get("/metrics")
     assert metrics_response.status_code == 200
-    
+
+    content_type = metrics_response.headers.get("content-type", "")
+    assert "text/plain" in content_type
+    metrics_text = metrics_response.text
+    assert "api_usage_requests_total" in metrics_text
+    assert "api_usage_tokens_total" in metrics_text
+    assert "api_usage_latency_seconds_bucket" in metrics_text
+
+    metrics_response = await api_client.get("/metrics/json")
+    assert metrics_response.status_code == 200
     metrics = metrics_response.json()["metrics"]
     assert metrics["request_count"] >= 5
     assert "avg_latency_ms" in metrics
