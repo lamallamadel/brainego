@@ -54,6 +54,10 @@ rbac:
       create: true
       automountServiceAccountToken: true
       annotations: {}
+    mamlService:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
     mem0:
       create: true
       automountServiceAccountToken: true
@@ -721,6 +725,137 @@ learningEngine:
     initialDelaySeconds: 20
     periodSeconds: 10
     timeoutSeconds: 5
+
+# MAML Meta-Learning Service
+mamlService:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ai-platform/api-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8005
+    targetPort: 8005
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+      memory: 16Gi
+      cpu: 8
+    requests:
+      nvidia.com/gpu: 1
+      memory: 8Gi
+      cpu: 4
+  env:
+    - name: MAML_SERVICE_HOST
+      value: "0.0.0.0"
+    - name: MAML_SERVICE_PORT
+      value: "8005"
+    - name: MODEL_NAME
+      value: meta-llama/Llama-3.3-8B-Instruct
+    - name: LORA_RANK
+      value: "16"
+    - name: LORA_ALPHA
+      value: "32"
+    - name: LORA_DROPOUT
+      value: "0.05"
+    - name: MAML_INNER_LR
+      value: "1e-3"
+    - name: MAML_OUTER_LR
+      value: "1e-4"
+    - name: MAML_INNER_STEPS
+      value: "5"
+    - name: MAML_OUTER_STEPS
+      value: "100"
+    - name: MAML_TARGET_ACCURACY
+      value: "0.80"
+    - name: MAML_MAX_ADAPTATION_STEPS
+      value: "10"
+    - name: MAML_SCHEDULE_ENABLED
+      value: "false"
+    - name: POSTGRES_HOST
+      value: postgres
+    - name: POSTGRES_PORT
+      value: "5432"
+    - name: POSTGRES_DB
+      value: ai_platform
+    - name: POSTGRES_USER
+      value: ai_user
+    - name: POSTGRES_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: postgres-credentials
+          key: password
+    - name: MINIO_ENDPOINT
+      value: minio:9000
+    - name: MINIO_ACCESS_KEY
+      valueFrom:
+        secretKeyRef:
+          name: minio-credentials
+          key: accessKey
+    - name: MINIO_SECRET_KEY
+      valueFrom:
+        secretKeyRef:
+          name: minio-credentials
+          key: secretKey
+    - name: MINIO_BUCKET
+      value: maml-meta-weights
+    - name: RAG_EMBEDDING_MODEL
+      value: nomic-ai/nomic-embed-text-v1.5
+    - name: RAG_EMBEDDING_PROVIDER
+      value: service
+    - name: RAG_EMBEDDING_SERVICE_URL
+      value: http://embedding-service:8003
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "all"
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"
+  command:
+    - python
+    - maml_service.py
+  persistence:
+    models:
+      enabled: true
+      existingClaim: ""
+      storageClass: ""
+      size: 50Gi
+      mountPath: /models
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8005
+    initialDelaySeconds: 40
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8005
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# MAML Monthly Meta-Training CronJob
+mamlCronJob:
+  enabled: true
+  schedule: "0 2 1 * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  backoffLimit: 1
+  restartPolicy: Never
+  ttlSecondsAfterFinished: 86400
+  command:
+    - /bin/sh
+    - -c
+    - |
+      set -euo pipefail
+      echo "Triggering monthly MAML meta-training run"
+      wget -qO- --header="Content-Type: application/json" \
+        --post-data='{"num_outer_steps":100,"force":true}' \
+        http://maml-service:8005/meta-train
 
 # Mem0 Service (Memory Management)
 mem0:
