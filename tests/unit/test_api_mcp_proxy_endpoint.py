@@ -67,6 +67,24 @@ def test_internal_mcp_tool_proxy_supports_workspace_policy_fields() -> None:
     assert "scopes=request.scopes" in content
 
 
+def test_mcp_proxy_models_include_write_confirmation_fields() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "confirm: bool = Field(" in content
+    assert "confirmation_id: Optional[str] = Field(" in content
+
+
+def test_v1_mcp_proxy_passes_confirmation_fields_to_gateway_payload() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert 'payload["confirm"] = request.confirm' in content
+    assert 'payload["confirmation_id"] = request.confirmation_id' in content
+
+
+def test_internal_mcp_proxy_passes_confirmation_fields_to_gateway_client() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "confirm=request.confirm" in content
+    assert "confirmation_id=request.confirmation_id" in content
+
+
 def test_policy_enforced_for_v1_mcp_call_tool() -> None:
     module = _parse()
     route = _find_route(module, "/v1/mcp", "post")

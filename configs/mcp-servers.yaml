@@ -26,7 +26,6 @@ servers:
       - "github_search_repositories"
       - "github_get_repository"
       - "github_list_issues"
-      - "github_create_issue"
       - "github_get_issue"
       - "github_list_pull_requests"
       - "github_get_pull_request"
@@ -46,6 +45,11 @@ servers:
       denied_operations:
         - "delete"
         - "admin"
+      allowed_operations:
+        - "read"
+        - "list"
+        - "get"
+        - "search"
 
   mcp-notion:
     name: "Notion MCP Server"
@@ -218,6 +222,82 @@ servers:
     enabled: true
     timeout: 30
     max_retries: 3
+
+  mcp-linear:
+    name: "Linear MCP Server"
+    description: "Access Linear projects and create/update issues"
+    type: "stdio"
+    command: "npx"
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-linear"
+    env:
+      LINEAR_API_KEY: "${LINEAR_API_KEY}"
+    capabilities:
+      - "resources"
+      - "tools"
+    resources:
+      - "teams"
+      - "projects"
+      - "issues"
+      - "users"
+    tools:
+      - "linear_list_issues"
+      - "linear_get_issue"
+      - "linear_create_issue"
+      - "linear_update_issue"
+      - "linear_search_issues"
+      - "linear_list_projects"
+      - "linear_list_teams"
+    enabled: true
+    timeout: 30
+    max_retries: 3
+    security:
+      allowed_operations:
+        - "read"
+        - "list"
+        - "get"
+        - "search"
+        - "create"
+        - "update"
+
+  mcp-jira:
+    name: "Jira MCP Server"
+    description: "Access Jira projects and create/update issues"
+    type: "stdio"
+    command: "npx"
+    args:
+      - "-y"
+      - "@modelcontextprotocol/server-jira"
+    env:
+      JIRA_BASE_URL: "${JIRA_BASE_URL}"
+      JIRA_EMAIL: "${JIRA_EMAIL}"
+      JIRA_API_TOKEN: "${JIRA_API_TOKEN}"
+    capabilities:
+      - "resources"
+      - "tools"
+    resources:
+      - "projects"
+      - "issues"
+      - "issue_types"
+    tools:
+      - "jira_search_issues"
+      - "jira_get_issue"
+      - "jira_create_issue"
+      - "jira_update_issue"
+      - "jira_list_projects"
+      - "jira_get_project"
+    enabled: true
+    timeout: 30
+    max_retries: 3
+    security:
+      allowed_operations:
+        - "read"
+        - "list"
+        - "get"
+        - "search"
+        - "create"
+        - "update"
 
 # Global MCP Configuration
 settings:

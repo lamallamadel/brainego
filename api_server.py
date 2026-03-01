@@ -767,6 +767,14 @@ class MCPGatewayRequest(BaseModel):
         default_factory=list,
         description="Optional granted scopes for MCP policy checks",
     )
+    confirm: bool = Field(
+        default=False,
+        description="Explicit confirmation for issue/comment write actions",
+    )
+    confirmation_id: Optional[str] = Field(
+        None,
+        description="Pending confirmation identifier returned by an unconfirmed write request",
+    )
     context: Optional[str] = Field(None, description="Optional caller context for audit logs")
 class ChatCompletionChoice(BaseModel):
     index: int
@@ -1082,6 +1090,14 @@ class MCPToolProxyRequest(BaseModel):
     scopes: Optional[List[str]] = Field(
         default_factory=list,
         description="Optional granted scopes for MCP policy checks",
+    )
+    confirm: bool = Field(
+        default=False,
+        description="Explicit confirmation for issue/comment write actions",
+    )
+    confirmation_id: Optional[str] = Field(
+        None,
+        description="Pending confirmation identifier returned by an unconfirmed write request",
     )
 
 
@@ -2409,7 +2425,10 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
     """Proxy MCP calls through the MCPJungle gateway service."""
     workspace_id = get_current_workspace_id()
     started_at = time.time()
-    payload = request.model_dump(exclude_none=True)
+    payload = request.model_dump(
+        exclude_none=True,
+        exclude={"confirm", "confirmation_id"},
+    )
     payload["workspace_id"] = workspace_id
     gateway_timeout_seconds = 30.0
 
@@ -2435,6 +2454,9 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
             payload["workspace_id"] = resolved_workspace_id
             payload.setdefault("request_id", resolved_request_id)
             payload.setdefault("tool_action", resolved_action)
+            payload["confirm"] = request.confirm
+            if request.confirmation_id:
+                payload["confirmation_id"] = request.confirmation_id
         except HTTPException as exc:
             detail_payload = (
                 exc.detail
@@ -2712,6 +2734,8 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
         context=f"{request.context or 'api.internal'} workspace={request_payload.get('workspace_id', workspace_id)}",
         workspace_id=request_payload.get("workspace_id", workspace_id),
         timeout_seconds=effective_timeout_seconds,
+        confirm=request.confirm,
+        confirmation_id=request.confirmation_id,
     )
     payload = result.to_dict()
     safe_payload, output_redactions = _redact_value_for_audit(payload)
