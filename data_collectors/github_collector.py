@@ -27,10 +27,12 @@ except Exception:  # pragma: no cover - allows unit tests without PyGithub
 DEFAULT_GITHUB_REPO_SYNC_STATE_PATH = "/tmp/brainego_github_repo_sync_state.json"
 DEFAULT_MAX_FILE_SIZE_BYTES = 200_000
 _BINARY_EXTENSIONS = {
+    ".bin",
     ".7z",
     ".a",
     ".bmp",
     ".class",
+    ".dat",
     ".dll",
     ".dylib",
     ".exe",
@@ -55,6 +57,7 @@ _BINARY_EXTENSIONS = {
     ".webp",
     ".woff",
     ".woff2",
+    ".wasm",
     ".zip",
 }
 _EXCLUDED_PATH_PARTS = {
@@ -211,6 +214,9 @@ class GitHubCollector:
         if max_file_size_bytes <= 0:
             raise ValueError("max_file_size_bytes must be greater than 0")
 
+        normalized_include_patterns = self._normalize_glob_patterns(include_patterns)
+        normalized_exclude_patterns = self._normalize_glob_patterns(exclude_patterns)
+
         repo = self.github.get_repo(repo_name)
         target_branch = branch or repo.default_branch
         head_commit_sha = repo.get_branch(target_branch).commit.sha
@@ -248,6 +254,8 @@ class GitHubCollector:
                     comparison = repo.compare(previous_commit, head_commit_sha)
                     changed_paths, deleted_paths = self._extract_compare_paths(
                         getattr(comparison, "files", []),
+                        include_patterns=normalized_include_patterns,
+                        exclude_patterns=normalized_exclude_patterns,
                     )
                     mode = "incremental"
                 except Exception as exc:
@@ -263,8 +271,8 @@ class GitHubCollector:
                             repo=repo,
                             ref=head_commit_sha,
                             max_file_size_bytes=max_file_size_bytes,
-                            include_patterns=include_patterns,
-                            exclude_patterns=exclude_patterns,
+                            include_patterns=normalized_include_patterns,
+                            exclude_patterns=normalized_exclude_patterns,
                         )
                     )
                     deleted_paths = previous_paths - changed_paths
@@ -275,8 +283,8 @@ class GitHubCollector:
                     repo=repo,
                     ref=head_commit_sha,
                     max_file_size_bytes=max_file_size_bytes,
-                    include_patterns=include_patterns,
-                    exclude_patterns=exclude_patterns,
+                    include_patterns=normalized_include_patterns,
+                    exclude_patterns=normalized_exclude_patterns,
                 )
             )
             deleted_paths = previous_paths - changed_paths
@@ -292,8 +300,8 @@ class GitHubCollector:
                 branch=target_branch,
                 workspace_id=normalized_workspace_id,
                 max_file_size_bytes=max_file_size_bytes,
-                include_patterns=include_patterns,
-                exclude_patterns=exclude_patterns,
+                include_patterns=normalized_include_patterns,
+                exclude_patterns=normalized_exclude_patterns,
             )
             if document is None:
                 skipped_paths.add(path)
@@ -347,6 +355,31 @@ class GitHubCollector:
         return f"{repo_full_name}:{workspace_id}:{branch}"
 
     @staticmethod
+    def _normalize_glob_patterns(
+        patterns: Optional[Any],
+    ) -> Optional[List[str]]:
+        """Normalize include/exclude glob patterns from list-like or CSV input."""
+        if patterns is None:
+            return None
+
+        normalized: List[str] = []
+        if isinstance(patterns, str):
+            raw_values = patterns.split(",")
+        elif isinstance(patterns, (list, tuple, set)):
+            raw_values = list(patterns)
+        else:
+            raise ValueError("Patterns must be provided as a list or comma-separated string")
+
+        for raw_pattern in raw_values:
+            if raw_pattern is None:
+                continue
+            pattern = str(raw_pattern).strip()
+            if pattern:
+                normalized.append(pattern)
+
+        return normalized or None
+
+    @staticmethod
     def _load_repo_sync_state(path: Path) -> Dict[str, Any]:
         """Load repository sync state from disk."""
         if not path.exists():
@@ -366,7 +399,12 @@ class GitHubCollector:
         with path.open("w", encoding="utf-8") as state_file:
             json.dump(payload, state_file, indent=2, sort_keys=True)
 
-    def _extract_compare_paths(self, files: Any) -> Tuple[Set[str], Set[str]]:
+    def _extract_compare_paths(
+        self,
+        files: Any,
+        include_patterns: Optional[List[str]],
+        exclude_patterns: Optional[List[str]],
+    ) -> Tuple[Set[str], Set[str]]:
         """Extract changed and removed file paths from GitHub compare response."""
         changed_paths: Set[str] = set()
         deleted_paths: Set[str] = set()
@@ -382,20 +420,34 @@ class GitHubCollector:
             ).strip()
 
             if status == "removed":
-                if self._should_collect_repository_path(path, None, None):
+                if self._should_collect_repository_path(
+                    path=path,
+                    include_patterns=include_patterns,
+                    exclude_patterns=exclude_patterns,
+                ):
                     deleted_paths.add(path)
                 continue
 
             if status == "renamed":
                 if previous_filename and self._should_collect_repository_path(
-                    previous_filename, None, None
+                    path=previous_filename,
+                    include_patterns=include_patterns,
+                    exclude_patterns=exclude_patterns,
                 ):
                     deleted_paths.add(previous_filename)
-                if self._should_collect_repository_path(path, None, None):
+                if self._should_collect_repository_path(
+                    path=path,
+                    include_patterns=include_patterns,
+                    exclude_patterns=exclude_patterns,
+                ):
                     changed_paths.add(path)
                 continue
 
-            if self._should_collect_repository_path(path, None, None):
+            if self._should_collect_repository_path(
+                path=path,
+                include_patterns=include_patterns,
+                exclude_patterns=exclude_patterns,
+            ):
                 changed_paths.add(path)
 
         return changed_paths, deleted_paths
@@ -480,16 +532,38 @@ class GitHubCollector:
 
         if not isinstance(raw_bytes, (bytes, bytearray)):
             return None
-        if b"\x00" in raw_bytes:
+        if GitHubCollector._is_probably_binary_bytes(raw_bytes):
             return None
 
         try:
             text = raw_bytes.decode("utf-8")
         except UnicodeDecodeError:
             text = raw_bytes.decode("utf-8", errors="replace")
+            replacement_ratio = text.count("\ufffd") / max(len(text), 1)
+            if replacement_ratio > 0.05:
+                return None
 
         normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
         return normalized_text if normalized_text.strip() else None
+
+    @staticmethod
+    def _is_probably_binary_bytes(raw_bytes: bytes) -> bool:
+        """Best-effort binary detection for decoded content payloads."""
+        if not raw_bytes:
+            return False
+
+        if b"\x00" in raw_bytes:
+            return True
+
+        sample = raw_bytes[:8192]
+        allowed_controls = {9, 10, 13}
+        control_bytes = sum(
+            1
+            for byte in sample
+            if byte < 32 and byte not in allowed_controls
+        )
+        control_ratio = control_bytes / max(len(sample), 1)
+        return control_ratio > 0.30
 
     @staticmethod
     def _detect_language(path: str) -> str:
