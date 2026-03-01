@@ -8,6 +8,7 @@ import os
 import time
 import json
 import uuid
+import re
 import logging
 import asyncio
 import re
@@ -685,6 +686,59 @@ document_ingestion_service = None
 mcp_gateway_client = None
 # Graceful shutdown flag
 shutdown_in_progress = False
+
+
+OUTPUT_GUARDRAIL_PATTERNS = [
+    (
+        "shell.rm_rf",
+        re.compile(r"(?i)(?:^|[\s;|&`])rm\s+-rf\s+[^\n]+"),
+    ),
+    (
+        "shell.disk_wipe",
+        re.compile(r"(?i)(?:mkfs\.[a-z0-9]+\s+/dev/\w+|dd\s+if=/dev/(?:zero|random)\s+of=/dev/\w+)"),
+    ),
+    (
+        "shell.system_shutdown",
+        re.compile(r"(?i)(?:shutdown\s+-[hr]|reboot\b|halt\b)"),
+    ),
+    (
+        "sql.drop_database",
+        re.compile(r"(?i)\bdrop\s+database\b"),
+    ),
+    (
+        "sql.drop_table",
+        re.compile(r"(?i)\bdrop\s+table\b"),
+    ),
+]
+
+
+def apply_output_guardrails(generated_text: str) -> tuple[str, Optional[Dict[str, Any]]]:
+    """Detect potentially destructive commands and rewrite response with a safety warning."""
+    matched = []
+    for label, pattern in OUTPUT_GUARDRAIL_PATTERNS:
+        if pattern.search(generated_text):
+            matched.append(label)
+
+    if not matched:
+        return generated_text, None
+
+    unique_patterns = sorted(set(matched))
+    warning = (
+        "⚠️ I can’t provide potentially destructive shell or database commands. "
+        "If your goal is legitimate maintenance or recovery, use documented backups, "
+        "least-privilege credentials, and a staged validation plan in a non-production "
+        "environment before any change."
+    )
+    return (
+        warning,
+        {
+            "blocked": True,
+            "reason": "dangerous_code_or_commands",
+            "matched_patterns": unique_patterns,
+        },
+    )
+
+
 def get_agent_router() -> AgentRouter:
     """Get or initialize Agent Router."""
     global agent_router
@@ -1334,6 +1388,9 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             params=params
         )
 
+        generated_text, guardrail_metadata = apply_output_guardrails(generated_text)
+        if guardrail_metadata:
+            routing_metadata["output_guardrail"] = guardrail_metadata
         routing_metadata = dict(routing_metadata or {})
         routing_metadata["security"] = security_metadata
         
@@ -1892,6 +1949,10 @@ async def rag_query(request: RAGQueryRequest):
             prompt=prompt,
             params=params
         )
+
+        generated_text, guardrail_metadata = apply_output_guardrails(generated_text)
+        if guardrail_metadata:
+            routing_metadata["output_guardrail"] = guardrail_metadata
         generation_time_ms = (time.time() - generation_start) * 1000
         
         retrieval_stats["generation_time_ms"] = round(generation_time_ms, 2)
@@ -2132,6 +2193,10 @@ async def rag_graph_query(request: RAGGraphQueryRequest):
             prompt=prompt,
             params=params
         )
+
+        generated_text, guardrail_metadata = apply_output_guardrails(generated_text)
+        if guardrail_metadata:
+            routing_metadata["output_guardrail"] = guardrail_metadata
         generation_time_ms = (time.time() - generation_start) * 1000
         
         retrieval_stats["generation_time_ms"] = round(generation_time_ms, 2)
