@@ -368,6 +368,10 @@ class MemoryService:
                                 else:
                                     time_diff_hours = 0.0
 
+                                parsed_metadata = json.loads(redis_data.get("metadata", "{}"))
+                                if not self._matches_metadata_filters(parsed_metadata, filters):
+                                    continue
+
                                 cosine_score = result.get("score", 0.5)
                                 combined_score, cosine_score, temporal_score = combined_memory_score(
                                     cosine_similarity=cosine_score,
@@ -385,15 +389,18 @@ class MemoryService:
                                     "temporal_score": round(temporal_score, 4),
                                     "timestamp": redis_data.get("timestamp"),
                                     "user_id": redis_data.get("user_id"),
-                                    "metadata": json.loads(redis_data.get("metadata", "{}")),
+                                    "metadata": parsed_metadata,
                                     "messages": json.loads(redis_data.get("messages", "[]"))
                                 })
                         else:
                             # No Redis data, use Mem0 result as-is
+                            result_metadata = result.get("metadata", {})
+                            if not self._matches_metadata_filters(result_metadata, filters):
+                                continue
                             enhanced_results.append({
                                 "text": result.get("memory", result.get("text", "")),
                                 "score": result.get("score", 0.5),
-                                "metadata": result.get("metadata", {})
+                                "metadata": result_metadata
                             })
                     
                     # Sort by combined score
@@ -411,6 +418,27 @@ class MemoryService:
         except Exception as e:
             logger.error(f"Error searching memory: {e}", exc_info=True)
             raise
+
+    @staticmethod
+    def _matches_metadata_filters(
+        metadata: Optional[Dict[str, Any]],
+        filters: Optional[Dict[str, Any]],
+    ) -> bool:
+        """Return True when metadata satisfies equality/any filter clauses."""
+        if not filters:
+            return True
+
+        effective_metadata = metadata or {}
+        for key, expected in filters.items():
+            actual = effective_metadata.get(key)
+            if isinstance(expected, dict) and "any" in expected:
+                allowed_values = set(expected.get("any", []))
+                if actual not in allowed_values:
+                    return False
+                continue
+            if actual != expected:
+                return False
+        return True
     
     def _search_memory_fallback(
         self,

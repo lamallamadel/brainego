@@ -61,10 +61,12 @@ class InternalMCPGatewayClient:
             api_key=os.getenv("MCP_GATEWAY_API_KEY"),
         )
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self, workspace_id: Optional[str] = None) -> Dict[str, str]:
         headers = {"content-type": "application/json"}
         if self.api_key:
             headers["x-api-key"] = self.api_key
+        if workspace_id:
+            headers["x-workspace-id"] = workspace_id
         return headers
 
     def is_tool_allowed(self, tool_name: str) -> bool:
@@ -78,6 +80,7 @@ class InternalMCPGatewayClient:
         tool_name: str,
         arguments: Optional[Dict[str, Any]] = None,
         context: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> MCPToolResult:
         started_at = time.perf_counter()
         payload = {
@@ -85,6 +88,8 @@ class InternalMCPGatewayClient:
             "tool_name": tool_name,
             "arguments": arguments or {},
         }
+        if workspace_id:
+            payload["workspace_id"] = workspace_id
 
         if not self.is_tool_allowed(tool_name):
             latency_ms = (time.perf_counter() - started_at) * 1000
@@ -109,7 +114,7 @@ class InternalMCPGatewayClient:
                 response = await client.post(
                     f"{self.gateway_base_url}/mcp/tools/call",
                     json=payload,
-                    headers=self._headers(),
+                    headers=self._headers(workspace_id=workspace_id),
                 )
 
             latency_ms = (time.perf_counter() - started_at) * 1000
