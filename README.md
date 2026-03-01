@@ -100,6 +100,7 @@ python load_test.py --requests 1000 --concurrency 32 --max-tokens 200
 For guided pilot onboarding (<2 hours), use:
 
 - Runbook: `docs/pilot_readiness_runbook.md`
+- Repo-RAG golden set: `docs/repo_rag_golden_set.md`
 - Scripts:
   - `bash scripts/pilot/pilot_preflight.sh`
   - `python3 scripts/pilot/demo_mcp_rbac_policy.py`
