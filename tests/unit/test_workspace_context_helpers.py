@@ -8,6 +8,7 @@ import pytest
 from fastapi import HTTPException
 
 from workspace_context import (
+    build_rag_retrieval_filters,
     ensure_workspace_filter,
     ensure_workspace_metadata,
     get_valid_workspace_ids,
@@ -51,6 +52,43 @@ def test_ensure_workspace_filter_rejects_mismatched_workspace() -> None:
 
     assert exc_info.value.status_code == 400
     assert "workspace_id filter does not match" in str(exc_info.value.detail)
+
+
+def test_build_rag_retrieval_filters_merges_repo_path_lang_and_workspace() -> None:
+    merged = build_rag_retrieval_filters(
+        filters={"project": "brainego"},
+        workspace_id="workspace-123",
+        repo="acme/repo",
+        path=["src/api.py", "src/rag.py"],
+        lang="python",
+    )
+    assert merged["project"] == "brainego"
+    assert merged["repo"] == "acme/repo"
+    assert merged["path"] == {"any": ["src/api.py", "src/rag.py"]}
+    assert merged["lang"] == "python"
+    assert merged["workspace_id"] == "workspace-123"
+
+
+def test_build_rag_retrieval_filters_detects_conflicting_repo_filter() -> None:
+    with pytest.raises(HTTPException) as exc_info:
+        build_rag_retrieval_filters(
+            filters={"repo": "other/repo"},
+            workspace_id="workspace-123",
+            repo="acme/repo",
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "filters.repo conflicts with retrieval repo filter" in str(exc_info.value.detail)
+
+
+def test_build_rag_retrieval_filters_accepts_equivalent_existing_any_filter() -> None:
+    merged = build_rag_retrieval_filters(
+        filters={"lang": {"any": ["python", "typescript"]}},
+        workspace_id="workspace-123",
+        lang=["typescript", "python"],
+    )
+    assert merged["lang"] == {"any": ["python", "typescript"]}
+    assert merged["workspace_id"] == "workspace-123"
 
 
 def test_ensure_workspace_metadata_rejects_mismatched_workspace() -> None:

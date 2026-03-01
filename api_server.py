@@ -16,7 +16,7 @@ import logging
 import asyncio
 import re
 from contextvars import ContextVar
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple, Union
 from datetime import datetime
 import uvicorn
 import signal
@@ -41,6 +41,7 @@ from internal_mcp_client import InternalMCPGatewayClient
 from tool_policy_engine import ToolPolicyEngine, load_default_tool_policy_engine
 from security_heuristics import detect_prompt_injection_patterns
 from workspace_context import (
+    build_rag_retrieval_filters,
     ensure_workspace_filter,
     ensure_workspace_metadata,
     get_valid_workspace_ids,
@@ -664,6 +665,11 @@ class ChatMessage(BaseModel):
     role: str = Field(..., description="Role of the message author (system, user, assistant)")
     content: str = Field(..., description="Content of the message")
     name: Optional[str] = Field(None, description="Optional name of the participant")
+
+
+RetrievalFilterValue = Union[str, List[str], Dict[str, List[str]]]
+
+
 class ChatRAGOptions(BaseModel):
     enabled: bool = Field(False, description="Enable retrieval-augmented generation for this request")
     query: Optional[str] = Field(
@@ -674,9 +680,21 @@ class ChatRAGOptions(BaseModel):
     filters: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Optional metadata filters. workspace_id is required for strict "
-            "multi-workspace isolation."
+            "Optional metadata filters. workspace_id is enforced from the request "
+            "context for strict multi-workspace isolation."
         ),
+    )
+    repo: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional repository selector(s) for retrieval filtering.",
+    )
+    path: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional file path selector(s) for retrieval filtering.",
+    )
+    lang: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional language selector(s) for retrieval filtering.",
     )
     min_score: Optional[float] = Field(
         None,
@@ -746,6 +764,18 @@ class UnifiedChatRequest(BaseModel):
     use_temporal_decay: bool = Field(True, description="Apply temporal decay for memory scoring")
     rag_k: int = Field(5, ge=1, le=20, description="Number of chunks to retrieve from RAG")
     rag_filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters for RAG")
+    rag_repo: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional repository selector(s) for RAG retrieval.",
+    )
+    rag_path: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional file path selector(s) for RAG retrieval.",
+    )
+    rag_lang: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional language selector(s) for RAG retrieval.",
+    )
     rag_min_score: Optional[float] = Field(
         None,
         ge=0.0,
@@ -847,7 +877,19 @@ class RAGSearchRequest(BaseModel):
     limit: int = Field(10, ge=1, le=100, description="Maximum number of results")
     filters: Optional[Dict[str, Any]] = Field(
         None,
-        description="Optional metadata filters (must include workspace_id).",
+        description="Optional metadata filters (workspace_id is enforced automatically).",
+    )
+    repo: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional repository selector(s) for retrieval filtering.",
+    )
+    path: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional file path selector(s) for retrieval filtering.",
+    )
+    lang: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional language selector(s) for retrieval filtering.",
     )
 class RAGSearchResponse(BaseModel):
     results: List[Dict[str, Any]]
@@ -858,7 +900,19 @@ class RAGSemanticSearchRequest(BaseModel):
     top_k: int = Field(10, ge=1, le=100, description="Top-k nearest neighbors to return")
     filters: Optional[Dict[str, Any]] = Field(
         None,
-        description="Optional metadata filters (must include workspace_id).",
+        description="Optional metadata filters (workspace_id is enforced automatically).",
+    )
+    repo: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional repository selector(s) for retrieval filtering.",
+    )
+    path: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional file path selector(s) for retrieval filtering.",
+    )
+    lang: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional language selector(s) for retrieval filtering.",
     )
     collection_name: Optional[str] = Field(None, description="Optional Qdrant collection override")
 class RAGSemanticSearchResponse(BaseModel):
@@ -874,7 +928,19 @@ class RAGQueryRequest(BaseModel):
     k: int = Field(5, ge=1, le=20, description="Number of top results to retrieve (top-k)")
     filters: Optional[Dict[str, Any]] = Field(
         None,
-        description="Optional metadata filters (must include workspace_id).",
+        description="Optional metadata filters (workspace_id is enforced automatically).",
+    )
+    repo: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional repository selector(s) for retrieval filtering.",
+    )
+    path: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional file path selector(s) for retrieval filtering.",
+    )
+    lang: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional language selector(s) for retrieval filtering.",
     )
     temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
     top_p: Optional[float] = Field(0.9, ge=0.0, le=1.0, description="Nucleus sampling parameter")
@@ -909,7 +975,19 @@ class RAGGraphSearchRequest(BaseModel):
     limit: int = Field(10, ge=1, le=100, description="Maximum number of vector search results")
     filters: Optional[Dict[str, Any]] = Field(
         None,
-        description="Optional metadata filters (must include workspace_id).",
+        description="Optional metadata filters (workspace_id is enforced automatically).",
+    )
+    repo: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional repository selector(s) for retrieval filtering.",
+    )
+    path: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional file path selector(s) for retrieval filtering.",
+    )
+    lang: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional language selector(s) for retrieval filtering.",
     )
     graph_depth: int = Field(1, ge=1, le=3, description="Maximum depth for graph traversal")
     graph_limit: int = Field(10, ge=1, le=50, description="Maximum number of graph neighbors per entity")
@@ -926,7 +1004,19 @@ class RAGGraphQueryRequest(BaseModel):
     k: int = Field(5, ge=1, le=20, description="Number of top results to retrieve (top-k)")
     filters: Optional[Dict[str, Any]] = Field(
         None,
-        description="Optional metadata filters (must include workspace_id).",
+        description="Optional metadata filters (workspace_id is enforced automatically).",
+    )
+    repo: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional repository selector(s) for retrieval filtering.",
+    )
+    path: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional file path selector(s) for retrieval filtering.",
+    )
+    lang: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional language selector(s) for retrieval filtering.",
     )
     graph_depth: int = Field(1, ge=1, le=3, description="Maximum depth for graph traversal")
     graph_limit: int = Field(10, ge=1, le=50, description="Maximum number of graph neighbors per entity")
@@ -3505,7 +3595,13 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     detail="RAG requires at least one user message or rag.query"
                 )
             retrieval_start = time.time()
-            rag_filters = ensure_workspace_filter(request.rag.filters, workspace_id)
+            rag_filters = build_rag_retrieval_filters(
+                request.rag.filters,
+                workspace_id,
+                repo=request.rag.repo,
+                path=request.rag.path,
+                lang=request.rag.lang,
+            )
             rag_results = service.search_documents(
                 query=retrieval_query,
                 limit=request.rag.k,
@@ -3782,6 +3878,9 @@ async def unified_chat(request: UnifiedChatRequest, raw_request: Request):
             enabled=request.use_rag,
             k=request.rag_k,
             filters=request.rag_filters,
+            repo=request.rag_repo,
+            path=request.rag_path,
+            lang=request.rag_lang,
             min_score=request.rag_min_score,
             include_context=request.include_context
         ) if request.use_rag else None,
@@ -4019,7 +4118,13 @@ async def rag_search(request: RAGSearchRequest):
     try:
         workspace_id = get_current_workspace_id()
         workspace_id = _ensure_workspace_active(workspace_id, context="/v1/rag/search")
-        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
+        rag_filters = build_rag_retrieval_filters(
+            request.filters,
+            workspace_id,
+            repo=request.repo,
+            path=request.path,
+            lang=request.lang,
+        )
         service = get_rag_service()
         results = service.search_documents(
             query=request.query,
@@ -4067,7 +4172,13 @@ async def rag_semantic_search(request: RAGSemanticSearchRequest):
     try:
         workspace_id = get_current_workspace_id()
         workspace_id = _ensure_workspace_active(workspace_id, context="/v1/rag/semantic-search")
-        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
+        rag_filters = build_rag_retrieval_filters(
+            request.filters,
+            workspace_id,
+            repo=request.repo,
+            path=request.path,
+            lang=request.lang,
+        )
         service = get_rag_service()
         results = service.semantic_search(
             query=request.query,
@@ -4195,7 +4306,13 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
             workspace_id,
             context="/v1/rag/query",
         )
-        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
+        rag_filters = build_rag_retrieval_filters(
+            request.filters,
+            workspace_id,
+            repo=request.repo,
+            path=request.path,
+            lang=request.lang,
+        )
         if SAFETY_GATEWAY_ENABLED:
             rag_messages = request.messages or []
             rag_payload_text = "\n".join([
@@ -4445,7 +4562,13 @@ async def rag_graph_search(request: RAGGraphSearchRequest):
             workspace_id,
             context="/v1/rag/search/graph-enriched",
         )
-        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
+        rag_filters = build_rag_retrieval_filters(
+            request.filters,
+            workspace_id,
+            repo=request.repo,
+            path=request.path,
+            lang=request.lang,
+        )
         service = get_rag_service()
         
         if not service.graph_service:
@@ -4542,7 +4665,13 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
             workspace_id,
             context="/v1/rag/query/graph-enriched",
         )
-        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
+        rag_filters = build_rag_retrieval_filters(
+            request.filters,
+            workspace_id,
+            repo=request.repo,
+            path=request.path,
+            lang=request.lang,
+        )
         if SAFETY_GATEWAY_ENABLED:
             rag_messages = request.messages or []
             rag_payload_text = "\n".join([
