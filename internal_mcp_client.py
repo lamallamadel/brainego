@@ -40,12 +40,15 @@ class InternalMCPGatewayClient:
     def __init__(
         self,
         gateway_base_url: str,
-        allowed_tools: Set[str],
+        allowed_tools: Optional[Set[str]] = None,
         timeout_seconds: float = 10.0,
         api_key: Optional[str] = None,
     ):
         self.gateway_base_url = gateway_base_url.rstrip("/")
-        self.allowed_tools = {tool.strip() for tool in allowed_tools if tool.strip()}
+        # Kept for backward compatibility only; policy enforcement is centralized in api_server.
+        self.allowed_tools = {
+            tool.strip() for tool in (allowed_tools or set()) if tool and tool.strip()
+        }
         self.timeout_seconds = timeout_seconds
         self.api_key = api_key
 
@@ -64,6 +67,7 @@ class InternalMCPGatewayClient:
     def _headers(self) -> Dict[str, str]:
         headers = {"content-type": "application/json"}
         if self.api_key:
+            headers["authorization"] = f"Bearer {self.api_key}"
             headers["x-api-key"] = self.api_key
         return headers
 
@@ -85,24 +89,6 @@ class InternalMCPGatewayClient:
             "tool_name": tool_name,
             "arguments": arguments or {},
         }
-
-        if not self.is_tool_allowed(tool_name):
-            latency_ms = (time.perf_counter() - started_at) * 1000
-            error = f"Tool '{tool_name}' is not allowed for API-routed MCP calls"
-            logger.warning(
-                "mcp_tool_call tool=%s status=blocked latency_ms=%.2f error=%s context=%s",
-                tool_name,
-                latency_ms,
-                error,
-                context,
-            )
-            return MCPToolResult(
-                ok=False,
-                tool_name=tool_name,
-                latency_ms=latency_ms,
-                status_code=403,
-                error=error,
-            )
 
         try:
             async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
