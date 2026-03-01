@@ -4,16 +4,14 @@ OpenAI-compatible API server for MAX Serve with multi-model routing.
 Supports Llama 3.3 8B (general), Qwen 2.5 Coder 7B (code), DeepSeek R1 7B (reasoning).
 Exposes /v1/chat/completions, /v1/rag/ingest, and /health endpoints.
 """
-
 import os
 import time
 import json
 import uuid
 import logging
 import asyncio
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime
-
 import uvicorn
 import signal
 from fastapi import FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
@@ -21,7 +19,6 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import httpx
-
 from agent_router import AgentRouter, Intent
 from document_ingestion_service import DocumentIngestionService
 from rag_service import RAGIngestionService
@@ -39,41 +36,51 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
 # Configuration
 AGENT_ROUTER_CONFIG = os.getenv("AGENT_ROUTER_CONFIG", "configs/agent-router.yaml")
-
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
 QDRANT_COLLECTION = os.getenv("QDRANT_COLLECTION", "documents")
-
 REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
 REDIS_PORT = int(os.getenv("REDIS_PORT", "6379"))
 REDIS_DB = int(os.getenv("REDIS_DB", "0"))
-
 NEO4J_URI = os.getenv("NEO4J_URI", "bolt://localhost:7687")
 NEO4J_USER = os.getenv("NEO4J_USER", "neo4j")
 NEO4J_PASSWORD = os.getenv("NEO4J_PASSWORD", "neo4j_password")
-
 POSTGRES_HOST = os.getenv("POSTGRES_HOST", "localhost")
 POSTGRES_PORT = int(os.getenv("POSTGRES_PORT", "5432"))
 POSTGRES_DB = os.getenv("POSTGRES_DB", "ai_platform")
 POSTGRES_USER = os.getenv("POSTGRES_USER", "ai_user")
 POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "ai_password")
-
 RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
 RAG_EMBEDDING_PROVIDER = os.getenv("RAG_EMBEDDING_PROVIDER", "local")
 RAG_EMBEDDING_SERVICE_URL = os.getenv("RAG_EMBEDDING_SERVICE_URL", "http://embedding-service:8003")
 MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://mcpjungle:9100")
 MCP_GATEWAY_API_KEY = os.getenv("MCP_GATEWAY_API_KEY", "")
-
+SAFETY_GATEWAY_ENABLED = os.getenv("SAFETY_GATEWAY_ENABLED", "true").lower() == "true"
+SAFETY_MAX_TEXT_CHARS = int(os.getenv("SAFETY_MAX_TEXT_CHARS", "12000"))
+DEFAULT_SAFETY_WARN_TERMS = [
+    "password",
+    "token",
+    "credential",
+    "social security",
+    "credit card",
+    "api key",
+]
+DEFAULT_SAFETY_BLOCK_TERMS = [
+    "build a bomb",
+    "how to make a bomb",
+    "kill someone",
+    "self-harm instructions",
+    "bypass school firewall",
+    "steal password",
+]
 # Create FastAPI app
 app = FastAPI(
     title="OpenAI-Compatible API for MAX Serve with Agent Router",
     description="Multi-model API with intelligent routing: Llama 3.3 8B (general), Qwen 2.5 Coder 7B (code), DeepSeek R1 7B (reasoning)",
     version="2.0.0"
 )
-
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
@@ -82,14 +89,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
 # Request/Response Models
 class ChatMessage(BaseModel):
     role: str = Field(..., description="Role of the message author (system, user, assistant)")
     content: str = Field(..., description="Content of the message")
     name: Optional[str] = Field(None, description="Optional name of the participant")
-
-
 class ChatRAGOptions(BaseModel):
     enabled: bool = Field(False, description="Enable retrieval-augmented generation for this request")
     query: Optional[str] = Field(
@@ -108,8 +112,6 @@ class ChatRAGOptions(BaseModel):
         False,
         description="Include retrieved context chunks in non-streaming response"
     )
-
-
 class ChatMemoryOptions(BaseModel):
     enabled: bool = Field(False, description="Enable long-term memory for this request")
     top_k: int = Field(5, ge=1, le=20, description="Number of memories to retrieve")
@@ -131,8 +133,6 @@ class ChatMemoryOptions(BaseModel):
         True,
         description="Apply temporal decay when ranking retrieved memories"
     )
-
-
 class ChatCompletionRequest(BaseModel):
     model: str = Field(default="llama-3.3-8b-instruct", description="Model to use")
     messages: List[ChatMessage] = Field(..., description="List of messages")
@@ -150,11 +150,8 @@ class ChatCompletionRequest(BaseModel):
         None,
         description="Optional per-request long-term memory options"
     )
-
-
 class UnifiedChatRequest(BaseModel):
     """Unified chat request with opt-in controls for transparent orchestration."""
-
     model: str = Field(default="llama-3.3-8b-instruct", description="Model to use")
     messages: List[ChatMessage] = Field(..., description="List of messages")
     temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
@@ -190,30 +187,20 @@ class UnifiedChatRequest(BaseModel):
         False,
         description="Include retrieved RAG and memory context in non-streaming responses"
     )
-
-
-
-
 class MCPGatewayRequest(BaseModel):
     action: str = Field(..., description="MCP action: list_tools/call_tool/list_resources/read_resource")
     server_id: str = Field(..., description="MCP server identifier")
     tool_name: Optional[str] = Field(None, description="Required for call_tool")
     uri: Optional[str] = Field(None, description="Required for read_resource")
     arguments: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Optional tool arguments")
-
-
 class ChatCompletionChoice(BaseModel):
     index: int
     message: ChatMessage
     finish_reason: str
-
-
 class ChatCompletionUsage(BaseModel):
     prompt_tokens: int
     completion_tokens: int
     total_tokens: int
-
-
 class ChatCompletionResponse(BaseModel):
     id: str
     object: str = "chat.completion"
@@ -221,24 +208,16 @@ class ChatCompletionResponse(BaseModel):
     model: str
     choices: List[ChatCompletionChoice]
     usage: ChatCompletionUsage
-
-
 class HealthResponse(BaseModel):
     status: str
     timestamp: str
     model: str
     max_serve_status: str
-
-
 class RAGIngestRequest(BaseModel):
     text: str = Field(..., description="Text content to ingest")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Optional metadata for the document")
-
-
 class RAGIngestBatchRequest(BaseModel):
     documents: List[Dict[str, Any]] = Field(..., description="List of documents to ingest")
-
-
 class RAGIngestResponse(BaseModel):
     status: str
     document_id: str
@@ -246,61 +225,43 @@ class RAGIngestResponse(BaseModel):
     points_stored: int
     point_ids: List[str]
     metadata: Dict[str, Any]
-
-
 class RAGIngestBatchResponse(BaseModel):
     status: str
     documents_processed: int
     total_chunks: int
     total_points: int
     results: List[Dict[str, Any]]
-
-
 class DocumentIngestTextRequest(BaseModel):
     text: str = Field(..., description="Raw text content to ingest")
     source: str = Field(..., description="Source identifier (e.g. slack, github, upload)")
     project: str = Field(..., description="Project identifier")
     created_at: Optional[str] = Field(None, description="Optional document creation timestamp")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Optional additional metadata")
-
-
 class DocumentIngestResponse(BaseModel):
     document_id: str
     metadata: Dict[str, Any]
     chunks: List[Dict[str, Any]]
     chunks_created: int
-
-
 class RAGSearchRequest(BaseModel):
     query: str = Field(..., description="Search query text")
     limit: int = Field(10, ge=1, le=100, description="Maximum number of results")
     filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
-
-
 class RAGSearchResponse(BaseModel):
     results: List[Dict[str, Any]]
     query: str
     limit: int
-
-
 class RAGSemanticSearchRequest(BaseModel):
     query: str = Field(..., description="Search query text")
     top_k: int = Field(10, ge=1, le=100, description="Top-k nearest neighbors to return")
     filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
     collection_name: Optional[str] = Field(None, description="Optional Qdrant collection override")
-
-
 class RAGSemanticSearchResponse(BaseModel):
     results: List[Dict[str, Any]]
     query: str
     top_k: int
     collection_name: Optional[str] = None
-
-
 class RAGStatsResponse(BaseModel):
     collection_info: Dict[str, Any]
-
-
 class RAGQueryRequest(BaseModel):
     query: str = Field(..., description="Query text to search for relevant context")
     messages: Optional[List[ChatMessage]] = Field(None, description="Optional chat history messages")
@@ -320,8 +281,6 @@ class RAGQueryRequest(BaseModel):
         le=20,
         description="Maximum number of graph neighbors to retrieve per extracted entity",
     )
-
-
 class RAGQueryResponse(BaseModel):
     id: str
     object: str = "rag.query.completion"
@@ -336,8 +295,6 @@ class RAGQueryResponse(BaseModel):
     response: str = Field(..., description="Generated response augmented with context")
     usage: ChatCompletionUsage
     retrieval_stats: Dict[str, Any] = Field(..., description="Statistics about retrieval")
-
-
 class RAGGraphSearchRequest(BaseModel):
     query: str = Field(..., description="Search query text")
     limit: int = Field(10, ge=1, le=100, description="Maximum number of vector search results")
@@ -345,16 +302,12 @@ class RAGGraphSearchRequest(BaseModel):
     graph_depth: int = Field(1, ge=1, le=3, description="Maximum depth for graph traversal")
     graph_limit: int = Field(10, ge=1, le=50, description="Maximum number of graph neighbors per entity")
     include_entity_context: bool = Field(True, description="Include entity descriptions from graph")
-
-
 class RAGGraphSearchResponse(BaseModel):
     query: str
     vector_results: List[Dict[str, Any]]
     graph_context: Optional[Dict[str, Any]]
     enriched: bool
     stats: Dict[str, Any]
-
-
 class RAGGraphQueryRequest(BaseModel):
     query: str = Field(..., description="Query text to search for relevant context")
     messages: Optional[List[ChatMessage]] = Field(None, description="Optional chat history messages")
@@ -366,8 +319,6 @@ class RAGGraphQueryRequest(BaseModel):
     top_p: Optional[float] = Field(0.9, ge=0.0, le=1.0, description="Nucleus sampling parameter")
     max_tokens: Optional[int] = Field(2048, ge=1, description="Maximum tokens to generate")
     include_context: Optional[bool] = Field(True, description="Whether to include retrieved context in response")
-
-
 class RAGGraphQueryResponse(BaseModel):
     id: str
     object: str = "rag.graph.query.completion"
@@ -379,56 +330,40 @@ class RAGGraphQueryResponse(BaseModel):
     response: str = Field(..., description="Generated response augmented with vector and graph context")
     usage: ChatCompletionUsage
     retrieval_stats: Dict[str, Any] = Field(..., description="Statistics about retrieval")
-
-
 class MemoryAddRequest(BaseModel):
     messages: List[Dict[str, str]] = Field(..., description="Conversation messages to store")
     user_id: Optional[str] = Field(None, description="Optional user identifier")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Optional metadata")
-
-
 class MemoryAddResponse(BaseModel):
     status: str
     memory_id: str
     timestamp: str
     user_id: str
     facts_extracted: int
-
-
 class MemorySearchRequest(BaseModel):
     query: str = Field(..., description="Search query text")
     user_id: Optional[str] = Field(None, description="Optional user ID to filter memories")
     limit: int = Field(10, ge=1, le=100, description="Maximum number of results")
     filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
     use_temporal_decay: bool = Field(True, description="Apply temporal decay to scores")
-
-
 class MemorySearchResponse(BaseModel):
     query: str
     results: List[Dict[str, Any]]
     limit: int
-
-
 class MemoryForgetResponse(BaseModel):
     status: str
     memory_id: str
     message: str
-
-
 class MemoryStatsResponse(BaseModel):
     collection_name: str
     qdrant_points: int
     redis_memories: int
     vector_dimension: int
     distance_metric: str
-
-
 class GraphProcessRequest(BaseModel):
     text: str = Field(..., description="Text to process for entity and relation extraction")
     document_id: Optional[str] = Field(None, description="Optional document identifier")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Optional metadata")
-
-
 class GraphProcessResponse(BaseModel):
     status: str
     document_id: str
@@ -437,45 +372,31 @@ class GraphProcessResponse(BaseModel):
     relations_extracted: int
     relations_added: int
     relations_by_method: Dict[str, int]
-
-
 class GraphQueryRequest(BaseModel):
     query: str = Field(..., description="Cypher query to execute")
     parameters: Optional[Dict[str, Any]] = Field(None, description="Query parameters")
-
-
 class GraphQueryResponse(BaseModel):
     status: str
     results: List[Dict[str, Any]]
     count: int
-
-
 class GraphNeighborsResponse(BaseModel):
     entity: str
     entity_type: Optional[str]
     neighbors_count: int
     neighbors: List[Dict[str, Any]]
-
-
 class GraphSearchRequest(BaseModel):
     search_text: str = Field(..., description="Text to search for entities")
     entity_types: Optional[List[str]] = Field(None, description="Filter by entity types")
     limit: int = Field(20, ge=1, le=100, description="Maximum results")
-
-
 class GraphSearchResponse(BaseModel):
     search_text: str
     results: List[Dict[str, Any]]
     count: int
-
-
 class GraphStatsResponse(BaseModel):
     total_nodes: int
     total_relationships: int
     nodes_by_type: Dict[str, int]
     relationships_by_type: Dict[str, int]
-
-
 class FeedbackRequest(BaseModel):
     query: str = Field(..., description="Original user query")
     response: str = Field(..., description="Model response")
@@ -489,8 +410,6 @@ class FeedbackRequest(BaseModel):
     intent: Optional[str] = Field(None, description="Detected intent (code, reasoning, general)")
     project: Optional[str] = Field(None, description="Project identifier")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata")
-
-
 class FeedbackResponse(BaseModel):
     status: str
     feedback_id: str
@@ -498,15 +417,11 @@ class FeedbackResponse(BaseModel):
     timestamp: str
     rating: int
     model: str
-
-
 class FeedbackUpdateRequest(BaseModel):
     rating: Optional[int] = Field(None, description="Updated rating (1 or -1)")
     intent: Optional[str] = Field(None, description="Updated intent")
     project: Optional[str] = Field(None, description="Updated project")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata to merge")
-
-
 class ModelAccuracyResponse(BaseModel):
     model: str
     intent: Optional[str]
@@ -516,8 +431,6 @@ class ModelAccuracyResponse(BaseModel):
     negative_feedback: int
     accuracy_percentage: float
     last_updated: str
-
-
 class FeedbackStatsResponse(BaseModel):
     total_feedback: int
     positive_count: int
@@ -528,8 +441,6 @@ class FeedbackStatsResponse(BaseModel):
     unique_sessions: int
     days: int
     filters: Dict[str, Optional[str]]
-
-
 class FinetuningExportRequest(BaseModel):
     output_path: str = Field(..., description="Output file path")
     start_date: Optional[str] = Field(None, description="Start date (ISO format)")
@@ -538,8 +449,6 @@ class FinetuningExportRequest(BaseModel):
     min_query_chars: int = Field(10, ge=1, description="Minimum query length")
     min_response_chars: int = Field(20, ge=1, description="Minimum response length")
     deduplicate: bool = Field(True, description="Remove duplicate query/response pairs")
-
-
 class FinetuningExportResponse(BaseModel):
     status: str
     output_path: str
@@ -550,15 +459,18 @@ class FinetuningExportResponse(BaseModel):
     filtered_out_samples: int
     start_date: Optional[str]
     end_date: Optional[str]
-
-
+class SafetyVerdictResponse(BaseModel):
+    verdict: str
+    reason: str
+    endpoint: str
+    blocked_terms: List[str] = Field(default_factory=list)
+    warning_terms: List[str] = Field(default_factory=list)
+    text_length: int
 class MCPToolProxyRequest(BaseModel):
     server_id: str = Field(..., description="Target MCP server ID")
     tool_name: str = Field(..., description="MCP tool name")
     arguments: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Tool call arguments")
     context: Optional[str] = Field(None, description="Optional caller context for logging")
-
-
 class MCPToolProxyResponse(BaseModel):
     ok: bool
     tool_name: str
@@ -566,8 +478,6 @@ class MCPToolProxyResponse(BaseModel):
     status_code: int
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
-
-
 # Metrics storage
 class MetricsStore:
     def __init__(self):
@@ -579,11 +489,10 @@ class MetricsStore:
         self.memory_hits = 0
         self.memory_context_items_total = 0
         self.memory_scores = []
-
+        self.safety_verdict_counts = {"safe": 0, "warn": 0, "block": 0}
     def record_request(self, latency: float, error: bool = False):
         self.tokens_generated = 0
         self.model_stats: Dict[str, Dict[str, Any]] = {}
-
     def record_request(
         self,
         latency: float,
@@ -604,17 +513,14 @@ class MetricsStore:
                 }
             )
             model_bucket["request_count"] += 1
-
         if not error:
             self.total_latency += latency
             self.latencies.append(latency)
             self.tokens_generated += completion_tokens
-
             if model:
                 model_bucket["total_latency"] += latency
                 model_bucket["latencies"].append(latency)
                 model_bucket["tokens_generated"] += completion_tokens
-
             # Keep only last 1000 latencies
             if len(self.latencies) > 1000:
                 self.latencies = self.latencies[-1000:]
@@ -624,15 +530,18 @@ class MetricsStore:
             self.errors += 1
             if model:
                 model_bucket["errors"] += 1
-
     @staticmethod
     def _rate(errors: int, total: int) -> float:
         return round((errors / total) * 100, 2) if total else 0.0
-
     @staticmethod
     def _tokens_per_second(tokens: int, total_latency_ms: float) -> float:
         return round(tokens / (total_latency_ms / 1000), 2) if total_latency_ms > 0 else 0.0
-
+    def record_safety_verdict(self, verdict: str):
+        """Track safety verdict distribution for chat endpoints."""
+        normalized = (verdict or "safe").lower()
+        if normalized not in self.safety_verdict_counts:
+            normalized = "safe"
+        self.safety_verdict_counts[normalized] += 1
     def record_memory_telemetry(
         self,
         memory_metadata: Optional[Dict[str, Any]],
@@ -641,26 +550,20 @@ class MetricsStore:
         """Record request-level memory telemetry for dashboarding."""
         if not memory_metadata or not memory_metadata.get("enabled"):
             return
-
         self.memory_requests += 1
-
         memories_retrieved = int(memory_metadata.get("memories_retrieved", 0) or 0)
         if memories_retrieved > 0:
             self.memory_hits += 1
-
         context_size = len(memory_context or [])
         self.memory_context_items_total += context_size
-
         avg_score = memory_metadata.get("avg_score")
         top_score = memory_metadata.get("top_score")
         if isinstance(avg_score, (int, float)):
             self.memory_scores.append(float(avg_score))
         if isinstance(top_score, (int, float)):
             self.memory_scores.append(float(top_score))
-
         if len(self.memory_scores) > 2000:
             self.memory_scores = self.memory_scores[-2000:]
-
     def get_stats(self) -> Dict[str, Any]:
         memory_telemetry = {
             "memory_requests": self.memory_requests,
@@ -683,14 +586,12 @@ class MetricsStore:
             "p50_memory_score": 0.0,
             "p95_memory_score": 0.0
         }
-
         if self.memory_scores:
             sorted_scores = sorted(self.memory_scores)
             score_count = len(sorted_scores)
             memory_telemetry["avg_memory_score"] = round(sum(sorted_scores) / score_count, 4)
             memory_telemetry["p50_memory_score"] = round(sorted_scores[int(score_count * 0.50)], 4)
             memory_telemetry["p95_memory_score"] = round(sorted_scores[int(score_count * 0.95)], 4)
-
             distribution = memory_telemetry["score_distribution"]
             for score in sorted_scores:
                 clamped_score = max(0.0, min(1.0, score))
@@ -704,7 +605,6 @@ class MetricsStore:
                     distribution["0.6-0.8"] += 1
                 else:
                     distribution["0.8-1.0"] += 1
-
         if not self.latencies:
             return {
                 "request_count": self.request_count,
@@ -724,6 +624,10 @@ class MetricsStore:
         
         return {
             "request_count": self.request_count,
+            "safety": {
+                "enabled": SAFETY_GATEWAY_ENABLED,
+                "verdict_counts": dict(self.safety_verdict_counts),
+            },
             "errors": self.errors,
             "error_rate_percent": self._rate(self.errors, self.request_count),
             "avg_latency_ms": round(self.total_latency / len(self.latencies), 2),
@@ -734,7 +638,6 @@ class MetricsStore:
             "tokens_generated": self.tokens_generated,
             "tokens_per_second": self._tokens_per_second(self.tokens_generated, self.total_latency)
         }
-
     def get_model_stats(self) -> Dict[str, Any]:
         """Return per-model latency, error-rate, and throughput metrics."""
         model_metrics: Dict[str, Any] = {}
@@ -753,10 +656,7 @@ class MetricsStore:
                 "tokens_per_second": self._tokens_per_second(data["tokens_generated"], data["total_latency"])
             }
         return model_metrics
-
-
 metrics = MetricsStore()
-
 # Initialize services (lazy loading)
 agent_router = None
 rag_service = None
@@ -765,11 +665,8 @@ graph_service = None
 feedback_service = None
 document_ingestion_service = None
 mcp_gateway_client = None
-
 # Graceful shutdown flag
 shutdown_in_progress = False
-
-
 def get_agent_router() -> AgentRouter:
     """Get or initialize Agent Router."""
     global agent_router
@@ -778,8 +675,6 @@ def get_agent_router() -> AgentRouter:
         agent_router = AgentRouter(config_path=AGENT_ROUTER_CONFIG)
         logger.info("Agent Router initialized")
     return agent_router
-
-
 def get_rag_service() -> RAGIngestionService:
     """Get or initialize RAG service."""
     global rag_service
@@ -807,8 +702,6 @@ def get_rag_service() -> RAGIngestionService:
         )
         logger.info("RAG Ingestion Service initialized")
     return rag_service
-
-
 def get_document_ingestion_service() -> DocumentIngestionService:
     """Get or initialize document ingestion service."""
     global document_ingestion_service
@@ -820,8 +713,6 @@ def get_document_ingestion_service() -> DocumentIngestionService:
         )
         logger.info("Document Ingestion Service initialized")
     return document_ingestion_service
-
-
 def get_memory_service() -> MemoryService:
     """Get or initialize Memory service."""
     global memory_service
@@ -842,8 +733,6 @@ def get_memory_service() -> MemoryService:
         )
         logger.info("Memory Service initialized")
     return memory_service
-
-
 def get_graph_service() -> GraphService:
     """Get or initialize Graph service."""
     global graph_service
@@ -858,8 +747,6 @@ def get_graph_service() -> GraphService:
         )
         logger.info("Graph Service initialized")
     return graph_service
-
-
 def get_feedback_service() -> FeedbackService:
     """Get or initialize Feedback service."""
     global feedback_service
@@ -874,8 +761,6 @@ def get_feedback_service() -> FeedbackService:
         )
         logger.info("Feedback Service initialized")
     return feedback_service
-
-
 def get_mcp_gateway_client() -> InternalMCPGatewayClient:
     """Get or initialize internal MCP gateway client."""
     global mcp_gateway_client
@@ -884,8 +769,6 @@ def get_mcp_gateway_client() -> InternalMCPGatewayClient:
         mcp_gateway_client = InternalMCPGatewayClient.from_env()
         logger.info("Internal MCP gateway client initialized")
     return mcp_gateway_client
-
-
 def format_chat_prompt(messages: List[ChatMessage]) -> str:
     """Format messages into Llama 3.3 chat format."""
     prompt_parts = []
@@ -905,13 +788,64 @@ def format_chat_prompt(messages: List[ChatMessage]) -> str:
     prompt_parts.append("<|start_header_id|>assistant<|end_header_id|>\n\n")
     
     return "".join(prompt_parts)
-
-
 def estimate_tokens(text: str) -> int:
     """Rough token estimation (4 chars ≈ 1 token)."""
     return len(text) // 4
-
-
+def _load_safety_terms(env_var_name: str, defaults: List[str]) -> List[str]:
+    """Load normalized safety terms from environment with sane defaults."""
+    raw_terms = os.getenv(env_var_name)
+    if not raw_terms:
+        return [term.lower() for term in defaults]
+    parsed_terms = [term.strip().lower() for term in raw_terms.split(",") if term.strip()]
+    return parsed_terms or [term.lower() for term in defaults]
+def _extract_text_from_messages(messages: List[ChatMessage]) -> str:
+    """Flatten chat messages into a single string for gateway checks."""
+    return "\n".join(msg.content for msg in messages if getattr(msg, "content", None))
+def evaluate_safety_text(text: str, endpoint: str) -> SafetyVerdictResponse:
+    """Evaluate payload text against block and warning term lists."""
+    normalized_text = (text or "").lower()
+    block_terms = _load_safety_terms("SAFETY_BLOCK_TERMS", DEFAULT_SAFETY_BLOCK_TERMS)
+    warn_terms = _load_safety_terms("SAFETY_WARN_TERMS", DEFAULT_SAFETY_WARN_TERMS)
+    matched_block_terms = sorted({term for term in block_terms if term in normalized_text})
+    matched_warn_terms = sorted({term for term in warn_terms if term in normalized_text})
+    verdict = "safe"
+    reason = "No safety concerns detected"
+    if len(text or "") > SAFETY_MAX_TEXT_CHARS:
+        verdict = "block"
+        reason = f"Request payload too large for safety policy (>{SAFETY_MAX_TEXT_CHARS} chars)"
+    elif matched_block_terms:
+        verdict = "block"
+        reason = "Detected blocked safety patterns"
+    elif matched_warn_terms:
+        verdict = "warn"
+        reason = "Detected warning-level safety patterns"
+    return SafetyVerdictResponse(
+        verdict=verdict,
+        reason=reason,
+        endpoint=endpoint,
+        blocked_terms=matched_block_terms,
+        warning_terms=matched_warn_terms,
+        text_length=len(text or ""),
+    )
+def enforce_safety_gateway(verdict: SafetyVerdictResponse):
+    """Apply verdict to request handling and persist telemetry/logs."""
+    metrics.record_safety_verdict(verdict.verdict)
+    logger.info(
+        "Safety gateway verdict endpoint=%s verdict=%s blocked=%s warnings=%s reason=%s",
+        verdict.endpoint,
+        verdict.verdict,
+        verdict.blocked_terms,
+        verdict.warning_terms,
+        verdict.reason,
+    )
+    if verdict.verdict == "block":
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "Request blocked by safety gateway",
+                "safety": verdict.model_dump(),
+            },
+        )
 async def stream_chat_completion_response(
     completion_id: str,
     created: int,
@@ -921,11 +855,9 @@ async def stream_chat_completion_response(
 ):
     """
     Stream an OpenAI-compatible chat completion response over SSE.
-
     This yields an initial role chunk, a content chunk, and a final stop chunk,
     followed by the standard [DONE] marker.
     """
-
     role_chunk = {
         "id": completion_id,
         "object": "chat.completion.chunk",
@@ -938,7 +870,6 @@ async def stream_chat_completion_response(
         }]
     }
     yield f"data: {json.dumps(role_chunk)}\n\n"
-
     if content:
         content_chunk = {
             "id": completion_id,
@@ -952,7 +883,6 @@ async def stream_chat_completion_response(
             }]
         }
         yield f"data: {json.dumps(content_chunk)}\n\n"
-
     final_chunk = {
         "id": completion_id,
         "object": "chat.completion.chunk",
@@ -967,8 +897,6 @@ async def stream_chat_completion_response(
     yield f"data: {json.dumps(final_chunk)}\n\n"
     await asyncio.sleep(0)
     yield "data: [DONE]\n\n"
-
-
 async def generate_with_router(
     messages: List[ChatMessage],
     prompt: str,
@@ -1002,8 +930,6 @@ async def generate_with_router(
     completion_tokens = estimate_tokens(generated_text)
     
     return generated_text, prompt_tokens, completion_tokens, metadata
-
-
 @app.get("/")
 async def root():
     """Root endpoint."""
@@ -1046,23 +972,18 @@ async def root():
         },
         "prometheus_metrics": "http://localhost:8001/metrics"
     }
-
-
 @app.get("/health")
 async def health_check():
     """Health check endpoint with multi-model status."""
     
     router = get_agent_router()
     models_info = router.list_models()
-
     has_models = bool(models_info)
     all_healthy = has_models and all(model['health_status'] for model in models_info.values())
-
     if not has_models:
         overall_status = "unhealthy"
     else:
         overall_status = "healthy" if all_healthy else "degraded"
-
     qdrant_status = "unhealthy"
     qdrant_error = None
     qdrant_url = f"http://{QDRANT_HOST}:{QDRANT_PORT}/healthz"
@@ -1070,7 +991,6 @@ async def health_check():
         qdrant_url,
         f"http://{QDRANT_HOST}:{QDRANT_PORT}/health"
     ]
-
     try:
         async with httpx.AsyncClient(timeout=3.0) as client:
             for probe_url in qdrant_probe_urls:
@@ -1082,7 +1002,6 @@ async def health_check():
                     break
                 except Exception:
                     continue
-
         if qdrant_status != "healthy":
             raise RuntimeError(
                 f"Qdrant health probe failed for endpoints: {', '.join(qdrant_probe_urls)}"
@@ -1114,20 +1033,15 @@ async def health_check():
             }
         }
     }
-
     status_code = 200 if all_healthy and qdrant_status == "healthy" else 503
     return JSONResponse(content=payload, status_code=status_code)
-
-
 @app.post("/v1/mcp")
 async def proxy_mcp_gateway(request: MCPGatewayRequest):
     """Proxy MCP calls through the MCPJungle gateway service."""
     headers = {"content-type": "application/json"}
     if MCP_GATEWAY_API_KEY:
         headers["authorization"] = f"Bearer {MCP_GATEWAY_API_KEY}"
-
     payload = request.model_dump(exclude_none=True)
-
     try:
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(
@@ -1141,8 +1055,6 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest):
         raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"MCP gateway unreachable: {exc}")
-
-
 @app.get("/metrics")
 async def get_metrics():
     """Get performance metrics."""
@@ -1151,8 +1063,6 @@ async def get_metrics():
         "per_model_metrics": metrics.get_model_stats(),
         "timestamp": datetime.utcnow().isoformat()
     }
-
-
 @app.get("/circuit-breakers")
 async def get_circuit_breakers():
     """Get circuit breaker statistics."""
@@ -1160,8 +1070,6 @@ async def get_circuit_breakers():
         "circuit_breakers": get_all_circuit_breaker_stats(),
         "timestamp": datetime.utcnow().isoformat()
     }
-
-
 @app.post("/internal/mcp/tools/call", response_model=MCPToolProxyResponse)
 async def internal_mcp_tool_call(request: MCPToolProxyRequest):
     """Route internal tool calls to MCP gateway /mcp endpoint with structured result."""
@@ -1172,13 +1080,10 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest):
         arguments=request.arguments or {},
         context=request.context or "api.internal",
     )
-
     payload = result.to_dict()
     if not result.ok:
         return JSONResponse(status_code=result.status_code, content=payload)
     return payload
-
-
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest, raw_request: Request):
     """
@@ -1194,7 +1099,12 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         
         if request.n != 1:
             raise HTTPException(status_code=400, detail="Only n=1 is currently supported")
-        
+        if SAFETY_GATEWAY_ENABLED:
+            safety_verdict = evaluate_safety_text(
+                _extract_text_from_messages(request.messages),
+                endpoint="/v1/chat/completions",
+            )
+            enforce_safety_gateway(safety_verdict)
         messages_for_generation = list(request.messages)
         rag_context_data = None
         rag_metadata = None
@@ -1215,7 +1125,6 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                 (msg.content for msg in reversed(request.messages) if msg.role == "user"),
                 None
             )
-
             if latest_user_message:
                 try:
                     service = get_memory_service()
@@ -1225,14 +1134,12 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                         limit=request.memory.top_k,
                         use_temporal_decay=request.memory.use_temporal_decay
                     )
-
                     if request.memory.min_score is not None:
                         memory_results = [
                             result
                             for result in memory_results
                             if result.get("score", 0.0) >= request.memory.min_score
                         ]
-
                     if memory_results:
                         memory_chunks = [
                             (
@@ -1250,7 +1157,6 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                             )
                         )
                         messages_for_generation = [memory_system_message, *messages_for_generation]
-
                     memory_scores = [result.get("score", 0.0) for result in memory_results]
                     memory_metadata = {
                         "enabled": True,
@@ -1266,14 +1172,12 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                             else None
                         )
                     }
-
                     if request.memory.include_context:
                         memory_context_data = memory_results
                 except Exception as exc:
                     logger.warning("Memory retrieval failed: %s", exc)
             else:
                 logger.info("Memory enabled but no user message was found for retrieval query")
-
         if request.rag and request.rag.enabled:
             service = get_rag_service()
             latest_user_message = next(
@@ -1281,13 +1185,11 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                 None
             )
             retrieval_query = request.rag.query or latest_user_message
-
             if not retrieval_query:
                 raise HTTPException(
                     status_code=400,
                     detail="RAG requires at least one user message or rag.query"
                 )
-
             retrieval_start = time.time()
             rag_results = service.search_documents(
                 query=retrieval_query,
@@ -1295,10 +1197,8 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                 filters=request.rag.filters
             )
             retrieval_time_ms = (time.time() - retrieval_start) * 1000
-
             if request.rag.min_score is not None:
                 rag_results = [r for r in rag_results if r.get("score", 0.0) >= request.rag.min_score]
-
             if rag_results:
                 context_chunks = [f"[Context {i + 1}]\n{r['text']}" for i, r in enumerate(rag_results)]
                 rag_system_message = ChatMessage(
@@ -1311,7 +1211,6 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     )
                 )
                 messages_for_generation = [rag_system_message, *messages_for_generation]
-
             rag_scores = [r.get("score", 0.0) for r in rag_results]
             rag_metadata = {
                 "enabled": True,
@@ -1324,7 +1223,6 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                 "top_score": round(max(rag_scores), 4) if rag_scores else None,
                 "avg_score": round(sum(rag_scores) / len(rag_scores), 4) if rag_scores else None
             }
-
             if request.rag.include_context:
                 rag_context_data = [
                     {
@@ -1335,7 +1233,6 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     }
                     for r in rag_results
                 ]
-
         # Format prompt
         prompt = format_chat_prompt(messages_for_generation)
         logger.info(f"Processing chat completion request with {len(request.messages)} messages")
@@ -1361,7 +1258,6 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
         response_model = routing_metadata.get('model_name', request.model)
-
         # Calculate latency
         latency_ms = (time.time() - start_time) * 1000
         metrics.record_request(
@@ -1369,7 +1265,6 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             model=response_model,
             completion_tokens=completion_tokens
         )
-
         if request.memory and request.memory.enabled and request.memory.auto_store:
             try:
                 memory_service_instance = get_memory_service()
@@ -1402,7 +1297,6 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     memory_metadata = {"enabled": True}
                 memory_metadata["memory_stored"] = False
                 memory_metadata["storage_error"] = str(exc)
-
         if request.stream:
             logger.info("Streaming response requested; returning SSE-compatible output")
             return StreamingResponse(
@@ -1419,7 +1313,6 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     "Connection": "keep-alive"
                 }
             )
-
         # Build response with routing metadata
         response_data = {
             "id": completion_id,
@@ -1444,19 +1337,15 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             },
             "x-routing-metadata": routing_metadata
         }
-
         if rag_metadata:
             response_data["x-rag-metadata"] = rag_metadata
             if rag_context_data is not None:
                 response_data["rag_context"] = rag_context_data
-
         if memory_metadata:
             response_data["x-memory-metadata"] = memory_metadata
             if memory_context_data is not None:
                 response_data["memory_context"] = memory_context_data
-
         metrics.record_memory_telemetry(memory_metadata, memory_context_data)
-
         logger.info(
             f"Request completed in {latency_ms:.2f}ms "
             f"[model={routing_metadata.get('model_id')}, "
@@ -1473,18 +1362,20 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         metrics.record_request((time.time() - start_time) * 1000, error=True, model=request.model)
         logger.error(f"Unexpected error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
-
-
 @app.post("/v1/chat")
 async def unified_chat(request: UnifiedChatRequest, raw_request: Request):
     """
     Unified chat endpoint that transparently orchestrates memory, RAG, and completion.
-
     This endpoint keeps client payloads simple while enabling both memory retrieval
     and document retrieval by default.
     """
+    if SAFETY_GATEWAY_ENABLED:
+        safety_verdict = evaluate_safety_text(
+            _extract_text_from_messages(request.messages),
+            endpoint="/v1/chat",
+        )
+        enforce_safety_gateway(safety_verdict)
     resolved_user = request.user_id or request.user
-
     completion_request = ChatCompletionRequest(
         model=request.model,
         messages=request.messages,
@@ -1523,8 +1414,6 @@ async def unified_chat(request: UnifiedChatRequest, raw_request: Request):
             routing_metadata.get("fallback_used"),
         )
     return response
-
-
 @app.get("/v1/models")
 async def list_models():
     """List available models (OpenAI-compatible)."""
@@ -1550,8 +1439,6 @@ async def list_models():
             for model_id, info in models_info.items()
         ]
     }
-
-
 @app.get("/router/info")
 async def router_info():
     """Get router configuration and status."""
@@ -1577,8 +1464,6 @@ async def router_info():
         },
         "prometheus_metrics": "http://localhost:8001/metrics"
     }
-
-
 @app.post("/v1/documents/ingest/text", response_model=DocumentIngestResponse)
 async def ingest_document_text(request: DocumentIngestTextRequest):
     """Ingest raw text and return UTF-8 normalized overlapping chunks."""
@@ -1602,8 +1487,6 @@ async def ingest_document_text(request: DocumentIngestTextRequest):
     except Exception as e:
         logger.error(f"Error ingesting text document: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Document ingestion error: {str(e)}")
-
-
 @app.post("/v1/documents/ingest/file", response_model=DocumentIngestResponse)
 async def ingest_document_file(
     file: UploadFile = File(...),
@@ -1617,7 +1500,6 @@ async def ingest_document_file(
         parsed_metadata = json.loads(metadata) if metadata else None
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Invalid metadata JSON: {str(e)}")
-
     try:
         service = get_document_ingestion_service()
         content = await file.read()
@@ -1640,8 +1522,6 @@ async def ingest_document_file(
     except Exception as e:
         logger.error(f"Error ingesting file document: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Document ingestion error: {str(e)}")
-
-
 @app.post("/v1/rag/ingest", response_model=RAGIngestResponse)
 async def rag_ingest(request: RAGIngestRequest):
     """
@@ -1666,8 +1546,6 @@ async def rag_ingest(request: RAGIngestRequest):
     except Exception as e:
         logger.error(f"Error ingesting document: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Ingestion error: {str(e)}")
-
-
 @app.post("/v1/rag/ingest/batch", response_model=RAGIngestBatchResponse)
 async def rag_ingest_batch(request: RAGIngestBatchRequest):
     """
@@ -1685,8 +1563,6 @@ async def rag_ingest_batch(request: RAGIngestBatchRequest):
     except Exception as e:
         logger.error(f"Error in batch ingestion: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Batch ingestion error: {str(e)}")
-
-
 @app.post("/v1/rag/search", response_model=RAGSearchResponse)
 async def rag_search(request: RAGSearchRequest):
     """
@@ -1716,19 +1592,15 @@ async def rag_search(request: RAGSearchRequest):
     except Exception as e:
         logger.error(f"Error searching documents: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
-
-
 @app.post("/v1/rag/semantic-search", response_model=RAGSemanticSearchResponse)
 async def rag_semantic_search(request: RAGSemanticSearchRequest):
     """
     Perform semantic similarity search over Qdrant collections.
-
     Args:
         query: Search query text
         top_k: Maximum number of nearest neighbors (1-100)
         filters: Optional metadata filters (equality or {"any": [...]})
         collection_name: Optional Qdrant collection override
-
     Returns:
         Top-k semantic search results with scores and metadata
     """
@@ -1756,8 +1628,6 @@ async def rag_semantic_search(request: RAGSemanticSearchRequest):
     except Exception as e:
         logger.error(f"Error in semantic search: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Semantic search error: {str(e)}")
-
-
 @app.delete("/v1/rag/documents/{document_id}")
 async def rag_delete_document(document_id: str):
     """
@@ -1778,8 +1648,6 @@ async def rag_delete_document(document_id: str):
     except Exception as e:
         logger.error(f"Error deleting document: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Delete error: {str(e)}")
-
-
 @app.get("/v1/rag/stats", response_model=RAGStatsResponse)
 async def rag_stats():
     """
@@ -1798,8 +1666,6 @@ async def rag_stats():
     except Exception as e:
         logger.error(f"Error getting RAG stats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Stats error: {str(e)}")
-
-
 @app.post("/v1/rag/query", response_model=RAGQueryResponse)
 @app.post("/v1/rag/queryAPI", response_model=RAGQueryResponse)
 async def rag_query(request: RAGQueryRequest):
@@ -1829,8 +1695,15 @@ async def rag_query(request: RAGQueryRequest):
     start_time = time.time()
     
     try:
+        if SAFETY_GATEWAY_ENABLED:
+            rag_messages = request.messages or []
+            rag_payload_text = "\n".join([
+                request.query,
+                _extract_text_from_messages(rag_messages),
+            ]).strip()
+            safety_verdict = evaluate_safety_text(rag_payload_text, endpoint="/v1/rag/query")
+            enforce_safety_gateway(safety_verdict)
         service = get_rag_service()
-        
         logger.info(f"RAG query with k={request.k}: {request.query[:100]}...")
         
         retrieval_start = time.time()
@@ -1839,16 +1712,13 @@ async def rag_query(request: RAGQueryRequest):
             limit=request.k,
             filters=request.filters
         )
-
         graph_context = None
         graph_context_formatted = ""
         relationships_found = 0
         entities_in_graph = 0
-
         should_enrich_with_graph = bool(
             request.include_graph_context and service.graph_service is not None
         )
-
         if should_enrich_with_graph:
             try:
                 enriched_results = service.search_with_graph_enrichment(
@@ -1867,16 +1737,13 @@ async def rag_query(request: RAGQueryRequest):
                     entities_in_graph = graph_stats.get("entities_in_graph", 0)
             except Exception as graph_error:
                 logger.warning("Graph enrichment unavailable, using vector-only retrieval: %s", graph_error)
-
         retrieval_time_ms = (time.time() - retrieval_start) * 1000
-
         logger.info(
             "Retrieved %s context chunks in %.2fms (graph relationships=%s)",
             len(results),
             retrieval_time_ms,
             relationships_found,
         )
-
         if not results:
             logger.warning("No context found for query, generating response without RAG")
             context_text = ""
@@ -1893,9 +1760,7 @@ async def rag_query(request: RAGQueryRequest):
             for idx, result in enumerate(results):
                 chunk_text = f"[Context {idx + 1}]\n{result['text']}\n"
                 context_chunks.append(chunk_text)
-
             context_text = "\n".join(context_chunks)
-
             scores = [r['score'] for r in results]
             retrieval_stats = {
                 "chunks_retrieved": len(results),
@@ -1906,9 +1771,7 @@ async def rag_query(request: RAGQueryRequest):
                 "entities_in_graph": entities_in_graph,
                 "relationships_found": relationships_found,
             }
-
         messages_list = []
-
         if context_text or graph_context_formatted:
             system_content = (
                 "You are a helpful assistant. Use the following context to answer the user's question. "
@@ -1918,7 +1781,6 @@ async def rag_query(request: RAGQueryRequest):
                 system_content += f"Document Context:\n{context_text}\n\n"
             if graph_context_formatted:
                 system_content += f"{graph_context_formatted}\n"
-
             system_message = ChatMessage(role="system", content=system_content)
             messages_list.append(system_message)
         else:
@@ -1997,8 +1859,6 @@ async def rag_query(request: RAGQueryRequest):
         metrics.record_request((time.time() - start_time) * 1000, error=True)
         logger.error(f"Error in RAG query: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"RAG query error: {str(e)}")
-
-
 @app.post("/v1/rag/search/graph-enriched", response_model=RAGGraphSearchResponse)
 async def rag_graph_search(request: RAGGraphSearchRequest):
     """
@@ -2054,8 +1914,6 @@ async def rag_graph_search(request: RAGGraphSearchRequest):
     except Exception as e:
         logger.error(f"Error in graph-enriched search: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Graph-enriched search error: {str(e)}")
-
-
 @app.post("/v1/rag/query/graph-enriched", response_model=RAGGraphQueryResponse)
 async def rag_graph_query(request: RAGGraphQueryRequest):
     """
@@ -2243,8 +2101,6 @@ async def rag_graph_query(request: RAGGraphQueryRequest):
         metrics.record_request((time.time() - start_time) * 1000, error=True)
         logger.error(f"Error in graph-enriched RAG query: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Graph-enriched RAG query error: {str(e)}")
-
-
 @app.post("/memory/add", response_model=MemoryAddResponse)
 async def memory_add(request: MemoryAddRequest):
     """
@@ -2277,8 +2133,6 @@ async def memory_add(request: MemoryAddRequest):
     except Exception as e:
         logger.error(f"Error adding memory: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Memory add error: {str(e)}")
-
-
 @app.post("/memory/search", response_model=MemorySearchResponse)
 async def memory_search(request: MemorySearchRequest):
     """
@@ -2322,8 +2176,6 @@ async def memory_search(request: MemorySearchRequest):
     except Exception as e:
         logger.error(f"Error searching memory: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Memory search error: {str(e)}")
-
-
 @app.get("/memory/search", response_model=MemorySearchResponse)
 async def memory_search_get(
     response: Response,
@@ -2345,7 +2197,6 @@ async def memory_search_get(
 ):
     """
     Search memories using query parameters.
-
     Notes:
     - This endpoint mirrors POST /memory/search for clients that require GET.
     - `filters` must be a JSON object encoded as a string (URL-encoded is supported).
@@ -2353,19 +2204,15 @@ async def memory_search_get(
     - Adds Cache-Control: no-store to reduce accidental caching of user-specific searches.
     """
     response.headers["Cache-Control"] = "no-store"
-
     parsed_filters: Optional[Dict[str, Any]] = None
     if filters:
         try:
             parsed_candidate = json.loads(filters)
         except json.JSONDecodeError as exc:
             raise HTTPException(status_code=400, detail=f"Invalid filters JSON: {exc}") from exc
-
         if not isinstance(parsed_candidate, dict):
             raise HTTPException(status_code=400, detail="Invalid filters JSON: expected an object")
-
         parsed_filters = parsed_candidate
-
     request = MemorySearchRequest(
         query=query,
         user_id=user_id,
@@ -2374,8 +2221,6 @@ async def memory_search_get(
         use_temporal_decay=use_temporal_decay,
     )
     return await memory_search(request)
-
-
 @app.delete("/memory/forget/{memory_id}", response_model=MemoryForgetResponse)
 async def memory_forget(memory_id: str):
     """
@@ -2400,19 +2245,14 @@ async def memory_forget(memory_id: str):
     except Exception as e:
         logger.error(f"Error deleting memory: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Memory delete error: {str(e)}")
-
-
 @app.delete("/memory/forget", response_model=MemoryForgetResponse)
 async def memory_forget_by_query(memory_id: str):
     """
     Delete a memory by query parameter.
-
     This endpoint mirrors DELETE /memory/forget/{memory_id} for clients that
     cannot pass path parameters.
     """
     return await memory_forget(memory_id)
-
-
 @app.get("/memory/stats", response_model=MemoryStatsResponse)
 async def memory_stats():
     """
@@ -2432,8 +2272,6 @@ async def memory_stats():
     except Exception as e:
         logger.error(f"Error getting memory stats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Memory stats error: {str(e)}")
-
-
 @app.post("/graph/process", response_model=GraphProcessResponse)
 async def graph_process(request: GraphProcessRequest):
     """
@@ -2471,8 +2309,6 @@ async def graph_process(request: GraphProcessRequest):
     except Exception as e:
         logger.error(f"Error processing document for graph: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Graph processing error: {str(e)}")
-
-
 @app.post("/graph/query", response_model=GraphQueryResponse)
 async def graph_query(request: GraphQueryRequest):
     """
@@ -2521,8 +2357,6 @@ async def graph_query(request: GraphQueryRequest):
     except Exception as e:
         logger.error(f"Error executing graph query: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Graph query error: {str(e)}")
-
-
 @app.get("/graph/neighbors/{entity}", response_model=GraphNeighborsResponse)
 async def graph_neighbors(
     entity: str,
@@ -2570,8 +2404,6 @@ async def graph_neighbors(
     except Exception as e:
         logger.error(f"Error getting neighbors: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Graph neighbors error: {str(e)}")
-
-
 @app.post("/graph/search", response_model=GraphSearchResponse)
 async def graph_search(request: GraphSearchRequest):
     """
@@ -2611,8 +2443,6 @@ async def graph_search(request: GraphSearchRequest):
     except Exception as e:
         logger.error(f"Error searching graph: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Graph search error: {str(e)}")
-
-
 @app.get("/graph/stats", response_model=GraphStatsResponse)
 async def graph_stats():
     """
@@ -2632,8 +2462,6 @@ async def graph_stats():
     except Exception as e:
         logger.error(f"Error getting graph stats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Graph stats error: {str(e)}")
-
-
 @app.post("/v1/feedback", response_model=FeedbackResponse)
 async def add_feedback(request: FeedbackRequest):
     """
@@ -2689,8 +2517,6 @@ async def add_feedback(request: FeedbackRequest):
     except Exception as e:
         logger.error(f"Error adding feedback: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Feedback error: {str(e)}")
-
-
 @app.get("/v1/feedback/{feedback_id}")
 async def get_feedback(feedback_id: str):
     """
@@ -2715,8 +2541,6 @@ async def get_feedback(feedback_id: str):
     except Exception as e:
         logger.error(f"Error retrieving feedback: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Feedback retrieval error: {str(e)}")
-
-
 @app.put("/v1/feedback/{feedback_id}")
 async def update_feedback(feedback_id: str, request: FeedbackUpdateRequest):
     """
@@ -2748,8 +2572,6 @@ async def update_feedback(feedback_id: str, request: FeedbackUpdateRequest):
     except Exception as e:
         logger.error(f"Error updating feedback: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Feedback update error: {str(e)}")
-
-
 @app.delete("/v1/feedback/{feedback_id}")
 async def delete_feedback(feedback_id: str):
     """
@@ -2771,8 +2593,6 @@ async def delete_feedback(feedback_id: str):
     except Exception as e:
         logger.error(f"Error deleting feedback: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Feedback deletion error: {str(e)}")
-
-
 @app.get("/v1/feedback/accuracy", response_model=List[ModelAccuracyResponse])
 async def get_model_accuracy(
     model: Optional[str] = None,
@@ -2826,8 +2646,6 @@ async def get_model_accuracy(
     except Exception as e:
         logger.error(f"Error retrieving accuracy metrics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Accuracy metrics error: {str(e)}")
-
-
 @app.get("/v1/feedback/stats", response_model=FeedbackStatsResponse)
 async def get_feedback_stats(
     model: Optional[str] = None,
@@ -2867,8 +2685,6 @@ async def get_feedback_stats(
     except Exception as e:
         logger.error(f"Error retrieving feedback stats: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Feedback stats error: {str(e)}")
-
-
 @app.post("/v1/feedback/export/finetuning", response_model=FinetuningExportResponse)
 async def export_finetuning_dataset(request: FinetuningExportRequest):
     """
@@ -2945,8 +2761,6 @@ async def export_finetuning_dataset(request: FinetuningExportRequest):
     except Exception as e:
         logger.error(f"Error exporting fine-tuning dataset: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Export error: {str(e)}")
-
-
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup."""
@@ -2954,8 +2768,6 @@ async def startup_event():
     router = get_agent_router()
     await router.start_health_checks()
     logger.info("Agent Router health checks started")
-
-
 @app.on_event("shutdown")
 async def shutdown_event():
     """Cleanup on shutdown with graceful termination."""
@@ -2983,19 +2795,13 @@ async def shutdown_event():
         logger.info("Feedback Service closed")
     
     logger.info("API server shutdown complete")
-
-
 def handle_sigterm(signum, frame):
     """Handle SIGTERM for graceful shutdown."""
     logger.info("Received SIGTERM signal, initiating graceful shutdown...")
     raise KeyboardInterrupt
-
-
 # Register signal handlers for graceful shutdown
 signal.signal(signal.SIGTERM, handle_sigterm)
 signal.signal(signal.SIGINT, handle_sigterm)
-
-
 if __name__ == "__main__":
     logger.info("Starting OpenAI-compatible API server with Agent Router...")
     logger.info(f"Agent Router Config: {AGENT_ROUTER_CONFIG}")
