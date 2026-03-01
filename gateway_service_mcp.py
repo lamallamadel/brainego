@@ -36,7 +36,10 @@ from memory_service import MemoryService
 from memory_scoring_config import load_memory_scoring_config
 from mcp_client import MCPClientService
 from mcp_acl import MCPACLManager
-from mcp_write_confirmation import PendingWritePlanStore, requires_write_confirmation
+from mcp_write_confirmation import (
+    PendingWritePlanStore,
+    evaluate_write_confirmation_gate,
+)
 from telemetry import init_telemetry, get_tracer, shutdown_telemetry
 from opentelemetry import trace
 
@@ -754,45 +757,36 @@ async def call_mcp_tool(
                 raise HTTPException(status_code=403, detail=reason)
 
             caller_id = auth.get("api_key") or identifier
-            requires_confirmation = requires_write_confirmation(request.tool_name)
-            if request.confirmation_id and not request.confirm:
+            confirmation_decision = evaluate_write_confirmation_gate(
+                store=write_confirmation_store,
+                requested_by=caller_id,
+                server_id=request.server_id,
+                tool_name=request.tool_name,
+                arguments=request.arguments,
+                confirm=request.confirm,
+                confirmation_id=request.confirmation_id,
+            )
+            if confirmation_decision.status_code:
                 raise HTTPException(
-                    status_code=400,
-                    detail="confirmation_id requires confirm=true",
+                    status_code=confirmation_decision.status_code,
+                    detail=confirmation_decision.reason or "confirmation gate denied tool call",
                 )
-
-            if requires_confirmation:
-                if request.confirm and request.confirmation_id:
-                    plan_matches, mismatch_reason = write_confirmation_store.consume_plan(
-                        confirmation_id=request.confirmation_id,
-                        requested_by=caller_id,
-                        server_id=request.server_id,
-                        tool_name=request.tool_name,
-                        arguments=request.arguments,
-                    )
-                    if not plan_matches:
-                        raise HTTPException(status_code=409, detail=mismatch_reason)
-                elif not request.confirm:
-                    pending_plan = write_confirmation_store.create_plan(
-                        requested_by=caller_id,
-                        server_id=request.server_id,
-                        tool_name=request.tool_name,
-                        arguments=request.arguments,
-                    )
-                    latency_ms = (time.time() - start_time) * 1000
-                    metrics.record_request(latency_ms, is_mcp=True)
-                    return {
-                        "server_id": request.server_id,
-                        "tool_name": request.tool_name,
-                        "status": "pending_confirmation",
-                        "confirmation_required": True,
-                        "message": (
-                            "Write action requires explicit confirmation. "
-                            "Re-send the exact same call with confirm=true and confirmation_id."
-                        ),
-                        "confirmation_id": pending_plan.confirmation_id,
-                        "planned_call": pending_plan.to_public_dict(),
-                    }
+            if confirmation_decision.pending_plan:
+                pending_plan = confirmation_decision.pending_plan
+                latency_ms = (time.time() - start_time) * 1000
+                metrics.record_request(latency_ms, is_mcp=True)
+                return {
+                    "server_id": request.server_id,
+                    "tool_name": request.tool_name,
+                    "status": "pending_confirmation",
+                    "confirmation_required": True,
+                    "message": (
+                        "Write action requires explicit confirmation. "
+                        "Re-send the exact same call with confirm=true and confirmation_id."
+                    ),
+                    "confirmation_id": pending_plan.confirmation_id,
+                    "planned_call": pending_plan.to_public_dict(),
+                }
             
             # Call tool
             result = await mcp_client.call_tool(
