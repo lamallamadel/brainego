@@ -3,6 +3,7 @@
 
 version: 1
 default_workspace: default
+default_role: viewer
 
 workspaces:
   default:
@@ -16,13 +17,48 @@ workspaces:
       - mcp-calendar
       - mcp-docs
 
-    # Action classes accepted by this workspace policy.
+    # Minimal RBAC profile (AFR-86):
+    # - viewer: read-only
+    # - developer: read + explicit write scopes
+    # - admin: full policy management + full tool access
+    default_role: viewer
+    roles:
+      admin:
+        allowed_tool_actions:
+          - read
+          - write
+          - delete
+        tool_scopes:
+          read: ["*"]
+          write: ["*"]
+          delete: ["*"]
+
+      developer:
+        allowed_tool_actions:
+          - read
+          - write
+        tool_scopes:
+          read: ["*"]
+          # Write stays deny-by-default until an admin grants explicit tool scopes.
+          write: []
+        required_scopes:
+          # Explicit scope claim required for write actions.
+          write:
+            - "mcp.tool.write"
+
+      viewer:
+        allowed_tool_actions:
+          - read
+        tool_scopes:
+          read: ["*"]
+
+    # Legacy workspace-level fields are retained for backward compatibility.
     allowed_tool_actions:
       - read
       - write
       - delete
 
-    # Allowed tools by action (wildcard possible).
+    # Legacy allowed tools by action (wildcard possible).
     allowed_tool_names:
       read: ["*"]
       write: ["*"]

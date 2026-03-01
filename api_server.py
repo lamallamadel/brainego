@@ -78,6 +78,10 @@ MCP_GATEWAY_API_KEY = os.getenv("MCP_GATEWAY_API_KEY", "")
 WORKSPACE_ID_RESPONSE_HEADER = "X-Workspace-Id"
 AUDIT_CAPTURE_BODY_LIMIT = int(os.getenv("AUDIT_CAPTURE_BODY_LIMIT", "32768"))
 AUDIT_EXPORT_MAX_LIMIT = int(os.getenv("AUDIT_EXPORT_MAX_LIMIT", "10000"))
+DEFAULT_MCP_POLICY_ROLE = "viewer"
+SUPPORTED_MCP_POLICY_ROLES = {"admin", "developer", "viewer"}
+MCP_POLICY_ROLE_HEADERS = ("x-mcp-role", "x-user-role", "x-role")
+MCP_POLICY_SCOPE_HEADERS = ("x-mcp-scopes", "x-scopes", "x-scope", "scope")
 
 BRAINEGO_SYSTEM_PROMPT = (
     "You are the brainego assistant running under platform contracts.\n"
@@ -314,6 +318,11 @@ class MCPGatewayRequest(BaseModel):
     workspace_id: Optional[str] = Field(None, description="Workspace identifier for policy scope")
     request_id: Optional[str] = Field(None, description="Request identifier for per-request quotas")
     tool_action: Optional[str] = Field(None, description="Optional explicit action (read/write/delete)")
+    role: Optional[str] = Field(None, description="Optional MCP RBAC role (admin/developer/viewer)")
+    scopes: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Optional granted scopes for MCP policy checks",
+    )
     context: Optional[str] = Field(None, description="Optional caller context for audit logs")
 class ChatCompletionChoice(BaseModel):
     index: int
@@ -625,6 +634,18 @@ class MCPToolProxyRequest(BaseModel):
     workspace_id: Optional[str] = Field(None, description="Workspace policy scope")
     request_id: Optional[str] = Field(None, description="Request ID for per-request tool budgets")
     action: Optional[str] = Field(None, description="Optional explicit action (read/write/delete)")
+    role: Optional[str] = Field(None, description="Optional MCP RBAC role (admin/developer/viewer)")
+    scopes: Optional[List[str]] = Field(
+        default_factory=list,
+        description="Optional granted scopes for MCP policy checks",
+    )
+
+
+class MCPWorkspacePolicyUpdateRequest(BaseModel):
+    policy: Dict[str, Any] = Field(
+        ...,
+        description="Workspace-scoped MCP tool policy payload",
+    )
 class MCPToolProxyResponse(BaseModel):
     ok: bool
     tool_name: str
@@ -1107,6 +1128,59 @@ def _infer_tool_action(tool_name: str, explicit_action: Optional[str]) -> str:
     return "read"
 
 
+def _normalize_mcp_policy_role(raw_role: Optional[str]) -> str:
+    """Normalize requested MCP role, defaulting to least-privileged viewer."""
+    normalized_role = (raw_role or "").strip().lower()
+    if not normalized_role:
+        return DEFAULT_MCP_POLICY_ROLE
+    if normalized_role in SUPPORTED_MCP_POLICY_ROLES:
+        return normalized_role
+    return normalized_role
+
+
+def _parse_scope_tokens(raw_scopes: Any) -> List[str]:
+    """Parse scope tokens from strings/lists using comma/space separators."""
+    if raw_scopes is None:
+        return []
+
+    if isinstance(raw_scopes, str):
+        tokens = re.split(r"[\s,]+", raw_scopes.strip())
+        return [token for token in tokens if token]
+
+    if isinstance(raw_scopes, (list, tuple, set)):
+        parsed: List[str] = []
+        for value in raw_scopes:
+            parsed.extend(_parse_scope_tokens(value))
+        return parsed
+
+    return _parse_scope_tokens(str(raw_scopes))
+
+
+def _resolve_tool_policy_identity(
+    *,
+    raw_request: Request,
+    explicit_role: Optional[str] = None,
+    explicit_scopes: Optional[List[str]] = None,
+) -> Tuple[str, List[str]]:
+    """Resolve effective RBAC role and scopes for MCP policy checks."""
+    role_candidates = [explicit_role]
+    role_candidates.extend(raw_request.headers.get(header_name) for header_name in MCP_POLICY_ROLE_HEADERS)
+    resolved_role = next(
+        (candidate for candidate in role_candidates if isinstance(candidate, str) and candidate.strip()),
+        None,
+    )
+    normalized_role = _normalize_mcp_policy_role(resolved_role)
+
+    scope_candidates: List[Any] = [explicit_scopes]
+    scope_candidates.extend(raw_request.headers.get(header_name) for header_name in MCP_POLICY_SCOPE_HEADERS)
+    scopes_flat: List[str] = []
+    for candidate in scope_candidates:
+        scopes_flat.extend(_parse_scope_tokens(candidate))
+    normalized_scopes = list(dict.fromkeys(scopes_flat))
+
+    return normalized_role, normalized_scopes
+
+
 def _extract_workspace_id_from_tool_arguments(arguments: Optional[Dict[str, Any]]) -> Optional[str]:
     """Extract workspace ID from common tool argument conventions."""
     if not isinstance(arguments, dict):
@@ -1158,6 +1232,7 @@ def _build_policy_denied_detail(
     reason: str,
     workspace_id: Optional[str],
     request_id: Optional[str],
+    role: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Build stable PolicyDenied payload."""
     detail: Dict[str, Any] = {
@@ -1170,7 +1245,30 @@ def _build_policy_denied_detail(
         detail["workspace_id"] = workspace_id
     if request_id:
         detail["request_id"] = request_id
+    if role:
+        detail["role"] = role
     return detail
+
+
+def _require_admin_tool_policy_role(
+    *,
+    raw_request: Request,
+    workspace_id: Optional[str],
+    request_id: Optional[str],
+) -> Tuple[str, List[str]]:
+    """Ensure caller role is admin before policy management operations."""
+    resolved_role, resolved_scopes = _resolve_tool_policy_identity(raw_request=raw_request)
+    if resolved_role != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail=_build_policy_denied_detail(
+                reason="admin role is required to manage MCP policies",
+                workspace_id=workspace_id,
+                request_id=request_id,
+                role=resolved_role,
+            ),
+        )
+    return resolved_role, resolved_scopes
 
 
 def enforce_mcp_tool_policy(
@@ -1182,6 +1280,8 @@ def enforce_mcp_tool_policy(
     workspace_id: Optional[str] = None,
     request_id: Optional[str] = None,
     action: Optional[str] = None,
+    role: Optional[str] = None,
+    scopes: Optional[List[str]] = None,
     default_timeout_seconds: float = 30.0,
 ) -> Tuple[str, str, str, float]:
     """Enforce deny-by-default policy at MCP tool execution point."""
@@ -1206,6 +1306,11 @@ def enforce_mcp_tool_policy(
             ),
         )
 
+    resolved_role, resolved_scopes = _resolve_tool_policy_identity(
+        raw_request=raw_request,
+        explicit_role=role,
+        explicit_scopes=scopes,
+    )
     resolved_action = _infer_tool_action(normalized_tool_name, action)
     policy_engine = get_tool_policy_engine()
     decision = policy_engine.evaluate_tool_call(
@@ -1215,6 +1320,8 @@ def enforce_mcp_tool_policy(
         tool_name=normalized_tool_name,
         action=resolved_action,
         arguments=arguments or {},
+        role=resolved_role,
+        scopes=resolved_scopes,
         default_timeout_seconds=default_timeout_seconds,
     )
     if not decision.allowed:
@@ -1224,6 +1331,7 @@ def enforce_mcp_tool_policy(
                 reason=decision.reason or "MCP tool call denied by policy",
                 workspace_id=decision.workspace_id or resolved_workspace_id,
                 request_id=resolved_request_id,
+                role=resolved_role,
             ),
         )
 
@@ -1814,6 +1922,8 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
                 workspace_id=request.workspace_id or workspace_id,
                 request_id=request.request_id,
                 action=request.tool_action,
+                role=request.role,
+                scopes=request.scopes,
                 default_timeout_seconds=gateway_timeout_seconds,
             )
             payload["workspace_id"] = resolved_workspace_id
@@ -2042,6 +2152,8 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
             workspace_id=request.workspace_id or workspace_id,
             request_id=request.request_id,
             action=request.action,
+            role=request.role,
+            scopes=request.scopes,
             default_timeout_seconds=effective_timeout_seconds,
         )
         request_payload["workspace_id"] = resolved_workspace_id
@@ -2117,6 +2229,70 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
     if not result.ok:
         return JSONResponse(status_code=result.status_code, content=safe_payload)
     return safe_payload
+
+
+@app.get("/internal/mcp/policies/{workspace_id}")
+async def get_internal_mcp_workspace_policy(workspace_id: str, raw_request: Request):
+    """Return current MCP tool policy snapshot for one workspace (admin-only)."""
+    request_id = (
+        str(getattr(raw_request.state, "audit_request_id", "")).strip()
+        or (raw_request.headers.get("x-request-id") or "").strip()
+        or None
+    )
+    _require_admin_tool_policy_role(
+        raw_request=raw_request,
+        workspace_id=workspace_id,
+        request_id=request_id,
+    )
+
+    policy_engine = get_tool_policy_engine()
+    try:
+        policy_payload = policy_engine.get_workspace_policy(workspace_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except KeyError:
+        raise HTTPException(
+            status_code=404,
+            detail=f"no tool policy configured for workspace '{workspace_id}'",
+        )
+
+    return {
+        "workspace_id": workspace_id,
+        "policy": policy_payload,
+    }
+
+
+@app.put("/internal/mcp/policies/{workspace_id}")
+async def upsert_internal_mcp_workspace_policy(
+    workspace_id: str,
+    request: MCPWorkspacePolicyUpdateRequest,
+    raw_request: Request,
+):
+    """Create/update MCP tool policy for a workspace (admin-only)."""
+    request_id = (
+        str(getattr(raw_request.state, "audit_request_id", "")).strip()
+        or (raw_request.headers.get("x-request-id") or "").strip()
+        or None
+    )
+    _require_admin_tool_policy_role(
+        raw_request=raw_request,
+        workspace_id=workspace_id,
+        request_id=request_id,
+    )
+
+    policy_engine = get_tool_policy_engine()
+    try:
+        updated_policy = policy_engine.upsert_workspace_policy(workspace_id, request.policy)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    return {
+        "status": "updated",
+        "workspace_id": workspace_id,
+        "policy": updated_policy,
+    }
+
+
 @app.post("/v1/chat/completions")
 async def chat_completions(request: ChatCompletionRequest, raw_request: Request):
     """
