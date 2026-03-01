@@ -84,6 +84,14 @@ MCP_GATEWAY_API_KEY = os.getenv("MCP_GATEWAY_API_KEY", "")
 WORKSPACE_ID_RESPONSE_HEADER = "X-Workspace-Id"
 AUDIT_CAPTURE_BODY_LIMIT = int(os.getenv("AUDIT_CAPTURE_BODY_LIMIT", "32768"))
 AUDIT_EXPORT_MAX_LIMIT = int(os.getenv("AUDIT_EXPORT_MAX_LIMIT", "10000"))
+AUDIT_EVENT_TYPE_ALIASES = {
+    "request": "request_event",
+    "request_event": "request_event",
+    "tool_call": "tool_event",
+    "tool_event": "tool_event",
+    "mcp_tool_call": "tool_event",
+}
+AUDIT_EVENT_TYPE_QUERY_PATTERN = "^(request_event|tool_event|request|tool_call|mcp_tool_call)$"
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "").strip()
 DEFAULT_MCP_POLICY_ROLE = "viewer"
 SUPPORTED_MCP_POLICY_ROLES = {"admin", "developer", "viewer"}
@@ -2289,6 +2297,25 @@ def _redact_value_for_audit(value: Any) -> Tuple[Any, int]:
     return redact_secrets(value)
 
 
+def _normalize_audit_event_type(value: Optional[str]) -> Optional[str]:
+    """Normalize event type aliases to canonical audit schema names."""
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    canonical = AUDIT_EVENT_TYPE_ALIASES.get(normalized)
+    if canonical:
+        return canonical
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "event_type must be one of: request_event, tool_event "
+            "(aliases accepted: request, tool_call, mcp_tool_call)"
+        ),
+    )
+
+
 def evaluate_safety_text(text: str, endpoint: str) -> SafetyVerdictResponse:
     """Evaluate payload text against block and warning term lists."""
     normalized_text = (text or "").lower()
@@ -2444,6 +2471,59 @@ def _extract_tool_name(payload: Optional[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
+def _extract_model_name(payload: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Extract model identifier from payload conventions."""
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("model", "model_name", "preferred_model"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("model", "model_name", "preferred_model"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    return None
+
+
+def _extract_tool_calls(payload: Optional[Dict[str, Any]], fallback_tool_name: Optional[str] = None) -> List[str]:
+    """Extract an ordered set of tool calls from an audit payload."""
+    resolved_tools: List[str] = []
+    seen = set()
+
+    def _append(tool_value: Any):
+        if isinstance(tool_value, str):
+            cleaned = tool_value.strip()
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                resolved_tools.append(cleaned)
+
+    if isinstance(payload, dict):
+        for key in ("tool_calls", "tools_called"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                for item in value:
+                    _append(item)
+
+    _append(fallback_tool_name)
+    return resolved_tools
+
+
+def _extract_redacted_arguments(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extract already-redacted tool arguments from payload when present."""
+    if not isinstance(payload, dict):
+        return {}
+    arguments = payload.get("arguments")
+    if isinstance(arguments, dict):
+        return arguments
+    return {}
+
+
 def _record_tool_call_audit(
     raw_request: Request,
     server_id: Optional[str],
@@ -2460,6 +2540,15 @@ def _record_tool_call_audit(
     safe_request_payload, request_redactions = _redact_value_for_audit(request_payload or {})
     safe_response_payload, response_redactions = _redact_value_for_audit(response_payload or {})
     safe_error, error_redactions = _redact_value_for_audit(error or "")
+    redacted_arguments = _extract_redacted_arguments(safe_request_payload)
+    model_name = _extract_model_name(safe_request_payload) or _extract_model_name(safe_response_payload)
+    tool_calls = _extract_tool_calls(safe_request_payload, fallback_tool_name=tool_name)
+    if status_code in {401, 403}:
+        event_status = "denied"
+    elif ok and status_code < 400:
+        event_status = "success"
+    else:
+        event_status = "error"
     workspace_id_candidate = (
         raw_request.headers.get("x-workspace-id")
         or raw_request.headers.get("x-project-id")
@@ -2481,6 +2570,8 @@ def _record_tool_call_audit(
         "request_redactions": request_redactions,
         "response_redactions": response_redactions,
         "error_redactions": error_redactions,
+        "redacted_arguments": redacted_arguments,
+        "event_schema": "tool_event.v1",
         "role": auth_role,
         "auth_method": auth_method,
     }
@@ -2499,7 +2590,7 @@ def _record_tool_call_audit(
 
     try:
         get_audit_service().add_event(
-            event_type="tool_call",
+            event_type="tool_event",
             request_id=request_id,
             endpoint=raw_request.url.path,
             method=raw_request.method,
@@ -2507,8 +2598,13 @@ def _record_tool_call_audit(
             workspace_id=workspace_id,
             user_id=user_id,
             role=auth_role,
+            model=model_name,
+            status=event_status,
             tool_name=tool_name,
+            tool_calls=tool_calls,
+            latency_ms=duration_ms,
             duration_ms=duration_ms,
+            redacted_arguments=redacted_arguments,
             request_payload=safe_request_payload,
             response_payload=safe_response_payload,
             metadata=metadata,
@@ -2593,18 +2689,29 @@ async def audit_request_middleware(request: Request, call_next):
                 logger.warning("Failed to record usage request metric: %s", metrics_exc)
         safe_request_payload, request_redactions = _redact_value_for_audit(request_payload)
         safe_audit_error, error_redactions = _redact_value_for_audit(audit_error or "")
+        request_model = _extract_model_name(safe_request_payload)
+        tool_calls = _extract_tool_calls(safe_request_payload, fallback_tool_name=tool_name)
+        redacted_arguments = _extract_redacted_arguments(safe_request_payload)
+        if status_code in {401, 403}:
+            request_status = "denied"
+        elif status_code < 400:
+            request_status = "success"
+        else:
+            request_status = "error"
         metadata = {
             "query_params": dict(request.query_params),
             "client_host": request.client.host if request.client else None,
             "error": safe_audit_error or None,
             "request_redactions": request_redactions,
             "error_redactions": error_redactions,
+            "redacted_arguments": redacted_arguments,
+            "event_schema": "request_event.v1",
             "role": auth_role,
             "auth_method": auth_method,
         }
         try:
             get_audit_service().add_event(
-                event_type="request",
+                event_type="request_event",
                 request_id=request_id,
                 endpoint=endpoint,
                 method=method,
@@ -2612,8 +2719,13 @@ async def audit_request_middleware(request: Request, call_next):
                 workspace_id=workspace_id,
                 user_id=user_id,
                 role=auth_role,
+                model=request_model,
+                status=request_status,
                 tool_name=tool_name,
+                tool_calls=tool_calls,
+                latency_ms=duration_ms,
                 duration_ms=duration_ms,
+                redacted_arguments=redacted_arguments,
                 request_payload=safe_request_payload,
                 metadata=metadata,
             )
@@ -2997,8 +3109,14 @@ async def export_audit_events(
     workspace_id: Optional[str] = Query(None, description="Filter by workspace identifier"),
     user_id: Optional[str] = Query(None, description="Filter by user identifier"),
     role: Optional[str] = Query(None, description="Filter by resolved role"),
+    model: Optional[str] = Query(None, description="Filter by model identifier"),
+    status: Optional[str] = Query(None, description="Filter by event status"),
     tool_name: Optional[str] = Query(None, description="Filter by tool name"),
-    event_type: Optional[str] = Query(None, pattern="^(request|tool_call)$", description="Filter by event type"),
+    event_type: Optional[str] = Query(
+        None,
+        pattern=AUDIT_EVENT_TYPE_QUERY_PATTERN,
+        description="Filter by event type",
+    ),
     start_date: Optional[str] = Query(None, description="Start date (ISO-8601)"),
     end_date: Optional[str] = Query(None, description="End date (ISO-8601)"),
     limit: int = Query(1000, ge=1, le=AUDIT_EXPORT_MAX_LIMIT),
@@ -3007,7 +3125,7 @@ async def export_audit_events(
     """
     Export structured audit events as JSON or CSV.
 
-    Supported filters include workspace/user/date range/tool name.
+    Supported filters include workspace/user/model/status/date range/tool name.
     """
     query_params = raw_request.query_params
     admin_request = _is_admin_request(raw_request)
@@ -3025,11 +3143,10 @@ async def export_audit_events(
 
     user_filter = user_id or query_params.get("user")
     role_filter = role or query_params.get("role")
+    model_filter = model or query_params.get("model")
+    status_filter = status or query_params.get("status")
     tool_filter = tool_name or query_params.get("tool")
-    event_filter = event_type or query_params.get("type")
-
-    if event_filter and event_filter not in {"request", "tool_call"}:
-        raise HTTPException(status_code=400, detail="event_type must be 'request' or 'tool_call'")
+    event_filter = _normalize_audit_event_type(event_type or query_params.get("type"))
 
     start_filter = _safe_iso_datetime(
         start_date or query_params.get("from") or query_params.get("start"),
@@ -3049,6 +3166,8 @@ async def export_audit_events(
             workspace_id=workspace_filter,
             user_id=user_filter,
             role=role_filter,
+            model=model_filter,
+            status=status_filter,
             tool_name=tool_filter,
             event_type=event_filter,
             start_date=start_filter,
