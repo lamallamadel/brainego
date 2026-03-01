@@ -71,6 +71,7 @@ def test_sanitize_retrieved_context_chunks_returns_aggregate_stats() -> None:
     assert len(sanitized) == 1
     assert stats["chunks_processed"] == 1
     assert stats["chunks_with_injection"] == 1
+    assert stats["injection_chunk_refs"] == ["1"]
     assert stats["dropped_injection_lines"] == 1
     assert stats["secret_redactions"] >= 2
     assert "AKIAABCDEFGHIJKLMNOP" not in sanitized[0]["text"]
