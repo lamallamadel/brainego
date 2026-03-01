@@ -155,7 +155,11 @@ python test_feedback.py
 
 ### Manual Export
 ```bash
-python export_weekly_finetuning.py /tmp/dataset.jsonl --days 7
+# Upload JSONL to MinIO (default behavior)
+python export_weekly_finetuning.py /tmp/dataset.jsonl --days 7 --minio-bucket finetuning-datasets
+
+# Local file only (skip MinIO upload)
+python export_weekly_finetuning.py /tmp/dataset.jsonl --days 7 --no-minio-upload
 ```
 
 ### Automated (Cron)
@@ -166,7 +170,7 @@ python export_weekly_finetuning.py /tmp/dataset.jsonl --days 7
 
 ### Output Format
 ```json
-{"messages": [{"role": "user", "content": "..."}, {"role": "assistant", "content": "..."}], "weight": 2.0, "metadata": {...}}
+{"instruction": "...", "input": "...", "output": "...", "weight": 2.0, "metadata": {...}}
 ```
 
 ---

@@ -298,10 +298,13 @@ curl -X POST http://localhost:8000/v1/feedback/export/finetuning \
   -H "Content-Type: application/json" \
   -d "{
     \"output_path\": \"${OUTPUT_FILE}\",
-    \"format\": \"jsonl\"
+    \"format\": \"jsonl\",
+    \"upload_to_minio\": true,
+    \"minio_bucket\": \"finetuning-datasets\",
+    \"minio_prefix\": \"weekly\"
   }"
 
-echo "Dataset exported to ${OUTPUT_FILE}"
+echo "Dataset exported to ${OUTPUT_FILE} and uploaded to MinIO"
 ```
 
 Schedule with cron (every Sunday at 2 AM):

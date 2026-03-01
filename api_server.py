@@ -1064,6 +1064,19 @@ class FinetuningExportRequest(BaseModel):
     min_query_chars: int = Field(10, ge=1, description="Minimum query length")
     min_response_chars: int = Field(20, ge=1, description="Minimum response length")
     deduplicate: bool = Field(True, description="Remove duplicate query/response pairs")
+    upload_to_minio: bool = Field(False, description="Upload exported dataset to MinIO")
+    minio_bucket: Optional[str] = Field(
+        None,
+        description="Optional MinIO bucket override (defaults to env)",
+    )
+    minio_prefix: Optional[str] = Field(
+        None,
+        description="Optional MinIO object prefix override (defaults to env)",
+    )
+    minio_secure: Optional[bool] = Field(
+        None,
+        description="Optional HTTPS toggle for MinIO connection",
+    )
 class FinetuningExportResponse(BaseModel):
     status: str
     output_path: str
@@ -1074,6 +1087,9 @@ class FinetuningExportResponse(BaseModel):
     filtered_out_samples: int
     start_date: Optional[str]
     end_date: Optional[str]
+    minio_bucket: Optional[str] = None
+    minio_object_key: Optional[str] = None
+    minio_uri: Optional[str] = None
 class AuditExportResponse(BaseModel):
     status: str
     format: str
@@ -5369,7 +5385,9 @@ async def export_finetuning_dataset(request: FinetuningExportRequest):
     2. Applies weights based on feedback rating:
        - Positive feedback (thumbs-up): 2.0x weight
        - Negative feedback (thumbs-down): 0.5x weight
-    3. Exports to JSONL format suitable for fine-tuning
+    3. Applies quality filtering and optional deduplication
+    4. Exports to JSONL format suitable for fine-tuning
+    5. Optionally uploads the exported artifact to MinIO
     
     Output format (per line):
     {
@@ -5424,6 +5442,10 @@ async def export_finetuning_dataset(request: FinetuningExportRequest):
             min_query_chars=request.min_query_chars,
             min_response_chars=request.min_response_chars,
             deduplicate=request.deduplicate,
+            upload_to_minio=request.upload_to_minio,
+            minio_bucket=request.minio_bucket,
+            minio_prefix=request.minio_prefix,
+            minio_secure=request.minio_secure,
         )
         
         logger.info(

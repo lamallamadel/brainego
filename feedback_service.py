@@ -7,8 +7,10 @@ and weekly fine-tuning dataset export.
 
 import json
 import logging
+import os
 from typing import Dict, List, Optional, Any, Set, Tuple
 from datetime import datetime, timedelta
+from pathlib import Path
 import uuid
 
 import psycopg2
@@ -96,8 +98,7 @@ class FeedbackService:
         session_id: Optional[str] = None,
         intent: Optional[str] = None,
         project: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        reason: Optional[str] = None
+        metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Add feedback for a model response.
@@ -115,7 +116,6 @@ class FeedbackService:
             intent: Detected intent (e.g., "code", "reasoning", "general")
             project: Project identifier
             metadata: Additional metadata as JSON
-            reason: Optional textual reason for the rating
         
         Returns:
             Dictionary with feedback_id and status
@@ -469,6 +469,115 @@ class FeedbackService:
             filtered.append(normalized_sample)
 
         return filtered
+
+    @staticmethod
+    def _extract_s3_error_code(exc: Exception) -> Optional[str]:
+        """Extract S3 error code from boto3/botocore exception objects."""
+        response = getattr(exc, "response", None)
+        if isinstance(response, dict):
+            error = response.get("Error", {})
+            if isinstance(error, dict):
+                code = error.get("Code")
+                if code:
+                    return str(code)
+        return None
+
+    def _build_minio_client(
+        self,
+        endpoint: str,
+        access_key: str,
+        secret_key: str,
+        secure: bool = False,
+    ):
+        """Create an S3-compatible client for MinIO."""
+        from boto3 import client as boto3_client
+
+        scheme = "https" if secure else "http"
+        return boto3_client(
+            "s3",
+            endpoint_url=f"{scheme}://{endpoint}",
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+        )
+
+    def _ensure_bucket_exists(self, s3_client: Any, bucket_name: str) -> None:
+        """Ensure destination MinIO bucket exists."""
+        try:
+            s3_client.head_bucket(Bucket=bucket_name)
+            return
+        except Exception:
+            logger.info("MinIO bucket '%s' missing or inaccessible, creating...", bucket_name)
+
+        try:
+            s3_client.create_bucket(Bucket=bucket_name)
+            logger.info("Created MinIO bucket: %s", bucket_name)
+        except Exception as exc:
+            error_code = self._extract_s3_error_code(exc)
+            if error_code not in {"BucketAlreadyOwnedByYou", "BucketAlreadyExists"}:
+                raise
+
+    @staticmethod
+    def _build_weekly_export_object_key(
+        minio_prefix: str,
+        start_date: Optional[datetime],
+        end_date: Optional[datetime],
+    ) -> str:
+        """Build deterministic object key partitioned by ISO week."""
+        now = datetime.utcnow()
+        period_start = start_date or (now - timedelta(days=7))
+        period_end = end_date or now
+        week_token = period_end.strftime("%G-W%V")
+        filename = (
+            f"finetuning_{period_start.strftime('%Y%m%d')}_"
+            f"{period_end.strftime('%Y%m%d')}_{now.strftime('%Y%m%dT%H%M%SZ')}.jsonl"
+        )
+
+        prefix = minio_prefix.strip("/")
+        key_parts = [part for part in [prefix, str(period_end.year), week_token] if part]
+        return "/".join(key_parts + [filename])
+
+    def _upload_dataset_to_minio(
+        self,
+        file_path: str,
+        bucket_name: str,
+        object_key: str,
+        endpoint: str,
+        access_key: str,
+        secret_key: str,
+        secure: bool,
+        metadata: Dict[str, Any],
+    ) -> Dict[str, str]:
+        """Upload exported dataset file to MinIO."""
+        s3_client = self._build_minio_client(
+            endpoint=endpoint,
+            access_key=access_key,
+            secret_key=secret_key,
+            secure=secure,
+        )
+        self._ensure_bucket_exists(s3_client, bucket_name)
+
+        object_metadata = {
+            str(k).replace("_", "-"): str(v)
+            for k, v in metadata.items()
+            if v is not None
+        }
+
+        with open(file_path, "rb") as exported_file:
+            s3_client.put_object(
+                Bucket=bucket_name,
+                Key=object_key,
+                Body=exported_file,
+                ContentType="application/x-ndjson",
+                Metadata=object_metadata,
+            )
+
+        minio_uri = f"s3://{bucket_name}/{object_key}"
+        logger.info("Uploaded fine-tuning dataset to %s", minio_uri)
+        return {
+            "minio_bucket": bucket_name,
+            "minio_object_key": object_key,
+            "minio_uri": minio_uri,
+        }
     
     def export_finetuning_dataset(
         self,
@@ -479,6 +588,13 @@ class FeedbackService:
         min_query_chars: int = 10,
         min_response_chars: int = 20,
         deduplicate: bool = True,
+        upload_to_minio: bool = False,
+        minio_bucket: Optional[str] = None,
+        minio_prefix: Optional[str] = None,
+        minio_endpoint: Optional[str] = None,
+        minio_access_key: Optional[str] = None,
+        minio_secret_key: Optional[str] = None,
+        minio_secure: Optional[bool] = None,
     ) -> Dict[str, Any]:
         """
         Export fine-tuning dataset to file.
@@ -488,6 +604,16 @@ class FeedbackService:
             start_date: Start of time range
             end_date: End of time range
             format: Export format ("jsonl")
+            min_query_chars: Minimum query length after normalization
+            min_response_chars: Minimum response length after normalization
+            deduplicate: Remove duplicate query/response pairs
+            upload_to_minio: Upload exported dataset to MinIO
+            minio_bucket: Destination MinIO bucket (env/default if omitted)
+            minio_prefix: Destination object key prefix
+            minio_endpoint: MinIO endpoint (host:port)
+            minio_access_key: MinIO access key
+            minio_secret_key: MinIO secret key
+            minio_secure: Use HTTPS for MinIO connection
         
         Returns:
             Export statistics
@@ -499,9 +625,10 @@ class FeedbackService:
             min_response_chars=min_response_chars,
             deduplicate=deduplicate,
         )
-        
+
         if format == "jsonl":
-            with open(output_path, "w") as f:
+            Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+            with open(output_path, "w", encoding="utf-8") as f:
                 for sample in dataset:
                     training_sample = {
                         "instruction": "Respond to the user input accurately and helpfully.",
@@ -519,14 +646,14 @@ class FeedbackService:
                     f.write(json.dumps(training_sample) + "\n")
         else:
             raise ValueError(f"Unsupported format: {format}")
-        
+
         positive_count = sum(1 for s in dataset if s["rating"] == 1)
         negative_count = sum(1 for s in dataset if s["rating"] == -1)
         total_weight = sum(s["weight"] for s in dataset)
-        
+
         logger.info(f"Dataset exported to {output_path}")
-        
-        return {
+
+        result: Dict[str, Any] = {
             "status": "success",
             "output_path": output_path,
             "total_samples": len(dataset),
@@ -535,8 +662,62 @@ class FeedbackService:
             "total_weight": round(total_weight, 2),
             "filtered_out_samples": len(raw_dataset) - len(dataset),
             "start_date": start_date.isoformat() if start_date else None,
-            "end_date": end_date.isoformat() if end_date else None
+            "end_date": end_date.isoformat() if end_date else None,
+            "minio_bucket": None,
+            "minio_object_key": None,
+            "minio_uri": None,
         }
+
+        if upload_to_minio:
+            resolved_bucket = minio_bucket or os.getenv(
+                "FINETUNING_DATASET_BUCKET",
+                "finetuning-datasets",
+            )
+            resolved_prefix = minio_prefix or os.getenv(
+                "FINETUNING_DATASET_PREFIX",
+                "weekly",
+            )
+            resolved_endpoint = minio_endpoint or os.getenv("MINIO_ENDPOINT", "minio:9000")
+            resolved_access_key = minio_access_key or os.getenv("MINIO_ACCESS_KEY", "minioadmin")
+            resolved_secret_key = minio_secret_key or os.getenv(
+                "MINIO_SECRET_KEY",
+                "minioadmin123",
+            )
+            resolved_secure = minio_secure
+            if resolved_secure is None:
+                resolved_secure = os.getenv("MINIO_SECURE", "false").strip().lower() in {
+                    "1",
+                    "true",
+                    "yes",
+                    "on",
+                }
+
+            object_key = self._build_weekly_export_object_key(
+                minio_prefix=resolved_prefix,
+                start_date=start_date,
+                end_date=end_date,
+            )
+            upload_info = self._upload_dataset_to_minio(
+                file_path=output_path,
+                bucket_name=resolved_bucket,
+                object_key=object_key,
+                endpoint=resolved_endpoint,
+                access_key=resolved_access_key,
+                secret_key=resolved_secret_key,
+                secure=resolved_secure,
+                metadata={
+                    "format": format,
+                    "total_samples": len(dataset),
+                    "positive_samples": positive_count,
+                    "negative_samples": negative_count,
+                    "total_weight": round(total_weight, 2),
+                    "filtered_out_samples": len(raw_dataset) - len(dataset),
+                    "deduplicate": deduplicate,
+                },
+            )
+            result.update(upload_info)
+
+        return result
     
     def get_feedback_stats(
         self,

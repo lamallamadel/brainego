@@ -39,3 +39,23 @@ def test_postgres_schema_and_export_include_reason() -> None:
     assert "RETURNS TABLE (" in init_sql
     assert "reason TEXT," in init_sql
     assert "f.reason" in init_sql
+
+
+def test_finetuning_export_request_exposes_minio_options() -> None:
+    api_server = _read("api_server.py")
+
+    assert "upload_to_minio: bool" in api_server
+    assert "minio_bucket: Optional[str]" in api_server
+    assert "minio_prefix: Optional[str]" in api_server
+
+
+def test_finetuning_export_endpoint_forwards_minio_options() -> None:
+    api_server = _read("api_server.py")
+
+    call_pattern = re.compile(
+        r"service\.export_finetuning_dataset\(.*?upload_to_minio=request\.upload_to_minio,"
+        r".*?minio_bucket=request\.minio_bucket,"
+        r".*?minio_prefix=request\.minio_prefix,",
+        re.DOTALL,
+    )
+    assert call_pattern.search(api_server)
