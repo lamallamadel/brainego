@@ -127,3 +127,24 @@ def test_admin_policy_management_routes_require_admin_role() -> None:
     assert put_route is not None
     assert _function_calls(get_route, "_require_admin_tool_policy_role")
     assert _function_calls(put_route, "_require_admin_tool_policy_role")
+
+
+def test_tool_policy_identity_prefers_authenticated_role_and_blocks_escalation() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "def _resolve_authenticated_mcp_policy_role(" in content
+    assert "if authenticated_role:" in content
+    assert "_role_priority(requested_role) <= _role_priority(authenticated_role)" in content
+    assert "normalized_role = authenticated_role" in content
+
+
+def test_admin_operations_allow_admin_role_or_break_glass_key() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "def _has_admin_privileges(raw_request: Request) -> bool:" in content
+    assert "return _is_admin_request(raw_request) or _is_admin_role_request(raw_request)" in content
+    assert "if _has_admin_privileges(raw_request):" in content
+
+
+def test_policy_admin_role_check_supports_admin_api_key_override() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "if _is_admin_request(raw_request):" in content
+    assert "return \"admin\", resolved_scopes" in content

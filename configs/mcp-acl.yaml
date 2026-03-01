@@ -224,7 +224,7 @@ roles:
       requests_per_minute: 200
       requests_per_hour: 3000
 
-  readonly:
+  viewer: &viewer_role
     description: "Read-only access to all sources"
     permissions:
       mcp-github:
@@ -279,6 +279,10 @@ roles:
     rate_limits:
       requests_per_minute: 60
       requests_per_hour: 1000
+
+  readonly:
+    <<: *viewer_role
+    description: "Legacy alias for viewer role"
 
   project-agent:
     description: "Scoped access for project agents to GitHub/Notion test spaces"
@@ -338,13 +342,14 @@ roles:
       requests_per_hour: 1800
 
 # Default role for unauthenticated or unspecified users
-default_role: readonly
+default_role: viewer
 
 # API key to role mappings
 # In production, use a secure database or secrets manager
 api_key_roles:
   sk-admin-key-456: admin
   sk-dev-key-789: developer
+  sk-viewer-key-000: viewer
   sk-test-key-123: analyst
   sk-project-agent-key-321: project-agent
 
@@ -352,6 +357,7 @@ api_key_roles:
 user_roles:
   admin@example.com: admin
   developer@example.com: developer
+  viewer@example.com: viewer
   analyst@example.com: analyst
   writer@example.com: writer
   project-agent@example.com: project-agent

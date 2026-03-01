@@ -145,7 +145,7 @@ async def lifespan(app: FastAPI):
         logger.info(f"✓ Loaded MCP ACL config from {MCP_ACL_CONFIG_PATH}")
     except Exception as e:
         logger.error(f"Failed to load MCP ACL config: {e}")
-        mcp_acl_config = {"roles": {}, "default_role": "readonly"}
+        mcp_acl_config = {"roles": {}, "default_role": "viewer"}
     
     # Initialize MCP client
     global mcp_client
