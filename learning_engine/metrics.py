@@ -66,7 +66,7 @@ lora_active_version = Info(
 training_runs_total = Counter(
     'training_runs_total',
     'Total number of training runs',
-    ['model', 'status']  # status: success, failed
+    ['model', 'status']  # status: success, skipped, failed
 )
 
 training_epochs_total = Counter(

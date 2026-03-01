@@ -11,6 +11,7 @@ Implements fine-tuning with:
 import os
 import logging
 import torch
+import time
 from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import json
@@ -34,6 +35,7 @@ import psycopg2
 
 from .fisher import FisherInformationCalculator
 from .storage import AdapterStorage
+from . import metrics as learning_metrics
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +70,8 @@ class LoRATrainer:
             "is_training": False,
             "current_job": None,
             "last_job": None,
-            "metrics": {}
+            "metrics": {},
+            "last_run": {}
         }
         
         logger.info("LoRA Trainer initialized")
@@ -269,19 +272,78 @@ class LoRATrainer:
         logger.info("=" * 60)
         logger.info("Starting LoRA Fine-tuning with EWC")
         logger.info("=" * 60)
+
+        started_at = time.monotonic()
         
         # Update status
         self.training_status["is_training"] = True
         self.training_status["current_job"] = job_id or f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        dataset_id = f"feedback_{days}d_{self.training_status['current_job']}"
+
+        logger.info(
+            "training_run_started",
+            extra={
+                "extra_fields": {
+                    "event": "learning_engine.training.started",
+                    "job_id": self.training_status["current_job"],
+                    "dataset_id": dataset_id,
+                    "thresholds": {
+                        "min_samples_for_training": self.config.min_samples_for_training,
+                        "ewc_lambda_min": getattr(self.config, "ewc_lambda_min", None),
+                        "ewc_lambda_max": getattr(self.config, "ewc_lambda_max", None)
+                    },
+                    "decision": "evaluate"
+                }
+            }
+        )
         
         try:
             # Load feedback data
             samples = self.load_feedback_data(days=days)
+
+            decision_context = {
+                "force": force,
+                "enough_samples": len(samples) >= self.config.min_samples_for_training,
+                "train": force or len(samples) >= self.config.min_samples_for_training
+            }
             
             # Check minimum samples
             if len(samples) < self.config.min_samples_for_training and not force:
                 msg = f"Not enough samples ({len(samples)} < {self.config.min_samples_for_training})"
                 logger.warning(msg)
+                learning_metrics.training_runs_total.labels(
+                    model=self.config.model_name,
+                    status="skipped"
+                ).inc()
+
+                self.training_status["last_run"] = {
+                    "status": "skipped",
+                    "dataset_id": dataset_id,
+                    "dataset_size": len(samples),
+                    "duration_seconds": time.monotonic() - started_at,
+                    "thresholds": {
+                        "min_samples_for_training": self.config.min_samples_for_training,
+                        "ewc_lambda": ewc_lambda
+                    },
+                    "decision": decision_context
+                }
+
+                logger.info(
+                    "training_run_skipped",
+                    extra={
+                        "extra_fields": {
+                            "event": "learning_engine.training.skipped",
+                            "job_id": self.training_status["current_job"],
+                            "dataset_id": dataset_id,
+                            "dataset_size": len(samples),
+                            "thresholds": {
+                                "min_samples_for_training": self.config.min_samples_for_training,
+                                "ewc_lambda": ewc_lambda
+                            },
+                            "decision": decision_context
+                        }
+                    }
+                )
                 return {
                     "status": "skipped",
                     "message": msg,
@@ -339,6 +401,10 @@ class LoRATrainer:
             # Train
             logger.info("Starting training...")
             train_result = trainer.train()
+
+            loss_history = [entry.get("loss") for entry in trainer.state.log_history if "loss" in entry]
+            initial_loss = loss_history[0] if loss_history else None
+            final_loss = loss_history[-1] if loss_history else train_result.training_loss
             
             # Generate new version
             self.current_version = self._increment_version(self.current_version)
@@ -367,12 +433,46 @@ class LoRATrainer:
                 "version": self.current_version,
                 "samples": len(samples),
                 "train_loss": train_result.training_loss,
+                "initial_loss": initial_loss,
+                "final_loss": final_loss,
                 "ewc_lambda": ewc_lambda,
-                "duration_seconds": train_result.metrics.get('train_runtime', 0)
+                "duration_seconds": train_result.metrics.get('train_runtime', 0),
+                "dataset_id": dataset_id,
+                "dataset_size": len(samples),
+                "thresholds": {
+                    "min_samples_for_training": self.config.min_samples_for_training,
+                    "ewc_lambda": ewc_lambda
+                },
+                "decision": decision_context
             }
             
             self.training_status["metrics"] = metrics
+            self.training_status["last_run"] = {
+                "status": "success",
+                **metrics
+            }
             self.training_status["last_job"] = self.training_status["current_job"]
+
+            learning_metrics.training_runs_total.labels(
+                model=self.config.model_name,
+                status="success"
+            ).inc()
+            learning_metrics.training_duration_seconds.labels(
+                model=self.config.model_name,
+                version_id=self.current_version
+            ).set(metrics["duration_seconds"])
+            learning_metrics.training_samples_total.labels(
+                model=self.config.model_name,
+                version_id=self.current_version
+            ).set(len(samples))
+            learning_metrics.training_loss.labels(
+                model=self.config.model_name,
+                version_id=self.current_version
+            ).set(final_loss if final_loss is not None else 0.0)
+            learning_metrics.ewc_lambda.labels(
+                model=self.config.model_name,
+                version_id=self.current_version
+            ).set(ewc_lambda)
             
             logger.info("=" * 60)
             logger.info("Training Complete!")
@@ -380,6 +480,25 @@ class LoRATrainer:
             logger.info(f"Version: {self.current_version}")
             logger.info(f"Train Loss: {train_result.training_loss:.4f}")
             logger.info(f"Duration: {metrics['duration_seconds']:.2f}s")
+            logger.info(
+                "training_run_completed",
+                extra={
+                    "extra_fields": {
+                        "event": "learning_engine.training.completed",
+                        "job_id": self.training_status["current_job"],
+                        "dataset_id": dataset_id,
+                        "dataset_size": len(samples),
+                        "initial_loss": initial_loss,
+                        "final_loss": final_loss,
+                        "duration_seconds": metrics["duration_seconds"],
+                        "thresholds": {
+                            "min_samples_for_training": self.config.min_samples_for_training,
+                            "ewc_lambda": ewc_lambda
+                        },
+                        "decision": decision_context
+                    }
+                }
+            )
             logger.info("=" * 60)
             
             return {
@@ -390,6 +509,39 @@ class LoRATrainer:
             
         except Exception as e:
             logger.error(f"Training failed: {e}", exc_info=True)
+            learning_metrics.training_runs_total.labels(
+                model=self.config.model_name,
+                status="failed"
+            ).inc()
+
+            self.training_status["last_run"] = {
+                "status": "failed",
+                "dataset_id": dataset_id,
+                "duration_seconds": time.monotonic() - started_at,
+                "thresholds": {
+                    "min_samples_for_training": self.config.min_samples_for_training,
+                    "ewc_lambda": ewc_lambda
+                },
+                "decision": "exception"
+            }
+
+            logger.error(
+                "training_run_failed",
+                extra={
+                    "extra_fields": {
+                        "event": "learning_engine.training.failed",
+                        "job_id": self.training_status["current_job"],
+                        "dataset_id": dataset_id,
+                        "thresholds": {
+                            "min_samples_for_training": self.config.min_samples_for_training,
+                            "ewc_lambda": ewc_lambda
+                        },
+                        "decision": "exception",
+                        "error": str(e)
+                    }
+                },
+                exc_info=True
+            )
             return {
                 "status": "failed",
                 "error": str(e)
