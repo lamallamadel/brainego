@@ -1100,12 +1100,14 @@ class WorkspaceListResponse(BaseModel):
     workspaces: List[WorkspaceResponse]
 class MeteringRecord(BaseModel):
     workspace_id: str
+    user_id: Optional[str] = None
     meter_key: str
     events: int
     total_quantity: float
 class MeteringSummaryResponse(BaseModel):
     status: str
     workspace_id: Optional[str] = None
+    user_id: Optional[str] = None
     meter_key: Optional[str] = None
     start_date: Optional[str] = None
     end_date: Optional[str] = None
@@ -1316,6 +1318,7 @@ def _record_metering_event(
     workspace_id: str,
     meter_key: str,
     quantity: float = 1.0,
+    user_id: Optional[str] = None,
     request_id: Optional[str] = None,
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
@@ -1325,6 +1328,7 @@ def _record_metering_event(
             workspace_id=workspace_id,
             meter_key=meter_key,
             quantity=quantity,
+            user_id=user_id,
             request_id=request_id,
             metadata=metadata,
         )
@@ -2517,6 +2521,7 @@ def _record_tool_call_audit(
             workspace_id=workspace_id,
             meter_key="mcp.tool_call",
             quantity=1,
+            user_id=user_id,
             request_id=request_id,
             metadata={
                 "ok": ok,
@@ -2621,6 +2626,7 @@ async def audit_request_middleware(request: Request, call_next):
                 workspace_id=workspace_id,
                 meter_key="http.request",
                 quantity=1,
+                user_id=user_id,
                 request_id=request_id,
                 metadata={
                     "endpoint": endpoint,
@@ -2629,6 +2635,19 @@ async def audit_request_middleware(request: Request, call_next):
                     "duration_ms": duration_ms,
                 },
             )
+            if status_code >= 400:
+                _record_metering_event(
+                    workspace_id=workspace_id,
+                    meter_key="http.error",
+                    quantity=1,
+                    user_id=user_id,
+                    request_id=request_id,
+                    metadata={
+                        "endpoint": endpoint,
+                        "method": method,
+                        "status_code": status_code,
+                    },
+                )
         except Exception as audit_exc:
             logger.error("Failed to persist request audit event: %s", audit_exc)
 
@@ -3155,6 +3174,7 @@ async def admin_list_workspaces(
 async def get_workspace_metering(
     raw_request: Request,
     workspace_id: Optional[str] = Query(None, description="Workspace scope for metering summary"),
+    user_id: Optional[str] = Query(None, description="Optional user scope for metering summary"),
     meter_key: Optional[str] = Query(None, description="Optional meter key filter"),
     start_date: Optional[str] = Query(None, description="Start date (ISO-8601)"),
     end_date: Optional[str] = Query(None, description="End date (ISO-8601)"),
@@ -3171,6 +3191,7 @@ async def get_workspace_metering(
         raise HTTPException(status_code=400, detail="workspace_id is required for metering")
     if workspace_filter and not admin_request:
         workspace_filter = _ensure_workspace_active(workspace_filter, context="metering")
+    user_filter = user_id or raw_request.query_params.get("user")
 
     start_filter = _safe_iso_datetime(start_date, "start_date")
     end_filter = _safe_iso_datetime(end_date, "end_date")
@@ -3180,6 +3201,7 @@ async def get_workspace_metering(
     try:
         result = get_metering_service().summarize_usage(
             workspace_id=workspace_filter,
+            user_id=user_filter,
             meter_key=meter_key,
             start_date=start_filter,
             end_date=end_filter,
@@ -3613,11 +3635,31 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
         )
+        metering_request_id = getattr(raw_request.state, "audit_request_id", None)
+        if prompt_tokens > 0:
+            _record_metering_event(
+                workspace_id=metering_workspace_id,
+                meter_key="tokens.input",
+                quantity=float(prompt_tokens),
+                user_id=effective_user_id,
+                request_id=metering_request_id,
+                metadata={"endpoint": "/v1/chat/completions", "model": response_model},
+            )
+        if completion_tokens > 0:
+            _record_metering_event(
+                workspace_id=metering_workspace_id,
+                meter_key="tokens.output",
+                quantity=float(completion_tokens),
+                user_id=effective_user_id,
+                request_id=metering_request_id,
+                metadata={"endpoint": "/v1/chat/completions", "model": response_model},
+            )
         _record_metering_event(
             workspace_id=metering_workspace_id,
             meter_key="chat.completions.request",
             quantity=1,
-            request_id=getattr(raw_request.state, "audit_request_id", None),
+            user_id=effective_user_id,
+            request_id=metering_request_id,
             metadata={
                 "model": response_model,
                 "completion_tokens": completion_tokens,
@@ -3730,6 +3772,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                 workspace_id=metering_workspace_id,
                 meter_key="chat.completions.error",
                 quantity=1,
+                user_id=effective_user_id,
                 request_id=getattr(raw_request.state, "audit_request_id", None),
                 metadata={"model": request.model},
             )
@@ -3746,6 +3789,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                 workspace_id=metering_workspace_id,
                 meter_key="chat.completions.error",
                 quantity=1,
+                user_id=effective_user_id,
                 request_id=getattr(raw_request.state, "audit_request_id", None),
                 metadata={"model": request.model, "error": str(e)},
             )
@@ -4385,11 +4429,37 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
         )
+        metering_request_id = getattr(raw_request.state, "audit_request_id", None)
+        if prompt_tokens > 0:
+            _record_metering_event(
+                workspace_id=workspace_id,
+                meter_key="tokens.input",
+                quantity=float(prompt_tokens),
+                user_id=metering_user_id,
+                request_id=metering_request_id,
+                metadata={
+                    "endpoint": "/v1/rag/query",
+                    "model": routing_metadata.get("model_name") or routing_metadata.get("model_id"),
+                },
+            )
+        if completion_tokens > 0:
+            _record_metering_event(
+                workspace_id=workspace_id,
+                meter_key="tokens.output",
+                quantity=float(completion_tokens),
+                user_id=metering_user_id,
+                request_id=metering_request_id,
+                metadata={
+                    "endpoint": "/v1/rag/query",
+                    "model": routing_metadata.get("model_name") or routing_metadata.get("model_id"),
+                },
+            )
         metrics.record_request((time.time() - start_time) * 1000, user_id=metering_user_id)
         _record_metering_event(
             workspace_id=workspace_id,
             meter_key="rag.query.requests",
             quantity=1,
+            user_id=metering_user_id,
             metadata={
                 "k": request.k,
                 "chunks_retrieved": retrieval_stats.get("chunks_retrieved", 0),
@@ -4405,6 +4475,7 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
             workspace_id=workspace_id,
             meter_key="rag.query.errors",
             quantity=1,
+            user_id=metering_user_id,
         )
         raise
     except Exception as e:
@@ -4413,6 +4484,7 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
             workspace_id=workspace_id,
             meter_key="rag.query.errors",
             quantity=1,
+            user_id=metering_user_id,
             metadata={"error": str(e)},
         )
         logger.error(f"Error in RAG query: {e}", exc_info=True)
@@ -4725,11 +4797,37 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
         )
+        metering_request_id = getattr(raw_request.state, "audit_request_id", None)
+        if prompt_tokens > 0:
+            _record_metering_event(
+                workspace_id=workspace_id,
+                meter_key="tokens.input",
+                quantity=float(prompt_tokens),
+                user_id=metering_user_id,
+                request_id=metering_request_id,
+                metadata={
+                    "endpoint": "/v1/rag/query/graph-enriched",
+                    "model": routing_metadata.get("model_name") or routing_metadata.get("model_id"),
+                },
+            )
+        if completion_tokens > 0:
+            _record_metering_event(
+                workspace_id=workspace_id,
+                meter_key="tokens.output",
+                quantity=float(completion_tokens),
+                user_id=metering_user_id,
+                request_id=metering_request_id,
+                metadata={
+                    "endpoint": "/v1/rag/query/graph-enriched",
+                    "model": routing_metadata.get("model_name") or routing_metadata.get("model_id"),
+                },
+            )
         metrics.record_request((time.time() - start_time) * 1000, user_id=metering_user_id)
         _record_metering_event(
             workspace_id=workspace_id,
             meter_key="rag.graph_query.requests",
             quantity=1,
+            user_id=metering_user_id,
             metadata={
                 "k": request.k,
                 "chunks_retrieved": retrieval_stats.get("chunks_retrieved", 0),
@@ -4745,6 +4843,7 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
             workspace_id=workspace_id,
             meter_key="rag.graph_query.errors",
             quantity=1,
+            user_id=metering_user_id,
         )
         raise
     except Exception as e:
@@ -4753,6 +4852,7 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
             workspace_id=workspace_id,
             meter_key="rag.graph_query.errors",
             quantity=1,
+            user_id=metering_user_id,
             metadata={"error": str(e)},
         )
         logger.error(f"Error in graph-enriched RAG query: {e}", exc_info=True)
