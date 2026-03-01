@@ -146,7 +146,7 @@ else
     curl -sS -m "$TIMEOUT_SECONDS" \
       -o "$run_dir/audit_export.json" \
       -w "%{http_code}" \
-      "${API_URL%/}/audit?format=json&limit=50&workspace=${WORKSPACE_ID}&type=mcp_tool_call" \
+      "${API_URL%/}/audit?format=json&limit=50&workspace=${WORKSPACE_ID}&type=tool_event" \
       -H "Authorization: Bearer ${API_KEY}" \
       -H "X-API-Key: ${API_KEY}" || true
   )"

@@ -135,17 +135,24 @@ GRANT EXECUTE ON FUNCTION refresh_model_accuracy TO ai_user;
 CREATE TABLE IF NOT EXISTS audit_events (
     id SERIAL PRIMARY KEY,
     event_id VARCHAR(255) UNIQUE NOT NULL,
-    event_type VARCHAR(32) NOT NULL CHECK (event_type IN ('request', 'tool_call')),
+    event_type VARCHAR(32) NOT NULL CHECK (
+        event_type IN ('request_event', 'tool_event', 'request', 'tool_call', 'mcp_tool_call')
+    ),
     timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     request_id VARCHAR(255),
     workspace_id VARCHAR(255),
     user_id VARCHAR(255),
     role VARCHAR(64),
+    model VARCHAR(255),
+    status VARCHAR(32),
     tool_name VARCHAR(255),
+    tool_calls JSONB DEFAULT '[]'::JSONB,
     endpoint TEXT,
     method VARCHAR(16),
     status_code INTEGER,
+    latency_ms DOUBLE PRECISION,
     duration_ms DOUBLE PRECISION,
+    redacted_arguments JSONB DEFAULT '{}'::JSONB,
     request_payload JSONB DEFAULT '{}'::JSONB,
     response_payload JSONB DEFAULT '{}'::JSONB,
     metadata JSONB DEFAULT '{}'::JSONB,
@@ -153,11 +160,26 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 
 ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS role VARCHAR(64);
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS model VARCHAR(255);
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS status VARCHAR(32);
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS tool_calls JSONB DEFAULT '[]'::JSONB;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS latency_ms DOUBLE PRECISION;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS redacted_arguments JSONB DEFAULT '{}'::JSONB;
+ALTER TABLE audit_events DROP CONSTRAINT IF EXISTS audit_events_event_type_check;
+ALTER TABLE audit_events
+    ADD CONSTRAINT audit_events_event_type_check
+    CHECK (event_type IN ('request_event', 'tool_event', 'request', 'tool_call', 'mcp_tool_call'));
+UPDATE audit_events
+SET latency_ms = duration_ms
+WHERE latency_ms IS NULL
+  AND duration_ms IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_audit_events_workspace_id ON audit_events(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_user_id ON audit_events(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_role ON audit_events(role);
+CREATE INDEX IF NOT EXISTS idx_audit_events_model ON audit_events(model);
+CREATE INDEX IF NOT EXISTS idx_audit_events_status ON audit_events(status);
 CREATE INDEX IF NOT EXISTS idx_audit_events_tool_name ON audit_events(tool_name);
 CREATE INDEX IF NOT EXISTS idx_audit_events_event_type ON audit_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_audit_events_request_id ON audit_events(request_id);
