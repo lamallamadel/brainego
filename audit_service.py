@@ -118,6 +118,13 @@ class AuditService:
             self._return_connection(conn)
 
     @staticmethod
+    def _normalize_workspace_id(workspace_id: Optional[str]) -> str:
+        normalized = str(workspace_id).strip() if workspace_id is not None else ""
+        if not normalized:
+            raise ValueError("workspace_id is required for audit events")
+        return normalized
+
+    @staticmethod
     def _coerce_json(value: Optional[Dict[str, Any]]) -> Dict[str, Any]:
         if value is None:
             return {}
@@ -155,6 +162,7 @@ class AuditService:
 
         resolved_event_id = event_id or str(uuid.uuid4())
         resolved_timestamp = timestamp or datetime.utcnow()
+        resolved_workspace_id = self._normalize_workspace_id(workspace_id)
         req_payload = self._coerce_json(request_payload)
         resp_payload = self._coerce_json(response_payload)
         meta_payload = self._coerce_json(metadata)
@@ -180,7 +188,7 @@ class AuditService:
                         event_type,
                         resolved_timestamp,
                         request_id,
-                        workspace_id,
+                        resolved_workspace_id,
                         user_id,
                         role,
                         tool_name,

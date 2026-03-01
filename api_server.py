@@ -34,6 +34,8 @@ from memory_scoring_config import load_memory_scoring_config
 from graph_service import GraphService
 from feedback_service import FeedbackService
 from audit_service import AuditService
+from metering_service import MeteringService
+from workspace_service import WorkspaceService
 from circuit_breaker import get_all_circuit_breaker_stats
 from internal_mcp_client import InternalMCPGatewayClient
 from tool_policy_engine import ToolPolicyEngine, load_default_tool_policy_engine
@@ -82,6 +84,7 @@ MCP_GATEWAY_API_KEY = os.getenv("MCP_GATEWAY_API_KEY", "")
 WORKSPACE_ID_RESPONSE_HEADER = "X-Workspace-Id"
 AUDIT_CAPTURE_BODY_LIMIT = int(os.getenv("AUDIT_CAPTURE_BODY_LIMIT", "32768"))
 AUDIT_EXPORT_MAX_LIMIT = int(os.getenv("AUDIT_EXPORT_MAX_LIMIT", "10000"))
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "").strip()
 DEFAULT_MCP_POLICY_ROLE = "viewer"
 SUPPORTED_MCP_POLICY_ROLES = {"admin", "developer", "viewer"}
 MCP_POLICY_ROLE_HEADERS = ("x-mcp-role", "x-user-role", "x-role")
@@ -671,8 +674,8 @@ class ChatRAGOptions(BaseModel):
     filters: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Optional metadata filters. workspace_id is required for strict multi-workspace isolation "
-            "(falls back to default workspace when omitted)."
+            "Optional metadata filters. workspace_id is required for strict "
+            "multi-workspace isolation."
         ),
     )
     min_score: Optional[float] = Field(
@@ -1078,6 +1081,36 @@ class AuditExportResponse(BaseModel):
     count: int
     filters: Dict[str, Any]
     events: Optional[List[Dict[str, Any]]] = None
+class WorkspaceCreateRequest(BaseModel):
+    workspace_id: str = Field(..., description="Workspace identifier")
+    display_name: Optional[str] = Field(None, description="Human-readable workspace name")
+    metadata: Optional[Dict[str, Any]] = Field(None, description="Optional workspace metadata")
+class WorkspaceResponse(BaseModel):
+    workspace_id: str
+    display_name: Optional[str] = None
+    status: str
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+    disabled_at: Optional[str] = None
+class WorkspaceListResponse(BaseModel):
+    status: str
+    total: int
+    count: int
+    workspaces: List[WorkspaceResponse]
+class MeteringRecord(BaseModel):
+    workspace_id: str
+    meter_key: str
+    events: int
+    total_quantity: float
+class MeteringSummaryResponse(BaseModel):
+    status: str
+    workspace_id: Optional[str] = None
+    meter_key: Optional[str] = None
+    start_date: Optional[str] = None
+    end_date: Optional[str] = None
+    count: int
+    records: List[MeteringRecord]
 class SafetyVerdictResponse(BaseModel):
     verdict: str
     reason: str
@@ -1195,6 +1228,110 @@ def _merge_workspace_into_metadata(
 
     normalized_metadata["workspace_id"] = normalized_workspace_id
     return normalized_metadata
+
+
+def _is_admin_request(raw_request: Request) -> bool:
+    """Check whether request has admin privileges."""
+    if not ADMIN_API_KEY:
+        return False
+    provided_key = (raw_request.headers.get("x-admin-api-key") or "").strip()
+    return bool(provided_key) and provided_key == ADMIN_API_KEY
+
+
+def _require_admin(raw_request: Request) -> None:
+    """Require admin privileges for management endpoints."""
+    if not ADMIN_API_KEY:
+        raise HTTPException(
+            status_code=503,
+            detail="admin endpoints are disabled because ADMIN_API_KEY is not configured",
+        )
+    if not _is_admin_request(raw_request):
+        raise HTTPException(status_code=403, detail="admin privileges required")
+
+
+def _ensure_workspace_active(workspace_id: str, context: str) -> str:
+    """Validate workspace is registered and active."""
+    normalized_workspace_id = _normalize_workspace_id(workspace_id, context)
+    try:
+        return get_workspace_service().assert_workspace_active(
+            normalized_workspace_id,
+            context=context,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+
+def _extract_workspace_from_headers(raw_request: Request) -> Optional[str]:
+    """Extract workspace identifier from common tenant headers."""
+    header_workspace = (
+        raw_request.headers.get("x-workspace-id")
+        or raw_request.headers.get("x-project-id")
+    )
+    if not header_workspace:
+        return None
+    return _normalize_workspace_id(header_workspace, "workspace headers")
+
+
+def _resolve_workspace_scope(
+    raw_request: Request,
+    explicit_workspace_id: Optional[str],
+    context: str,
+    required: bool = True,
+) -> Optional[str]:
+    """
+    Resolve workspace scope with anti-cross-tenant checks.
+
+    Non-admin callers are restricted to their header workspace.
+    """
+    header_workspace = _extract_workspace_from_headers(raw_request)
+    query_workspace = (
+        _normalize_workspace_id(explicit_workspace_id, context)
+        if explicit_workspace_id is not None
+        else None
+    )
+
+    if _is_admin_request(raw_request):
+        if query_workspace:
+            return query_workspace
+        if header_workspace:
+            return header_workspace
+        if required:
+            raise HTTPException(status_code=400, detail=f"{context} requires workspace_id")
+        return None
+
+    if header_workspace and query_workspace and header_workspace != query_workspace:
+        raise HTTPException(
+            status_code=403,
+            detail=f"{context} cannot access another workspace scope",
+        )
+
+    resolved_workspace = query_workspace or header_workspace
+    if required and not resolved_workspace:
+        raise HTTPException(status_code=400, detail=f"{context} requires workspace_id")
+    return resolved_workspace
+
+
+def _record_metering_event(
+    *,
+    workspace_id: str,
+    meter_key: str,
+    quantity: float = 1.0,
+    request_id: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Best-effort metering event persistence."""
+    try:
+        get_metering_service().add_event(
+            workspace_id=workspace_id,
+            meter_key=meter_key,
+            quantity=quantity,
+            request_id=request_id,
+            metadata=metadata,
+        )
+    except Exception as metering_exc:
+        logger.error("Failed to persist metering event: %s", metering_exc)
+
+
 # Metrics storage
 class MetricsStore:
     def __init__(self):
@@ -1579,6 +1716,8 @@ memory_service = None
 graph_service = None
 feedback_service = None
 audit_service = None
+workspace_service = None
+metering_service = None
 document_ingestion_service = None
 mcp_gateway_client = None
 tool_policy_engine = None
@@ -1756,6 +1895,41 @@ def get_audit_service() -> AuditService:
         )
         logger.info("Audit Service initialized")
     return audit_service
+
+
+def get_workspace_service() -> WorkspaceService:
+    """Get or initialize workspace lifecycle service."""
+    global workspace_service
+    if workspace_service is None:
+        logger.info("Initializing Workspace Service...")
+        workspace_service = WorkspaceService(
+            db_host=POSTGRES_HOST,
+            db_port=POSTGRES_PORT,
+            db_name=POSTGRES_DB,
+            db_user=POSTGRES_USER,
+            db_password=POSTGRES_PASSWORD,
+            default_workspace_id=RAG_DEFAULT_WORKSPACE_ID,
+        )
+        logger.info("Workspace Service initialized")
+    return workspace_service
+
+
+def get_metering_service() -> MeteringService:
+    """Get or initialize workspace-scoped metering service."""
+    global metering_service
+    if metering_service is None:
+        logger.info("Initializing Metering Service...")
+        metering_service = MeteringService(
+            db_host=POSTGRES_HOST,
+            db_port=POSTGRES_PORT,
+            db_name=POSTGRES_DB,
+            db_user=POSTGRES_USER,
+            db_password=POSTGRES_PASSWORD,
+        )
+        logger.info("Metering Service initialized")
+    return metering_service
+
+
 def get_mcp_gateway_client() -> InternalMCPGatewayClient:
     """Get or initialize internal MCP gateway client."""
     global mcp_gateway_client
@@ -1970,6 +2144,22 @@ def enforce_mcp_tool_policy(
                 request_id=resolved_request_id,
             ),
         )
+
+    try:
+        resolved_workspace_id = _ensure_workspace_active(
+            resolved_workspace_id,
+            context="MCP tool policy",
+        )
+    except HTTPException as exc:
+        reason = str(exc.detail)
+        raise HTTPException(
+            status_code=403,
+            detail=_build_policy_denied_detail(
+                reason=reason,
+                workspace_id=resolved_workspace_id,
+                request_id=resolved_request_id,
+            ),
+        ) from exc
 
     resolved_role, resolved_scopes = _resolve_tool_policy_identity(
         raw_request=raw_request,
@@ -2270,11 +2460,13 @@ def _record_tool_call_audit(
     safe_request_payload, request_redactions = _redact_value_for_audit(request_payload or {})
     safe_response_payload, response_redactions = _redact_value_for_audit(response_payload or {})
     safe_error, error_redactions = _redact_value_for_audit(error or "")
-    workspace_id = (
+    workspace_id_candidate = (
         raw_request.headers.get("x-workspace-id")
         or raw_request.headers.get("x-project-id")
         or _extract_workspace_id(safe_request_payload)
+        or RAG_DEFAULT_WORKSPACE_ID
     )
+    workspace_id = _normalize_workspace_id(workspace_id_candidate, "tool call audit")
     auth_user_id = get_authenticated_user_id(raw_request)
     auth_role = get_authenticated_role(raw_request) or raw_request.headers.get("x-user-role")
     auth_method = getattr(raw_request.state, "auth_method", None)
@@ -2321,6 +2513,19 @@ def _record_tool_call_audit(
             response_payload=safe_response_payload,
             metadata=metadata,
         )
+        _record_metering_event(
+            workspace_id=workspace_id,
+            meter_key="mcp.tool_call",
+            quantity=1,
+            request_id=request_id,
+            metadata={
+                "ok": ok,
+                "status_code": status_code,
+                "tool_name": tool_name,
+                "server_id": server_id,
+                "duration_ms": duration_ms,
+            },
+        )
     except Exception as audit_exc:
         logger.error("Failed to persist tool call audit event: %s", audit_exc)
 
@@ -2352,6 +2557,10 @@ async def audit_request_middleware(request: Request, call_next):
         request_payload = {"_capture_error": str(payload_exc)}
 
     workspace_id = workspace_id or request.query_params.get("workspace_id") or request.query_params.get("workspace")
+    workspace_id = _normalize_workspace_id(
+        workspace_id or RAG_DEFAULT_WORKSPACE_ID,
+        "audit request middleware",
+    )
     user_id = user_id or request.query_params.get("user_id") or request.query_params.get("user")
     tool_name = tool_name or request.query_params.get("tool_name") or request.query_params.get("tool")
 
@@ -2407,6 +2616,18 @@ async def audit_request_middleware(request: Request, call_next):
                 duration_ms=duration_ms,
                 request_payload=safe_request_payload,
                 metadata=metadata,
+            )
+            _record_metering_event(
+                workspace_id=workspace_id,
+                meter_key="http.request",
+                quantity=1,
+                request_id=request_id,
+                metadata={
+                    "endpoint": endpoint,
+                    "method": method,
+                    "status_code": status_code,
+                    "duration_ms": duration_ms,
+                },
             )
         except Exception as audit_exc:
             logger.error("Failed to persist request audit event: %s", audit_exc)
@@ -2789,7 +3010,19 @@ async def export_audit_events(
     Supported filters include workspace/user/date range/tool name.
     """
     query_params = raw_request.query_params
-    workspace_filter = workspace_id or query_params.get("workspace")
+    admin_request = _is_admin_request(raw_request)
+    workspace_scope_input = workspace_id or query_params.get("workspace")
+    workspace_filter = _resolve_workspace_scope(
+        raw_request=raw_request,
+        explicit_workspace_id=workspace_scope_input,
+        context="audit export",
+        required=not admin_request,
+    )
+    if not admin_request and not workspace_filter:
+        raise HTTPException(status_code=400, detail="workspace_id is required for audit export")
+    if workspace_filter and not admin_request:
+        workspace_filter = _ensure_workspace_active(workspace_filter, context="audit export")
+
     user_filter = user_id or query_params.get("user")
     role_filter = role or query_params.get("role")
     tool_filter = tool_name or query_params.get("tool")
@@ -2825,10 +3058,26 @@ async def export_audit_events(
         )
         if format == "csv":
             filename = f"audit_export_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.csv"
+            if workspace_filter:
+                _record_metering_event(
+                    workspace_id=workspace_filter,
+                    meter_key="audit.export",
+                    quantity=result.get("count", 0),
+                    request_id=getattr(raw_request.state, "audit_request_id", None),
+                    metadata={"format": format, "event_type": event_filter},
+                )
             return Response(
                 content=result["csv_data"],
                 media_type="text/csv",
                 headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+        if workspace_filter:
+            _record_metering_event(
+                workspace_id=workspace_filter,
+                meter_key="audit.export",
+                quantity=result.get("count", 0),
+                request_id=getattr(raw_request.state, "audit_request_id", None),
+                metadata={"format": format, "event_type": event_filter},
             )
         return AuditExportResponse(**result)
     except ValueError as exc:
@@ -2838,6 +3087,111 @@ async def export_audit_events(
     except Exception as exc:
         logger.error("Error exporting audit events: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Audit export error: {exc}")
+
+
+@app.post("/admin/workspaces", response_model=WorkspaceResponse)
+async def admin_create_workspace(request: WorkspaceCreateRequest, raw_request: Request):
+    """Create or reactivate a workspace."""
+    _require_admin(raw_request)
+    try:
+        workspace = get_workspace_service().create_workspace(
+            workspace_id=request.workspace_id,
+            display_name=request.display_name,
+            metadata=request.metadata,
+        )
+        return WorkspaceResponse(**workspace)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("Failed to create workspace: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Workspace create error: {exc}")
+
+
+@app.post("/admin/workspaces/{workspace_id}/disable", response_model=WorkspaceResponse)
+async def admin_disable_workspace(
+    workspace_id: str,
+    raw_request: Request,
+    reason: Optional[str] = Query(None, description="Optional disable reason"),
+):
+    """Disable an existing workspace."""
+    _require_admin(raw_request)
+    try:
+        workspace = get_workspace_service().disable_workspace(
+            workspace_id=workspace_id,
+            reason=reason,
+        )
+        return WorkspaceResponse(**workspace)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("Failed to disable workspace: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Workspace disable error: {exc}")
+
+
+@app.get("/admin/workspaces", response_model=WorkspaceListResponse)
+async def admin_list_workspaces(
+    raw_request: Request,
+    include_disabled: bool = Query(True, description="Include disabled workspaces"),
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0),
+):
+    """List registered workspaces."""
+    _require_admin(raw_request)
+    try:
+        result = get_workspace_service().list_workspaces(
+            include_disabled=include_disabled,
+            limit=limit,
+            offset=offset,
+        )
+        return WorkspaceListResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("Failed to list workspaces: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Workspace list error: {exc}")
+
+
+@app.get("/metering", response_model=MeteringSummaryResponse)
+async def get_workspace_metering(
+    raw_request: Request,
+    workspace_id: Optional[str] = Query(None, description="Workspace scope for metering summary"),
+    meter_key: Optional[str] = Query(None, description="Optional meter key filter"),
+    start_date: Optional[str] = Query(None, description="Start date (ISO-8601)"),
+    end_date: Optional[str] = Query(None, description="End date (ISO-8601)"),
+):
+    """Return workspace-scoped metering aggregates."""
+    admin_request = _is_admin_request(raw_request)
+    workspace_filter = _resolve_workspace_scope(
+        raw_request=raw_request,
+        explicit_workspace_id=workspace_id,
+        context="metering",
+        required=not admin_request,
+    )
+    if not admin_request and not workspace_filter:
+        raise HTTPException(status_code=400, detail="workspace_id is required for metering")
+    if workspace_filter and not admin_request:
+        workspace_filter = _ensure_workspace_active(workspace_filter, context="metering")
+
+    start_filter = _safe_iso_datetime(start_date, "start_date")
+    end_filter = _safe_iso_datetime(end_date, "end_date")
+    if start_filter and end_filter and end_filter < start_filter:
+        raise HTTPException(status_code=400, detail="end_date must be greater than or equal to start_date")
+
+    try:
+        result = get_metering_service().summarize_usage(
+            workspace_id=workspace_filter,
+            meter_key=meter_key,
+            start_date=start_filter,
+            end_date=end_filter,
+        )
+        return MeteringSummaryResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("Failed to summarize metering: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Metering summary error: {exc}")
+
+
 @app.post("/internal/mcp/tools/call", response_model=MCPToolProxyResponse)
 async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Request):
     """Route internal tool calls to MCP gateway /mcp endpoint with structured result."""
@@ -3023,9 +3377,15 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
     """
     start_time = time.time()
     effective_user_id: Optional[str] = None
+    metering_workspace_id: Optional[str] = None
     
     try:
         workspace_id = get_current_workspace_id()
+        workspace_id = _ensure_workspace_active(
+            workspace_id,
+            context="/v1/chat/completions",
+        )
+        metering_workspace_id = workspace_id
         authenticated_user_id = get_authenticated_user_id(raw_request)
         effective_user_id = authenticated_user_id or request.user
 
@@ -3116,7 +3476,6 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                         "top_k": request.memory.top_k,
                         "min_score": request.memory.min_score,
                         "use_temporal_decay": request.memory.use_temporal_decay,
-                        "workspace_id": workspace_id,
                         "context_sanitization": memory_sanitization,
                         "workspace_id": workspace_id,
                         "memories_retrieved": len(memory_results),
@@ -3254,6 +3613,18 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
         )
+        _record_metering_event(
+            workspace_id=metering_workspace_id,
+            meter_key="chat.completions.request",
+            quantity=1,
+            request_id=getattr(raw_request.state, "audit_request_id", None),
+            metadata={
+                "model": response_model,
+                "completion_tokens": completion_tokens,
+                "prompt_tokens": prompt_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+            },
+        )
         if request.memory and request.memory.enabled and request.memory.auto_store:
             try:
                 memory_service_instance = get_memory_service()
@@ -3354,6 +3725,14 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             model=request.model,
             user_id=effective_user_id,
         )
+        if metering_workspace_id:
+            _record_metering_event(
+                workspace_id=metering_workspace_id,
+                meter_key="chat.completions.error",
+                quantity=1,
+                request_id=getattr(raw_request.state, "audit_request_id", None),
+                metadata={"model": request.model},
+            )
         raise
     except Exception as e:
         metrics.record_request(
@@ -3362,6 +3741,14 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             model=request.model,
             user_id=effective_user_id,
         )
+        if metering_workspace_id:
+            _record_metering_event(
+                workspace_id=metering_workspace_id,
+                meter_key="chat.completions.error",
+                quantity=1,
+                request_id=getattr(raw_request.state, "audit_request_id", None),
+                metadata={"model": request.model, "error": str(e)},
+            )
         logger.error(f"Unexpected error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 @app.post("/v1/chat")
@@ -3540,12 +3927,25 @@ async def rag_ingest(request: RAGIngestRequest):
     """
     try:
         workspace_id = get_current_workspace_id()
+        workspace_id = _ensure_workspace_active(workspace_id, context="/v1/rag/ingest")
         metadata = ensure_workspace_metadata(request.metadata, workspace_id)
         service = get_rag_service()
         result = service.ingest_document(
             text=request.text,
             metadata=metadata,
             workspace_id=workspace_id,
+        )
+        _record_metering_event(
+            workspace_id=workspace_id,
+            meter_key="rag.ingest.documents",
+            quantity=1,
+            metadata={"chunks_created": result.get("chunks_created", 0)},
+        )
+        _record_metering_event(
+            workspace_id=workspace_id,
+            meter_key="rag.ingest.chunks",
+            quantity=float(result.get("chunks_created", 0) or 0),
+            metadata={"document_id": result.get("document_id")},
         )
         logger.info(f"Successfully ingested document: {result['document_id']}")
         return RAGIngestResponse(**result)
@@ -3567,6 +3967,10 @@ async def rag_ingest_batch(request: RAGIngestBatchRequest):
     """
     try:
         workspace_id = get_current_workspace_id()
+        workspace_id = _ensure_workspace_active(
+            workspace_id,
+            context="/v1/rag/ingest/batch",
+        )
         normalized_documents = []
         for index, document in enumerate(request.documents):
             if not isinstance(document, dict):
@@ -3585,6 +3989,12 @@ async def rag_ingest_batch(request: RAGIngestBatchRequest):
         result = service.ingest_documents_batch(
             documents=normalized_documents,
             workspace_id=workspace_id,
+        )
+        _record_metering_event(
+            workspace_id=workspace_id,
+            meter_key="rag.ingest.documents",
+            quantity=float(result.get("documents_processed", 0) or 0),
+            metadata={"batch": True},
         )
         logger.info(f"Successfully ingested {result['documents_processed']} documents")
         return RAGIngestBatchResponse(**result)
@@ -3608,6 +4018,7 @@ async def rag_search(request: RAGSearchRequest):
     """
     try:
         workspace_id = get_current_workspace_id()
+        workspace_id = _ensure_workspace_active(workspace_id, context="/v1/rag/search")
         rag_filters = ensure_workspace_filter(request.filters, workspace_id)
         service = get_rag_service()
         results = service.search_documents(
@@ -3615,6 +4026,12 @@ async def rag_search(request: RAGSearchRequest):
             limit=request.limit,
             filters=rag_filters,
             workspace_id=workspace_id,
+        )
+        _record_metering_event(
+            workspace_id=workspace_id,
+            meter_key="rag.search.requests",
+            quantity=1,
+            metadata={"limit": request.limit, "query_length": len(request.query or "")},
         )
         results, context_sanitization = sanitize_retrieved_context_chunks(results)
         if context_sanitization["chunks_with_injection"] or context_sanitization["secret_redactions"]:
@@ -3649,6 +4066,7 @@ async def rag_semantic_search(request: RAGSemanticSearchRequest):
     """
     try:
         workspace_id = get_current_workspace_id()
+        workspace_id = _ensure_workspace_active(workspace_id, context="/v1/rag/semantic-search")
         rag_filters = ensure_workspace_filter(request.filters, workspace_id)
         service = get_rag_service()
         results = service.semantic_search(
@@ -3657,6 +4075,12 @@ async def rag_semantic_search(request: RAGSemanticSearchRequest):
             filters=rag_filters,
             collection_name=request.collection_name,
             workspace_id=workspace_id,
+        )
+        _record_metering_event(
+            workspace_id=workspace_id,
+            meter_key="rag.semantic_search.requests",
+            quantity=1,
+            metadata={"top_k": request.top_k, "query_length": len(request.query or "")},
         )
         results, context_sanitization = sanitize_retrieved_context_chunks(results)
         if context_sanitization["chunks_with_injection"] or context_sanitization["secret_redactions"]:
@@ -3685,7 +4109,10 @@ async def rag_semantic_search(request: RAGSemanticSearchRequest):
         logger.error(f"Error in semantic search: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Semantic search error: {str(e)}")
 @app.delete("/v1/rag/documents/{document_id}")
-async def rag_delete_document(document_id: str):
+async def rag_delete_document(
+    document_id: str,
+    workspace_id: str = Query(..., description="Workspace owning the document"),
+):
     """
     Delete a document and all its chunks from the RAG system.
     
@@ -3693,12 +4120,23 @@ async def rag_delete_document(document_id: str):
         document_id: ID of the document to delete
     """
     try:
+        normalized_workspace_id = _ensure_workspace_active(
+            workspace_id,
+            context="/v1/rag/documents/{document_id}",
+        )
         service = get_rag_service()
-        service.delete_document(document_id)
+        service.delete_document(document_id, workspace_id=normalized_workspace_id)
+        _record_metering_event(
+            workspace_id=normalized_workspace_id,
+            meter_key="rag.delete.documents",
+            quantity=1,
+            metadata={"document_id": document_id},
+        )
         logger.info(f"Successfully deleted document: {document_id}")
         return {
             "status": "success",
             "document_id": document_id,
+            "workspace_id": normalized_workspace_id,
             "message": "Document deleted successfully"
         }
     except Exception as e:
@@ -3753,6 +4191,10 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
     
     try:
         workspace_id = get_current_workspace_id()
+        workspace_id = _ensure_workspace_active(
+            workspace_id,
+            context="/v1/rag/query",
+        )
         rag_filters = ensure_workspace_filter(request.filters, workspace_id)
         if SAFETY_GATEWAY_ENABLED:
             rag_messages = request.messages or []
@@ -3944,14 +4386,35 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
             completion_tokens=completion_tokens,
         )
         metrics.record_request((time.time() - start_time) * 1000, user_id=metering_user_id)
+        _record_metering_event(
+            workspace_id=workspace_id,
+            meter_key="rag.query.requests",
+            quantity=1,
+            metadata={
+                "k": request.k,
+                "chunks_retrieved": retrieval_stats.get("chunks_retrieved", 0),
+                "relationships_found": retrieval_stats.get("relationships_found", 0),
+            },
+        )
         
         return response
         
     except HTTPException:
         metrics.record_request((time.time() - start_time) * 1000, error=True, user_id=metering_user_id)
+        _record_metering_event(
+            workspace_id=workspace_id,
+            meter_key="rag.query.errors",
+            quantity=1,
+        )
         raise
     except Exception as e:
         metrics.record_request((time.time() - start_time) * 1000, error=True, user_id=metering_user_id)
+        _record_metering_event(
+            workspace_id=workspace_id,
+            meter_key="rag.query.errors",
+            quantity=1,
+            metadata={"error": str(e)},
+        )
         logger.error(f"Error in RAG query: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"RAG query error: {str(e)}")
 @app.post("/v1/rag/search/graph-enriched", response_model=RAGGraphSearchResponse)
@@ -3978,6 +4441,10 @@ async def rag_graph_search(request: RAGGraphSearchRequest):
     """
     try:
         workspace_id = get_current_workspace_id()
+        workspace_id = _ensure_workspace_active(
+            workspace_id,
+            context="/v1/rag/search/graph-enriched",
+        )
         rag_filters = ensure_workspace_filter(request.filters, workspace_id)
         service = get_rag_service()
         
@@ -4022,6 +4489,15 @@ async def rag_graph_search(request: RAGGraphSearchRequest):
             f"vector results, {enriched_results['stats']['entities_in_graph']} entities, "
             f"{enriched_results['stats']['relationships_found']} relationships"
         )
+        _record_metering_event(
+            workspace_id=workspace_id,
+            meter_key="rag.graph_search.requests",
+            quantity=1,
+            metadata={
+                "limit": request.limit,
+                "relationships_found": enriched_results["stats"].get("relationships_found", 0),
+            },
+        )
         
         return RAGGraphSearchResponse(**enriched_results)
         
@@ -4062,6 +4538,10 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
     
     try:
         workspace_id = get_current_workspace_id()
+        workspace_id = _ensure_workspace_active(
+            workspace_id,
+            context="/v1/rag/query/graph-enriched",
+        )
         rag_filters = ensure_workspace_filter(request.filters, workspace_id)
         if SAFETY_GATEWAY_ENABLED:
             rag_messages = request.messages or []
@@ -4246,14 +4726,35 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
             completion_tokens=completion_tokens,
         )
         metrics.record_request((time.time() - start_time) * 1000, user_id=metering_user_id)
+        _record_metering_event(
+            workspace_id=workspace_id,
+            meter_key="rag.graph_query.requests",
+            quantity=1,
+            metadata={
+                "k": request.k,
+                "chunks_retrieved": retrieval_stats.get("chunks_retrieved", 0),
+                "relationships_found": retrieval_stats.get("relationships_found", 0),
+            },
+        )
         
         return response
         
     except HTTPException:
         metrics.record_request((time.time() - start_time) * 1000, error=True, user_id=metering_user_id)
+        _record_metering_event(
+            workspace_id=workspace_id,
+            meter_key="rag.graph_query.errors",
+            quantity=1,
+        )
         raise
     except Exception as e:
         metrics.record_request((time.time() - start_time) * 1000, error=True, user_id=metering_user_id)
+        _record_metering_event(
+            workspace_id=workspace_id,
+            meter_key="rag.graph_query.errors",
+            quantity=1,
+            metadata={"error": str(e)},
+        )
         logger.error(f"Error in graph-enriched RAG query: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Graph-enriched RAG query error: {str(e)}")
 @app.post("/memory/add", response_model=MemoryAddResponse)
@@ -4971,6 +5472,14 @@ async def shutdown_event():
     if audit_service:
         audit_service.close()
         logger.info("Audit Service closed")
+
+    if workspace_service:
+        workspace_service.close()
+        logger.info("Workspace Service closed")
+
+    if metering_service:
+        metering_service.close()
+        logger.info("Metering Service closed")
     
     logger.info("API server shutdown complete")
 def handle_sigterm(signum, frame):
