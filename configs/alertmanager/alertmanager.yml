@@ -35,6 +35,13 @@ route:
       receiver: 'slack-drift'
       group_wait: 10s
       repeat_interval: 2h
+
+    # Safety degradation alerts
+    - match:
+        component: safety
+      receiver: 'slack-safety'
+      group_wait: 10s
+      repeat_interval: 30m
     
     # Budget alerts
     - match:
@@ -145,6 +152,28 @@ receivers:
           {{ end }}
         send_resolved: true
         color: 'warning'
+
+  # Safety degradation alerts
+  - name: 'slack-safety'
+    slack_configs:
+      - channel: '#ai-platform-safety'
+        title: '🛡️ Safety Alert: {{ .GroupLabels.alertname }}'
+        text: |
+          *Safety Degradation Alert*
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Severity:* {{ .CommonLabels.severity }}
+          *Component:* {{ .CommonLabels.component }}
+          *Summary:* {{ .CommonAnnotations.summary }}
+          *Description:* {{ .CommonAnnotations.description }}
+
+          *Action Required:* Investigate recent policy, guardrail, or LoRA changes.
+
+          *Signals:*
+          {{ range .Alerts }}
+            • {{ .Labels.job }} {{ if .Labels.model }}(model={{ .Labels.model }}){{ end }}: {{ .Annotations.description }}
+          {{ end }}
+        send_resolved: true
+        color: '{{ if eq .CommonLabels.severity "critical" }}danger{{ else }}warning{{ end }}'
   
   # Budget alerts
   - name: 'slack-budget'
