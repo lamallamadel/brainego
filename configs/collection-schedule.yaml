@@ -15,6 +15,19 @@ schedules:
       include_commits: true
       include_discussions: false
 
+  # GitHub repo codebase sync - every 6 hours (incremental by default)
+  - name: github_repo_codebase_sync
+    source: github_repo
+    interval: 6h
+    enabled: ${ENABLE_GITHUB_INGESTION}
+    config:
+      repo_name: ${GITHUB_DEFAULT_REPO}
+      workspace_id: ${GITHUB_DEFAULT_WORKSPACE}
+      incremental: true
+      reindex: false
+      # Optional: force a branch (defaults to repository default branch)
+      # branch: main
+
   # Notion data collection - every 4 hours
   - name: notion_collection
     source: notion

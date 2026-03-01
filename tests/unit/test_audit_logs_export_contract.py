@@ -28,6 +28,7 @@ def test_audit_export_endpoint_supports_required_filters_and_formats() -> None:
     assert 'format: str = Query("json", pattern="^(json|csv)$"' in api_server
     assert "workspace_id: Optional[str] = Query(None, description=\"Filter by workspace identifier\")" in api_server
     assert "user_id: Optional[str] = Query(None, description=\"Filter by user identifier\")" in api_server
+    assert "role: Optional[str] = Query(None, description=\"Filter by resolved role\")" in api_server
     assert "tool_name: Optional[str] = Query(None, description=\"Filter by tool name\")" in api_server
     assert "start_date: Optional[str] = Query(None, description=\"Start date (ISO-8601)\")" in api_server
     assert "end_date: Optional[str] = Query(None, description=\"End date (ISO-8601)\")" in api_server
@@ -43,6 +44,7 @@ def test_tool_call_routes_emit_dedicated_audit_events() -> None:
     assert "async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Request):" in api_server
     assert "async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):" in api_server
     assert "_record_tool_call_audit(" in api_server
+    assert '"role": auth_role' in api_server
 
 
 def test_init_sql_declares_audit_table_and_indexes() -> None:
@@ -52,7 +54,9 @@ def test_init_sql_declares_audit_table_and_indexes() -> None:
     assert "event_type VARCHAR(32) NOT NULL CHECK (event_type IN ('request', 'tool_call'))" in init_sql
     assert "workspace_id VARCHAR(255)" in init_sql
     assert "user_id VARCHAR(255)" in init_sql
+    assert "role VARCHAR(64)" in init_sql
     assert "tool_name VARCHAR(255)" in init_sql
     assert "CREATE INDEX IF NOT EXISTS idx_audit_events_workspace_id ON audit_events(workspace_id);" in init_sql
     assert "CREATE INDEX IF NOT EXISTS idx_audit_events_user_id ON audit_events(user_id);" in init_sql
+    assert "CREATE INDEX IF NOT EXISTS idx_audit_events_role ON audit_events(role);" in init_sql
     assert "CREATE INDEX IF NOT EXISTS idx_audit_events_tool_name ON audit_events(tool_name);" in init_sql

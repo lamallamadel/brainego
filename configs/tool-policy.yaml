@@ -3,12 +3,15 @@
 
 version: 1
 default_workspace: default
+default_role: viewer
 
 workspaces:
   default:
     # Only listed MCP servers are callable from the internal proxy.
     allowed_mcp_servers:
       - mcp-github
+      - mcp-linear
+      - mcp-jira
       - mcp-notion
       - mcp-filesystem
       - mcp-slack
@@ -16,17 +19,62 @@ workspaces:
       - mcp-calendar
       - mcp-docs
 
-    # Action classes accepted by this workspace policy.
+    # Minimal RBAC profile (AFR-86):
+    # - viewer: read-only
+    # - developer: read + explicit write scopes
+    # - admin: full policy management + full tool access
+    default_role: viewer
+    roles:
+      admin:
+        allowed_tool_actions:
+          - read
+          - write
+          - delete
+        tool_scopes:
+          read: ["*"]
+          write: ["*"]
+          delete: ["*"]
+
+      developer:
+        allowed_tool_actions:
+          - read
+          - write
+        tool_scopes:
+          # GitHub is intentionally read-only in v1.
+          read: ["*"]
+          # Scoped issue-tracker writes only (Linear/Jira).
+          write:
+            - "linear_create_issue"
+            - "linear_update_issue"
+            - "jira_create_issue"
+            - "jira_update_issue"
+        required_scopes:
+          # Explicit policy scopes are mandatory for any write call.
+          write:
+            - "mcp.tool.write"
+            - "mcp.issue_tracker.write"
+
+      viewer:
+        allowed_tool_actions:
+          - read
+        tool_scopes:
+          read: ["*"]
+
+    # Legacy workspace-level fields are retained for backward compatibility.
     allowed_tool_actions:
       - read
       - write
       - delete
 
-    # Allowed tools by action (wildcard possible).
+    # Legacy allowed tools by action (wildcard possible).
     allowed_tool_names:
       read: ["*"]
-      write: ["*"]
-      delete: ["*"]
+      write:
+        - "linear_create_issue"
+        - "linear_update_issue"
+        - "jira_create_issue"
+        - "jira_update_issue"
+      delete: []
 
     # Optional argument allowlists.
     allowlists:

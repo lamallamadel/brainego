@@ -140,6 +140,7 @@ CREATE TABLE IF NOT EXISTS audit_events (
     request_id VARCHAR(255),
     workspace_id VARCHAR(255),
     user_id VARCHAR(255),
+    role VARCHAR(64),
     tool_name VARCHAR(255),
     endpoint TEXT,
     method VARCHAR(16),
@@ -151,9 +152,12 @@ CREATE TABLE IF NOT EXISTS audit_events (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS role VARCHAR(64);
+
 CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_audit_events_workspace_id ON audit_events(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_user_id ON audit_events(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_role ON audit_events(role);
 CREATE INDEX IF NOT EXISTS idx_audit_events_tool_name ON audit_events(tool_name);
 CREATE INDEX IF NOT EXISTS idx_audit_events_event_type ON audit_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_audit_events_request_id ON audit_events(request_id);

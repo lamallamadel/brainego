@@ -17,6 +17,7 @@ import yaml
 logger = logging.getLogger(__name__)
 
 SUPPORTED_ACTIONS = {"read", "write", "delete"}
+SUPPORTED_ROLES = {"admin", "developer", "viewer"}
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,42 @@ class ToolPolicyDecision:
 
 
 @dataclass
+class WorkspaceRolePolicy:
+    """Role-scoped tool permissions inside a workspace policy."""
+
+    role: str
+    allowed_tool_actions: Set[str] = field(default_factory=set)
+    allowed_tool_names: Dict[str, Set[str]] = field(default_factory=dict)
+    required_scopes_by_action: Dict[str, Set[str]] = field(default_factory=dict)
+
+    def allowed_tools_for_action(self, action: str) -> Set[str]:
+        """Return tools allowed for an action including wildcard bucket."""
+        tools = set(self.allowed_tool_names.get("*", set()))
+        tools.update(self.allowed_tool_names.get(action, set()))
+        return tools
+
+    def required_scopes_for_action(self, action: str) -> Set[str]:
+        """Return required scopes for an action including wildcard bucket."""
+        scopes = set(self.required_scopes_by_action.get("*", set()))
+        scopes.update(self.required_scopes_by_action.get(action, set()))
+        return scopes
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize role policy to stable dictionary form."""
+        return {
+            "allowed_tool_actions": sorted(self.allowed_tool_actions),
+            "tool_scopes": {
+                action: sorted(tool_names)
+                for action, tool_names in sorted(self.allowed_tool_names.items())
+            },
+            "required_scopes": {
+                action: sorted(scopes)
+                for action, scopes in sorted(self.required_scopes_by_action.items())
+            },
+        }
+
+
+@dataclass
 class WorkspaceToolPolicy:
     """Policy rules scoped to one workspace."""
 
@@ -41,6 +78,8 @@ class WorkspaceToolPolicy:
     allowlists_global: Dict[str, List[str]] = field(default_factory=dict)
     allowlists_servers: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
     allowlists_tools: Dict[str, Dict[str, List[str]]] = field(default_factory=dict)
+    default_role: str = "viewer"
+    role_policies: Dict[str, WorkspaceRolePolicy] = field(default_factory=dict)
     max_tool_calls_per_request: int = 0
     per_call_timeout_seconds: Optional[float] = None
 
@@ -56,6 +95,38 @@ class WorkspaceToolPolicy:
             return float(self.per_call_timeout_seconds)
         return float(fallback_timeout_seconds)
 
+    def get_role_policy(self, role: str) -> Optional[WorkspaceRolePolicy]:
+        """Return normalized role policy when workspace has RBAC rules."""
+        normalized_role = _normalize_role(role)
+        if not self.role_policies:
+            return None
+        return self.role_policies.get(normalized_role)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Serialize workspace policy to stable dictionary form."""
+        payload: Dict[str, Any] = {
+            "allowed_mcp_servers": sorted(self.allowed_mcp_servers),
+            "allowed_tool_actions": sorted(self.allowed_tool_actions),
+            "allowed_tool_names": {
+                action: sorted(tool_names)
+                for action, tool_names in sorted(self.allowed_tool_names.items())
+            },
+            "allowlists": {
+                "global": self.allowlists_global,
+                "servers": self.allowlists_servers,
+                "tools": self.allowlists_tools,
+            },
+            "max_tool_calls_per_request": self.max_tool_calls_per_request,
+            "per_call_timeout_seconds": self.per_call_timeout_seconds,
+        }
+        if self.role_policies:
+            payload["default_role"] = self.default_role
+            payload["roles"] = {
+                role: role_policy.to_dict()
+                for role, role_policy in sorted(self.role_policies.items())
+            }
+        return payload
+
 
 class ToolPolicyEngine:
     """Evaluate tool calls against workspace-scoped deny-by-default policies."""
@@ -64,10 +135,12 @@ class ToolPolicyEngine:
         self,
         workspace_policies: Dict[str, WorkspaceToolPolicy],
         default_workspace_id: Optional[str] = None,
+        default_role: str = "viewer",
         request_counter_ttl_seconds: int = 3600,
     ):
         self.workspace_policies = workspace_policies
         self.default_workspace_id = (default_workspace_id or "").strip() or None
+        self.default_role = _normalize_supported_role(default_role, fallback="viewer")
         self.request_counter_ttl_seconds = request_counter_ttl_seconds
         self._request_call_counts: Dict[Tuple[str, str], Tuple[int, float]] = {}
         self._lock = threading.Lock()
@@ -87,27 +160,49 @@ class ToolPolicyEngine:
             payload = yaml.safe_load(handle) or {}
 
         workspaces_payload = payload.get("workspaces", {}) or {}
+        global_default_role = payload.get("default_role", "viewer")
         workspace_policies: Dict[str, WorkspaceToolPolicy] = {}
         for workspace_id, workspace_config in workspaces_payload.items():
             parsed = cls._parse_workspace_policy(
                 workspace_id=str(workspace_id).strip(),
                 config=workspace_config or {},
+                fallback_default_role=global_default_role,
             )
             workspace_policies[parsed.workspace_id] = parsed
 
         return cls(
             workspace_policies=workspace_policies,
             default_workspace_id=payload.get("default_workspace"),
+            default_role=global_default_role,
         )
 
     @staticmethod
-    def _parse_workspace_policy(workspace_id: str, config: Dict[str, Any]) -> WorkspaceToolPolicy:
+    def _parse_workspace_policy(
+        workspace_id: str,
+        config: Dict[str, Any],
+        fallback_default_role: str = "viewer",
+    ) -> WorkspaceToolPolicy:
         if not workspace_id:
             raise ValueError("workspace_id cannot be empty in tool policy config")
 
         allowed_mcp_servers = _as_string_set(config.get("allowed_mcp_servers"))
-        allowed_tool_actions = {action.lower() for action in _as_string_set(config.get("allowed_tool_actions"))}
+        allowed_tool_actions: Set[str] = set()
+        for raw_action in _as_string_set(config.get("allowed_tool_actions")):
+            lowered_action = raw_action.lower()
+            if lowered_action == "*":
+                allowed_tool_actions.add("*")
+                continue
+            allowed_tool_actions.add(_normalize_action(lowered_action))
         allowed_tool_names = _parse_allowed_tool_names(config.get("allowed_tool_names"))
+        role_policies = _parse_role_policies(config.get("roles", {}))
+        default_role = _normalize_supported_role(
+            config.get("default_role", fallback_default_role),
+            fallback="viewer",
+        )
+        if role_policies and default_role not in role_policies:
+            raise ValueError(
+                f"default_role '{default_role}' is not declared in roles for workspace '{workspace_id}'"
+            )
         allowlists_global, allowlists_servers, allowlists_tools = _parse_allowlists(
             config.get("allowlists", {})
         )
@@ -128,6 +223,8 @@ class ToolPolicyEngine:
             allowlists_global=allowlists_global,
             allowlists_servers=allowlists_servers,
             allowlists_tools=allowlists_tools,
+            default_role=default_role,
+            role_policies=role_policies,
             max_tool_calls_per_request=max_tool_calls_per_request,
             per_call_timeout_seconds=timeout_value,
         )
@@ -148,6 +245,8 @@ class ToolPolicyEngine:
         tool_name: str,
         action: str,
         arguments: Optional[Dict[str, Any]],
+        role: Optional[str] = None,
+        scopes: Optional[List[str]] = None,
         default_timeout_seconds: float,
     ) -> ToolPolicyDecision:
         """Validate a tool call and return allow/deny decision + effective timeout."""
@@ -167,20 +266,97 @@ class ToolPolicyEngine:
                 workspace_id=resolved_workspace,
             )
 
-        normalized_action = _normalize_action(action)
-        if (
-            workspace_policy.allowed_tool_actions
-            and "*" not in workspace_policy.allowed_tool_actions
-            and normalized_action not in workspace_policy.allowed_tool_actions
-        ):
+        try:
+            normalized_action = _normalize_action(action)
+        except ValueError:
             return ToolPolicyDecision(
                 allowed=False,
                 reason=(
-                    f"action '{normalized_action}' is not allowed in workspace "
+                    f"unsupported action '{action}'. Allowed actions: "
+                    f"{sorted(SUPPORTED_ACTIONS)}"
+                ),
+                workspace_id=resolved_workspace,
+            )
+        normalized_role = _normalize_role(role or workspace_policy.default_role or self.default_role)
+        normalized_scopes = _as_string_set(scopes or [])
+
+        role_policy = workspace_policy.get_role_policy(normalized_role)
+        if workspace_policy.role_policies and not role_policy:
+            return ToolPolicyDecision(
+                allowed=False,
+                reason=(
+                    f"role '{normalized_role}' is not configured for workspace "
                     f"'{resolved_workspace}'"
                 ),
                 workspace_id=resolved_workspace,
             )
+
+        role_allowed_actions = (
+            role_policy.allowed_tool_actions if role_policy else workspace_policy.allowed_tool_actions
+        )
+        if (
+            role_allowed_actions
+            and "*" not in role_allowed_actions
+            and normalized_action not in role_allowed_actions
+        ):
+            role_context = (
+                f" for role '{normalized_role}'"
+                if workspace_policy.role_policies
+                else ""
+            )
+            return ToolPolicyDecision(
+                allowed=False,
+                reason=(
+                    f"action '{normalized_action}' is not allowed{role_context} in workspace "
+                    f"'{resolved_workspace}'"
+                ),
+                workspace_id=resolved_workspace,
+            )
+
+        if role_policy and normalized_role == "developer" and normalized_action in {"write", "delete"}:
+            developer_tool_scope = role_policy.allowed_tools_for_action(normalized_action)
+            if not developer_tool_scope:
+                return ToolPolicyDecision(
+                    allowed=False,
+                    reason=(
+                        "developer role requires explicit tool scope for "
+                        f"'{normalized_action}' in workspace '{resolved_workspace}'"
+                    ),
+                    workspace_id=resolved_workspace,
+                )
+
+            required_scopes = role_policy.required_scopes_for_action(normalized_action)
+            if not required_scopes:
+                return ToolPolicyDecision(
+                    allowed=False,
+                    reason=(
+                        "developer role requires explicit security scope for "
+                        f"'{normalized_action}' in workspace '{resolved_workspace}'"
+                    ),
+                    workspace_id=resolved_workspace,
+                )
+            missing_scopes = required_scopes - normalized_scopes
+            if missing_scopes:
+                return ToolPolicyDecision(
+                    allowed=False,
+                    reason=(
+                        f"missing required scope(s) {sorted(missing_scopes)} for role "
+                        f"'{normalized_role}' in workspace '{resolved_workspace}'"
+                    ),
+                    workspace_id=resolved_workspace,
+                )
+        elif role_policy:
+            required_scopes = role_policy.required_scopes_for_action(normalized_action)
+            missing_scopes = required_scopes - normalized_scopes
+            if missing_scopes:
+                return ToolPolicyDecision(
+                    allowed=False,
+                    reason=(
+                        f"missing required scope(s) {sorted(missing_scopes)} for role "
+                        f"'{normalized_role}' in workspace '{resolved_workspace}'"
+                    ),
+                    workspace_id=resolved_workspace,
+                )
 
         if (
             "*" not in workspace_policy.allowed_mcp_servers
@@ -195,22 +371,36 @@ class ToolPolicyEngine:
                 workspace_id=resolved_workspace,
             )
 
-        allowed_tools = workspace_policy.allowed_tools_for_action(normalized_action)
+        allowed_tools = (
+            role_policy.allowed_tools_for_action(normalized_action)
+            if role_policy
+            else workspace_policy.allowed_tools_for_action(normalized_action)
+        )
         if not allowed_tools:
+            role_context = (
+                f" for role '{normalized_role}'"
+                if role_policy
+                else ""
+            )
             return ToolPolicyDecision(
                 allowed=False,
                 reason=(
-                    f"no tools allowed for action '{normalized_action}' in workspace "
+                    f"no tools allowed for action '{normalized_action}'{role_context} in workspace "
                     f"'{resolved_workspace}'"
                 ),
                 workspace_id=resolved_workspace,
             )
         if "*" not in allowed_tools and tool_name not in allowed_tools:
+            role_context = (
+                f" for role '{normalized_role}'"
+                if role_policy
+                else ""
+            )
             return ToolPolicyDecision(
                 allowed=False,
                 reason=(
                     f"tool '{tool_name}' is not allowed for action '{normalized_action}' "
-                    f"in workspace '{resolved_workspace}'"
+                    f"{role_context} in workspace '{resolved_workspace}'"
                 ),
                 workspace_id=resolved_workspace,
             )
@@ -325,6 +515,30 @@ class ToolPolicyEngine:
         for key in stale_keys:
             self._request_call_counts.pop(key, None)
 
+    def get_workspace_policy(self, workspace_id: str) -> Dict[str, Any]:
+        """Return serialized workspace policy payload."""
+        normalized_workspace = (workspace_id or "").strip()
+        if not normalized_workspace:
+            raise ValueError("workspace_id is required")
+        workspace_policy = self.workspace_policies.get(normalized_workspace)
+        if not workspace_policy:
+            raise KeyError(normalized_workspace)
+        return workspace_policy.to_dict()
+
+    def upsert_workspace_policy(self, workspace_id: str, policy_payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Create/update workspace policy and return serialized snapshot."""
+        normalized_workspace = (workspace_id or "").strip()
+        if not normalized_workspace:
+            raise ValueError("workspace_id is required")
+        parsed = self._parse_workspace_policy(
+            workspace_id=normalized_workspace,
+            config=policy_payload or {},
+            fallback_default_role=self.default_role,
+        )
+        with self._lock:
+            self.workspace_policies[normalized_workspace] = parsed
+        return parsed.to_dict()
+
 
 def load_default_tool_policy_engine() -> ToolPolicyEngine:
     """Load tool policy engine from default path or MCP_TOOL_POLICY_CONFIG."""
@@ -359,6 +573,62 @@ def _parse_allowed_tool_names(raw_tool_names: Any) -> Dict[str, Set[str]]:
         raw_action = str(action).strip().lower()
         normalized_action = "*" if raw_action == "*" else _normalize_action(raw_action)
         parsed[normalized_action] = _as_string_set(names)
+    return parsed
+
+
+def _parse_required_scopes(raw_required_scopes: Any) -> Dict[str, Set[str]]:
+    if not raw_required_scopes:
+        return {}
+
+    if isinstance(raw_required_scopes, (list, tuple, set, str)):
+        return {"*": _as_string_set(raw_required_scopes)}
+
+    if not isinstance(raw_required_scopes, dict):
+        return {}
+
+    parsed: Dict[str, Set[str]] = {}
+    for raw_action, raw_scopes in raw_required_scopes.items():
+        action = str(raw_action).strip().lower()
+        normalized_action = "*" if action == "*" else _normalize_action(action)
+        parsed[normalized_action] = _as_string_set(raw_scopes)
+    return parsed
+
+
+def _parse_role_policies(raw_roles: Any) -> Dict[str, WorkspaceRolePolicy]:
+    if not isinstance(raw_roles, dict):
+        return {}
+
+    parsed: Dict[str, WorkspaceRolePolicy] = {}
+    for raw_role, raw_role_policy in raw_roles.items():
+        role = _normalize_role(raw_role)
+        if role not in SUPPORTED_ROLES:
+            raise ValueError(
+                f"unsupported role '{raw_role}'. Allowed roles: {sorted(SUPPORTED_ROLES)}"
+            )
+        role_config = raw_role_policy if isinstance(raw_role_policy, dict) else {}
+        allowed_tool_actions: Set[str] = set()
+        for raw_action in _as_string_set(role_config.get("allowed_tool_actions")):
+            lowered_action = raw_action.lower()
+            if lowered_action == "*":
+                allowed_tool_actions.add("*")
+                continue
+            allowed_tool_actions.add(_normalize_action(lowered_action))
+
+        allowed_tool_names = _parse_allowed_tool_names(role_config.get("allowed_tool_names"))
+        tool_scopes = _parse_allowed_tool_names(role_config.get("tool_scopes"))
+        for action, tool_names in tool_scopes.items():
+            allowed_tool_names.setdefault(action, set()).update(tool_names)
+
+        if not allowed_tool_actions:
+            allowed_tool_actions = {action for action in allowed_tool_names.keys() if action != "*"}
+
+        parsed[role] = WorkspaceRolePolicy(
+            role=role,
+            allowed_tool_actions=allowed_tool_actions,
+            allowed_tool_names=allowed_tool_names,
+            required_scopes_by_action=_parse_required_scopes(role_config.get("required_scopes")),
+        )
+
     return parsed
 
 
@@ -424,4 +694,17 @@ def _normalize_action(action: str) -> str:
     normalized = (action or "").strip().lower()
     if normalized in SUPPORTED_ACTIONS:
         return normalized
-    return "read"
+    raise ValueError(
+        f"unsupported action '{action}'. Allowed actions: {sorted(SUPPORTED_ACTIONS)}"
+    )
+
+
+def _normalize_role(role: Any) -> str:
+    return str(role or "").strip().lower()
+
+
+def _normalize_supported_role(role: Any, fallback: str = "viewer") -> str:
+    normalized = _normalize_role(role)
+    if normalized in SUPPORTED_ROLES:
+        return normalized
+    return fallback

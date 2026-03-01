@@ -58,9 +58,31 @@ def test_internal_mcp_tool_proxy_supports_workspace_policy_fields() -> None:
     assert "workspace_id: Optional[str]" in content
     assert "request_id: Optional[str]" in content
     assert "action: Optional[str]" in content
+    assert "role: Optional[str]" in content
+    assert "scopes: Optional[List[str]]" in content
     assert "workspace_id=request.workspace_id" in content
     assert "request_id=request.request_id" in content
     assert "action=request.action" in content
+    assert "role=request.role" in content
+    assert "scopes=request.scopes" in content
+
+
+def test_mcp_proxy_models_include_write_confirmation_fields() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "confirm: bool = Field(" in content
+    assert "confirmation_id: Optional[str] = Field(" in content
+
+
+def test_v1_mcp_proxy_passes_confirmation_fields_to_gateway_payload() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert 'payload["confirm"] = request.confirm' in content
+    assert 'payload["confirmation_id"] = request.confirmation_id' in content
+
+
+def test_internal_mcp_proxy_passes_confirmation_fields_to_gateway_client() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "confirm=request.confirm" in content
+    assert "confirmation_id=request.confirmation_id" in content
 
 
 def test_policy_enforced_for_v1_mcp_call_tool() -> None:
@@ -87,3 +109,21 @@ def test_policy_engine_is_loaded_in_api_and_returns_policy_denied() -> None:
 def test_internal_proxy_applies_policy_timeout_to_transport_client() -> None:
     content = SOURCE.read_text(encoding="utf-8")
     assert "timeout_seconds=effective_timeout_seconds" in content
+
+
+def test_admin_policy_management_routes_exist() -> None:
+    module = _parse()
+    get_route = _find_route(module, "/internal/mcp/policies/{workspace_id}", "get")
+    put_route = _find_route(module, "/internal/mcp/policies/{workspace_id}", "put")
+    assert get_route is not None
+    assert put_route is not None
+
+
+def test_admin_policy_management_routes_require_admin_role() -> None:
+    module = _parse()
+    get_route = _find_route(module, "/internal/mcp/policies/{workspace_id}", "get")
+    put_route = _find_route(module, "/internal/mcp/policies/{workspace_id}", "put")
+    assert get_route is not None
+    assert put_route is not None
+    assert _function_calls(get_route, "_require_admin_tool_policy_role")
+    assert _function_calls(put_route, "_require_admin_tool_policy_role")

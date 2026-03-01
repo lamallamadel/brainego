@@ -19,8 +19,12 @@ def test_requires_confirmation_for_issue_comment_write_tools() -> None:
     assert requires_write_confirmation("github_update_issue") is True
     assert requires_write_confirmation("github_create_issue_comment") is True
     assert requires_write_confirmation("linear_create_comment") is True
+    assert requires_write_confirmation("linear_update_issue") is True
+    assert requires_write_confirmation("jira_create_issue") is True
+    assert requires_write_confirmation("jira_update_issue") is True
 
     assert requires_write_confirmation("github_list_issues") is False
+    assert requires_write_confirmation("jira_list_projects") is False
     assert requires_write_confirmation("notion_create_page") is False
     assert requires_write_confirmation("calendar_update_event") is False
 

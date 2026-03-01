@@ -1,4 +1,4 @@
-.PHONY: help install install-modular download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-init-schema graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status grafana grafana-start grafana-stop grafana-ui drift drift-start drift-stop drift-logs drift-check drift-metrics test-unit test-integration test-all codex-help
+.PHONY: help install install-modular download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-init-schema graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status grafana grafana-start grafana-stop grafana-ui drift drift-start drift-stop drift-logs drift-check drift-metrics test-unit test-integration test-all codex-help pilot-preflight pilot-demo-rbac pilot-demo-index pilot-demo-incident pilot-demo
 
 help:
 	@echo "MAX Serve + Llama 3.3 8B Infrastructure"
@@ -426,4 +426,23 @@ codex-help:
 	@echo "📁 Workflow File: .github/workflows/codex-build.yml"
 	@echo ""
 	@echo "For more info: cat QUICKSTART.md"
+
+# ============================================================================
+# Pilot Readiness Demo (AFR-96)
+# ============================================================================
+
+pilot-preflight:
+	@bash scripts/pilot/pilot_preflight.sh
+
+pilot-demo-rbac:
+	@python3 scripts/pilot/demo_mcp_rbac_policy.py
+
+pilot-demo-index:
+	@python3 scripts/pilot/demo_repo_index.py
+
+pilot-demo-incident:
+	@bash scripts/pilot/demo_incident_drill.sh
+
+pilot-demo:
+	@bash scripts/pilot/run_pilot_demo.sh
 

@@ -95,6 +95,28 @@ python load_test.py --requests 500 --concurrency 20 --scenario all
 python load_test.py --requests 1000 --concurrency 32 --max-tokens 200
 ```
 
+## Pilot Readiness (AFR-96)
+
+For guided pilot onboarding (<2 hours), use:
+
+- Runbook: `docs/pilot_readiness_runbook.md`
+- Scripts:
+  - `bash scripts/pilot/pilot_preflight.sh`
+  - `python3 scripts/pilot/demo_mcp_rbac_policy.py`
+  - `python3 scripts/pilot/demo_repo_index.py`
+  - `bash scripts/pilot/demo_incident_drill.sh`
+  - `bash scripts/pilot/run_pilot_demo.sh`
+
+Convenience make targets:
+
+```bash
+make pilot-preflight
+make pilot-demo-rbac
+make pilot-demo-index
+make pilot-demo-incident
+make pilot-demo
+```
+
 ## Service Endpoints
 
 | Service | Endpoint | Description |
