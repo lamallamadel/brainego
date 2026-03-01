@@ -388,6 +388,59 @@ roleRef:
   apiGroup: rbac.authorization.k8s.io
 {{- end }}
 ---
+# MAML Service Account
+{{- if .Values.mamlService.enabled }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: maml-service-sa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: maml-service-sa
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+{{- if .Values.rbac.serviceAccounts.mamlService.annotations }}
+  annotations:
+    {{- toYaml .Values.rbac.serviceAccounts.mamlService.annotations | nindent 4 }}
+{{- end }}
+automountServiceAccountToken: {{ .Values.rbac.serviceAccounts.mamlService.automountServiceAccountToken | default true }}
+---
+# MAML Service Role (least-privilege)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: maml-service-role
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: maml-service-role
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+rules:
+  - apiGroups: [""]
+    resources: ["secrets"]
+    resourceNames: ["postgres-credentials", "minio-credentials"]
+    verbs: ["get"]
+---
+# MAML Service RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: maml-service-rolebinding
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: maml-service-rolebinding
+    app.kubernetes.io/component: security
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+subjects:
+  - kind: ServiceAccount
+    name: maml-service-sa
+    namespace: {{ .Values.namespace.name }}
+roleRef:
+  kind: Role
+  name: maml-service-role
+  apiGroup: rbac.authorization.k8s.io
+{{- end }}
+---
 # Mem0 Service Account
 {{- if .Values.mem0.enabled }}
 apiVersion: v1

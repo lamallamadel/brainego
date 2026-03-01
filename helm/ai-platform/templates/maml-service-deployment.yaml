@@ -1,0 +1,106 @@
+{{- if .Values.mamlService.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: maml-service
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: maml-service
+    app.kubernetes.io/component: training
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.mamlService.service.type }}
+  ports:
+    - port: {{ .Values.mamlService.service.port }}
+      targetPort: {{ .Values.mamlService.service.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: maml-service
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: maml-service
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: maml-service
+    app.kubernetes.io/component: training
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.mamlService.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: maml-service
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: maml-service
+        app.kubernetes.io/component: training
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: maml-service-sa
+      containers:
+        - name: maml-service
+          image: "{{ .Values.mamlService.image.repository }}:{{ .Values.mamlService.image.tag }}"
+          imagePullPolicy: {{ .Values.mamlService.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.mamlService.service.targetPort }}
+              protocol: TCP
+          command:
+            {{- toYaml .Values.mamlService.command | nindent 12 }}
+          env:
+            {{- toYaml .Values.mamlService.env | nindent 12 }}
+          {{- if .Values.mamlService.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.mamlService.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.mamlService.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.mamlService.readinessProbe | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.mamlService.resources | nindent 12 }}
+          volumeMounts:
+            - name: configs
+              mountPath: /app/configs
+              readOnly: true
+            {{- if .Values.mamlService.persistence.models.enabled }}
+            - name: models
+              mountPath: {{ .Values.mamlService.persistence.models.mountPath }}
+            {{- end }}
+      volumes:
+        - name: configs
+          configMap:
+            name: agent-router-config
+        {{- if .Values.mamlService.persistence.models.enabled }}
+        - name: models
+          persistentVolumeClaim:
+            {{- if .Values.mamlService.persistence.models.existingClaim }}
+            claimName: {{ .Values.mamlService.persistence.models.existingClaim }}
+            {{- else }}
+            claimName: maml-service-models
+            {{- end }}
+        {{- end }}
+---
+{{- if and .Values.mamlService.persistence.models.enabled (not .Values.mamlService.persistence.models.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: maml-service-models
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.mamlService.persistence.models.storageClass }}
+  storageClassName: {{ .Values.mamlService.persistence.models.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.mamlService.persistence.models.size }}
+{{- end }}
+{{- end }}
