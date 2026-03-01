@@ -101,7 +101,7 @@ jobs:
       # Run unit tests
       - name: Run unit tests
         run: pytest tests/unit/ -v --tb=short --cov=. --cov-report=xml 2>&1 | tee test-output.log
-      
+
       # Run integration tests with Testcontainers Cloud
       - name: Run integration tests (Testcontainers Cloud)
         env:
@@ -117,6 +117,15 @@ jobs:
             --suite tests/contract/fixtures/lora_regression_prompts.ndjson \
             --baseline-output tests/contract/fixtures/lora_baseline_outputs.ndjson \
             --candidate-output artifacts/lora_candidate_outputs.json
+
+      - name: Run adversarial safety suite (critical gate)
+        if: always()
+        run: |
+          python scripts/adversarial_test_runner.py \
+            --suite tests/contract/fixtures/internal_adversarial_prompts.json \
+            --mode policy \
+            --fail-on critical \
+            --output artifacts/adversarial_report.json
       
       # Upload test results
       - name: Upload test results
@@ -127,7 +136,16 @@ jobs:
           path: |
             test-output.log
             integration-test-output.log
+            artifacts/adversarial_report.json
             .coverage
+
+      - name: Upload adversarial safety report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: adversarial-safety-report
+          path: artifacts/adversarial_report.json
+          if-no-files-found: warn
       
       # Publish test results
       - name: Publish test results

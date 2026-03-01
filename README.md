@@ -250,10 +250,21 @@ python scripts/adversarial_test_runner.py \
   --output artifacts/adversarial_report.json
 ```
 
+CI can also run the suite in local policy mode (no live gateway dependency) and fail only on critical violations:
+
+```bash
+python scripts/adversarial_test_runner.py \
+  --suite tests/contract/fixtures/internal_adversarial_prompts.json \
+  --mode policy \
+  --fail-on critical \
+  --output artifacts/adversarial_report.json
+```
+
 The report contains:
 
 - global totals (passed/failed/pass_rate)
-- per-category totals and observed outcomes (`blocked`, `warned`, `allowed`)
+- per-category totals and observed outcomes (`blocked`, `warned`, `allowed`, `error`)
+- per-severity totals and critical violation counters
 - per-case observed verdict and reason
 
 ### Metrics Reported
