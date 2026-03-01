@@ -2,7 +2,9 @@
 """Lightweight API service that proxies chat, RAG and memory endpoints."""
 
 import os
-from typing import Dict, Set
+import logging
+import re
+from typing import Any, Dict, Set
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
@@ -22,6 +24,26 @@ app = FastAPI(
     version="1.2.0",
     description="Minimal API façade forwarding /v1/chat, /v1/rag/query and /memory/* requests.",
 )
+
+logger = logging.getLogger(__name__)
+
+SAFETY_BLOCK_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bhow\s+to\s+build\s+(?:a\s+)?bomb\b",
+        r"\bmake\s+(?:a\s+)?pipe\s*bomb\b",
+        r"\bkill\s+myself\b",
+        r"\bcredit\s*card\s*number\b",
+    )
+]
+SAFETY_WARN_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bignore\s+all\s+previous\s+instructions\b",
+        r"\b(system\s+prompt|prompt\s+injection)\b",
+        r"\bapi\s*key\b",
+    )
+]
 
 
 def _is_auth_enabled() -> bool:
@@ -82,6 +104,88 @@ def _forward_headers(request: Request) -> Dict[str, str]:
         for key, value in request.headers.items()
         if key.lower() not in EXCLUDED_HEADERS
     }
+
+
+def _collect_text_values(value: Any) -> list[str]:
+    """Collect user-provided text from nested JSON payloads."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, list):
+        collected: list[str] = []
+        for item in value:
+            collected.extend(_collect_text_values(item))
+        return collected
+    if isinstance(value, dict):
+        collected: list[str] = []
+        for key, item in value.items():
+            if key in {"content", "query", "prompt", "input", "text", "message"}:
+                collected.extend(_collect_text_values(item))
+            elif isinstance(item, (dict, list)):
+                collected.extend(_collect_text_values(item))
+        return collected
+    return []
+
+
+def _evaluate_safety_verdict(path: str, payload: Any) -> Dict[str, Any]:
+    """Classify request safety as safe, warn, or block."""
+    texts = _collect_text_values(payload)
+
+    for text in texts:
+        for pattern in SAFETY_BLOCK_PATTERNS:
+            if pattern.search(text):
+                return {
+                    "verdict": "block",
+                    "reason": f"matched_block_pattern:{pattern.pattern}",
+                    "path": path,
+                }
+
+    for text in texts:
+        for pattern in SAFETY_WARN_PATTERNS:
+            if pattern.search(text):
+                return {
+                    "verdict": "warn",
+                    "reason": f"matched_warn_pattern:{pattern.pattern}",
+                    "path": path,
+                }
+
+    return {"verdict": "safe", "reason": "no_pattern_match", "path": path}
+
+
+def _is_safety_protected_path(path: str) -> bool:
+    """Return True when path must pass safety gateway before forwarding."""
+    return path in {"/v1/chat", "/v1/rag/query"}
+
+
+@app.middleware("http")
+async def enforce_safety_gateway(request: Request, call_next):
+    """Inspect inbound requests and log a safety verdict before proxying."""
+    if request.method != "POST" or not _is_safety_protected_path(request.url.path):
+        return await call_next(request)
+
+    try:
+        payload = await request.json()
+    except Exception:
+        payload = {}
+
+    verdict = _evaluate_safety_verdict(request.url.path, payload)
+    logger.info(
+        "safety_gateway_verdict path=%s verdict=%s reason=%s",
+        request.url.path,
+        verdict["verdict"],
+        verdict["reason"],
+    )
+
+    if verdict["verdict"] == "block":
+        return JSONResponse(
+            status_code=403,
+            content={
+                "detail": "Request blocked by safety gateway",
+                "type": "safety_error",
+                "safety": verdict,
+            },
+        )
+
+    return await call_next(request)
 
 
 async def _forward_request(request: Request, downstream_url: str) -> Response:
