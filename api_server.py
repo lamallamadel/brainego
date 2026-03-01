@@ -28,6 +28,7 @@ from memory_service import MemoryService
 from memory_scoring_config import load_memory_scoring_config
 from graph_service import GraphService
 from feedback_service import FeedbackService
+from audit_service import AuditService
 from circuit_breaker import get_all_circuit_breaker_stats
 from internal_mcp_client import InternalMCPGatewayClient
 from internal_mcp_tool_policy import evaluate_tool_policy
@@ -60,6 +61,8 @@ RAG_EMBEDDING_PROVIDER = os.getenv("RAG_EMBEDDING_PROVIDER", "local")
 RAG_EMBEDDING_SERVICE_URL = os.getenv("RAG_EMBEDDING_SERVICE_URL", "http://embedding-service:8003")
 MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://mcpjungle:9100")
 MCP_GATEWAY_API_KEY = os.getenv("MCP_GATEWAY_API_KEY", "")
+AUDIT_CAPTURE_BODY_LIMIT = int(os.getenv("AUDIT_CAPTURE_BODY_LIMIT", "32768"))
+AUDIT_EXPORT_MAX_LIMIT = int(os.getenv("AUDIT_EXPORT_MAX_LIMIT", "10000"))
 
 BRAINEGO_SYSTEM_PROMPT = (
     "You are the brainego assistant running under platform contracts.\n"
@@ -479,6 +482,13 @@ class FinetuningExportResponse(BaseModel):
     filtered_out_samples: int
     start_date: Optional[str]
     end_date: Optional[str]
+class AuditExportResponse(BaseModel):
+    status: str
+    format: str
+    total_events: int
+    count: int
+    filters: Dict[str, Any]
+    events: Optional[List[Dict[str, Any]]] = None
 class SafetyVerdictResponse(BaseModel):
     verdict: str
     reason: str
@@ -683,6 +693,7 @@ rag_service = None
 memory_service = None
 graph_service = None
 feedback_service = None
+audit_service = None
 document_ingestion_service = None
 mcp_gateway_client = None
 # Graceful shutdown flag
@@ -834,6 +845,20 @@ def get_feedback_service() -> FeedbackService:
         )
         logger.info("Feedback Service initialized")
     return feedback_service
+def get_audit_service() -> AuditService:
+    """Get or initialize Audit service."""
+    global audit_service
+    if audit_service is None:
+        logger.info("Initializing Audit Service...")
+        audit_service = AuditService(
+            db_host=POSTGRES_HOST,
+            db_port=POSTGRES_PORT,
+            db_name=POSTGRES_DB,
+            db_user=POSTGRES_USER,
+            db_password=POSTGRES_PASSWORD
+        )
+        logger.info("Audit Service initialized")
+    return audit_service
 def get_mcp_gateway_client() -> InternalMCPGatewayClient:
     """Get or initialize internal MCP gateway client."""
     global mcp_gateway_client
@@ -985,6 +1010,225 @@ def enforce_safety_gateway(verdict: SafetyVerdictResponse):
                 "safety": verdict.model_dump(),
             },
         )
+
+
+def _safe_iso_datetime(value: Optional[str], field_name: str) -> Optional[datetime]:
+    """Parse ISO datetime values from query parameters."""
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}: '{value}'") from exc
+
+
+async def _capture_request_payload(request: Request) -> Tuple[Request, Dict[str, Any]]:
+    """
+    Capture JSON payload for audit without breaking downstream body reading.
+
+    FastAPI request bodies can be consumed only once; when captured, we rebuild
+    the request with a custom receive() so route handlers can still access body.
+    """
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" not in content_type:
+        return request, {}
+
+    body = await request.body()
+    if not body:
+        return request, {}
+
+    async def receive() -> Dict[str, Any]:
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    request_with_body = Request(request.scope, receive)
+    if len(body) > AUDIT_CAPTURE_BODY_LIMIT:
+        return request_with_body, {
+            "_truncated": True,
+            "_raw_body_preview": body[:AUDIT_CAPTURE_BODY_LIMIT].decode("utf-8", errors="replace"),
+        }
+
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except Exception:
+        return request_with_body, {
+            "_invalid_json": True,
+            "_raw_body_preview": body[:AUDIT_CAPTURE_BODY_LIMIT].decode("utf-8", errors="replace"),
+        }
+
+    if isinstance(parsed, dict):
+        return request_with_body, parsed
+    return request_with_body, {"_body": parsed}
+
+
+def _extract_workspace_id(payload: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Extract workspace identifier from payload conventions."""
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("workspace_id", "workspace", "project", "project_id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("workspace_id", "workspace", "project", "project_id"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _extract_user_id(payload: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Extract user identifier from payload conventions."""
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("user_id", "user", "session_user"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("user_id", "user"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _extract_tool_name(payload: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Extract tool name for requests related to MCP or tool execution."""
+    if not isinstance(payload, dict):
+        return None
+
+    direct_tool = payload.get("tool_name")
+    if isinstance(direct_tool, str) and direct_tool.strip():
+        return direct_tool.strip()
+
+    tools_called = payload.get("tools_called")
+    if isinstance(tools_called, list) and tools_called:
+        first_tool = tools_called[0]
+        if isinstance(first_tool, str) and first_tool.strip():
+            return first_tool.strip()
+    return None
+
+
+def _record_tool_call_audit(
+    raw_request: Request,
+    server_id: Optional[str],
+    tool_name: Optional[str],
+    status_code: int,
+    duration_ms: float,
+    ok: bool,
+    request_payload: Optional[Dict[str, Any]] = None,
+    response_payload: Optional[Dict[str, Any]] = None,
+    context: Optional[str] = None,
+    error: Optional[str] = None,
+):
+    """Persist explicit tool call audit event."""
+    workspace_id = (
+        raw_request.headers.get("x-workspace-id")
+        or raw_request.headers.get("x-project-id")
+        or _extract_workspace_id(request_payload)
+    )
+    user_id = raw_request.headers.get("x-user-id") or _extract_user_id(request_payload)
+    request_id = getattr(raw_request.state, "audit_request_id", None) or raw_request.headers.get("x-request-id")
+
+    metadata = {
+        "server_id": server_id,
+        "context": context,
+        "ok": ok,
+        "error": error,
+    }
+
+    try:
+        get_audit_service().add_event(
+            event_type="tool_call",
+            request_id=request_id,
+            endpoint=raw_request.url.path,
+            method=raw_request.method,
+            status_code=status_code,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            tool_name=tool_name,
+            duration_ms=duration_ms,
+            request_payload=request_payload or {},
+            response_payload=response_payload or {},
+            metadata=metadata,
+        )
+    except Exception as audit_exc:
+        logger.error("Failed to persist tool call audit event: %s", audit_exc)
+
+
+@app.middleware("http")
+async def audit_request_middleware(request: Request, call_next):
+    """Persist one structured audit event for every HTTP request."""
+    started_at = time.time()
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    request.state.audit_request_id = request_id
+
+    endpoint = request.url.path
+    method = request.method
+    status_code = 500
+    request_payload: Dict[str, Any] = {}
+    audit_error: Optional[str] = None
+
+    workspace_id = request.headers.get("x-workspace-id") or request.headers.get("x-project-id")
+    user_id = request.headers.get("x-user-id")
+    tool_name: Optional[str] = None
+
+    try:
+        request, request_payload = await _capture_request_payload(request)
+        request.state.audit_request_id = request_id
+        workspace_id = workspace_id or _extract_workspace_id(request_payload)
+        user_id = user_id or _extract_user_id(request_payload)
+        tool_name = _extract_tool_name(request_payload)
+    except Exception as payload_exc:
+        request_payload = {"_capture_error": str(payload_exc)}
+
+    workspace_id = workspace_id or request.query_params.get("workspace_id") or request.query_params.get("workspace")
+    user_id = user_id or request.query_params.get("user_id") or request.query_params.get("user")
+    tool_name = tool_name or request.query_params.get("tool_name") or request.query_params.get("tool")
+
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    except Exception as exc:
+        audit_error = str(exc)
+        raise
+    finally:
+        duration_ms = round((time.time() - started_at) * 1000, 2)
+        metadata = {
+            "query_params": dict(request.query_params),
+            "client_host": request.client.host if request.client else None,
+            "error": audit_error,
+        }
+        try:
+            get_audit_service().add_event(
+                event_type="request",
+                request_id=request_id,
+                endpoint=endpoint,
+                method=method,
+                status_code=status_code,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                tool_name=tool_name,
+                duration_ms=duration_ms,
+                request_payload=request_payload,
+                metadata=metadata,
+            )
+        except Exception as audit_exc:
+            logger.error("Failed to persist request audit event: %s", audit_exc)
+
+
 async def stream_chat_completion_response(
     completion_id: str,
     created: int,
@@ -1107,6 +1351,7 @@ async def root():
             "feedback_accuracy": "GET /v1/feedback/accuracy",
             "feedback_stats": "GET /v1/feedback/stats",
             "feedback_export": "POST /v1/feedback/export/finetuning",
+            "audit_export": "GET /audit?format=json|csv",
             "mcp_tool_proxy": "POST /internal/mcp/tools/call"
         },
         "prometheus_metrics": "http://localhost:8001/metrics"
@@ -1175,11 +1420,11 @@ async def health_check():
     status_code = 200 if all_healthy and qdrant_status == "healthy" else 503
     return JSONResponse(content=payload, status_code=status_code)
 @app.post("/v1/mcp")
-async def proxy_mcp_gateway(request: MCPGatewayRequest):
+async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
     """Proxy MCP calls through the MCPJungle gateway service."""
+    started_at = time.time()
     if request.action == "call_tool":
         enforce_mcp_tool_policy(request.tool_name or "")
-
     headers = {"content-type": "application/json"}
     if MCP_GATEWAY_API_KEY:
         headers["authorization"] = f"Bearer {MCP_GATEWAY_API_KEY}"
@@ -1191,11 +1436,51 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest):
                 headers=headers,
                 json=payload,
             )
+            status_code = response.status_code
             response.raise_for_status()
-            return response.json()
+            response_payload = response.json()
+            if request.action == "call_tool":
+                _record_tool_call_audit(
+                    raw_request=raw_request,
+                    server_id=request.server_id,
+                    tool_name=request.tool_name,
+                    status_code=status_code,
+                    duration_ms=round((time.time() - started_at) * 1000, 2),
+                    ok=True,
+                    request_payload=payload,
+                    response_payload=response_payload,
+                    context="api.v1.mcp",
+                )
+            return response_payload
     except httpx.HTTPStatusError as exc:
+        if request.action == "call_tool":
+            _record_tool_call_audit(
+                raw_request=raw_request,
+                server_id=request.server_id,
+                tool_name=request.tool_name,
+                status_code=exc.response.status_code,
+                duration_ms=round((time.time() - started_at) * 1000, 2),
+                ok=False,
+                request_payload=payload,
+                response_payload={"error": exc.response.text},
+                context="api.v1.mcp",
+                error=exc.response.text,
+            )
         raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
     except Exception as exc:
+        if request.action == "call_tool":
+            _record_tool_call_audit(
+                raw_request=raw_request,
+                server_id=request.server_id,
+                tool_name=request.tool_name,
+                status_code=502,
+                duration_ms=round((time.time() - started_at) * 1000, 2),
+                ok=False,
+                request_payload=payload,
+                response_payload={"error": str(exc)},
+                context="api.v1.mcp",
+                error=str(exc),
+            )
         raise HTTPException(status_code=502, detail=f"MCP gateway unreachable: {exc}")
 @app.get("/metrics")
 async def get_metrics():
@@ -1212,9 +1497,78 @@ async def get_circuit_breakers():
         "circuit_breakers": get_all_circuit_breaker_stats(),
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+@app.get("/audit", response_model=AuditExportResponse)
+async def export_audit_events(
+    raw_request: Request,
+    format: str = Query("json", pattern="^(json|csv)$", description="Export format"),
+    workspace_id: Optional[str] = Query(None, description="Filter by workspace identifier"),
+    user_id: Optional[str] = Query(None, description="Filter by user identifier"),
+    tool_name: Optional[str] = Query(None, description="Filter by tool name"),
+    event_type: Optional[str] = Query(None, pattern="^(request|tool_call)$", description="Filter by event type"),
+    start_date: Optional[str] = Query(None, description="Start date (ISO-8601)"),
+    end_date: Optional[str] = Query(None, description="End date (ISO-8601)"),
+    limit: int = Query(1000, ge=1, le=AUDIT_EXPORT_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    """
+    Export structured audit events as JSON or CSV.
+
+    Supported filters include workspace/user/date range/tool name.
+    """
+    query_params = raw_request.query_params
+    workspace_filter = workspace_id or query_params.get("workspace")
+    user_filter = user_id or query_params.get("user")
+    tool_filter = tool_name or query_params.get("tool")
+    event_filter = event_type or query_params.get("type")
+
+    if event_filter and event_filter not in {"request", "tool_call"}:
+        raise HTTPException(status_code=400, detail="event_type must be 'request' or 'tool_call'")
+
+    start_filter = _safe_iso_datetime(
+        start_date or query_params.get("from") or query_params.get("start"),
+        "start_date",
+    )
+    end_filter = _safe_iso_datetime(
+        end_date or query_params.get("to") or query_params.get("end"),
+        "end_date",
+    )
+    if start_filter and end_filter and end_filter < start_filter:
+        raise HTTPException(status_code=400, detail="end_date must be greater than or equal to start_date")
+
+    try:
+        service = get_audit_service()
+        result = service.export_events(
+            export_format=format,
+            workspace_id=workspace_filter,
+            user_id=user_filter,
+            tool_name=tool_filter,
+            event_type=event_filter,
+            start_date=start_filter,
+            end_date=end_filter,
+            limit=limit,
+            offset=offset,
+        )
+        if format == "csv":
+            filename = f"audit_export_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.csv"
+            return Response(
+                content=result["csv_data"],
+                media_type="text/csv",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+        return AuditExportResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error exporting audit events: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Audit export error: {exc}")
 @app.post("/internal/mcp/tools/call", response_model=MCPToolProxyResponse)
-async def internal_mcp_tool_call(request: MCPToolProxyRequest):
+async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Request):
     """Route internal tool calls to MCP gateway /mcp endpoint with structured result."""
+    started_at = time.time()
     policy_started_at = time.perf_counter()
     try:
         enforce_mcp_tool_policy(request.tool_name)
@@ -1227,8 +1581,19 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest):
             status_code=exc.status_code,
             error=str(exc.detail),
         ).model_dump()
+        _record_tool_call_audit(
+            raw_request=raw_request,
+            server_id=request.server_id,
+            tool_name=request.tool_name,
+            status_code=exc.status_code,
+            duration_ms=round(latency_ms, 2),
+            ok=False,
+            request_payload=request.model_dump(exclude_none=True),
+            response_payload=denied_payload,
+            context=request.context or "api.internal",
+            error=str(exc.detail),
+        )
         return JSONResponse(status_code=exc.status_code, content=denied_payload)
-
     client = get_mcp_gateway_client()
     result = await client.call_tool(
         server_id=request.server_id,
@@ -1237,6 +1602,18 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest):
         context=request.context or "api.internal",
     )
     payload = result.to_dict()
+    _record_tool_call_audit(
+        raw_request=raw_request,
+        server_id=request.server_id,
+        tool_name=request.tool_name,
+        status_code=result.status_code,
+        duration_ms=round((time.time() - started_at) * 1000, 2),
+        ok=result.ok,
+        request_payload=request.model_dump(exclude_none=True),
+        response_payload=payload,
+        context=request.context or "api.internal",
+        error=result.error,
+    )
     if not result.ok:
         return JSONResponse(status_code=result.status_code, content=payload)
     return payload
@@ -2971,6 +3348,10 @@ async def shutdown_event():
     if feedback_service:
         feedback_service.close()
         logger.info("Feedback Service closed")
+
+    if audit_service:
+        audit_service.close()
+        logger.info("Audit Service closed")
     
     logger.info("API server shutdown complete")
 def handle_sigterm(signum, frame):
