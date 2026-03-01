@@ -12,6 +12,7 @@ import re
 import logging
 import asyncio
 import re
+from contextvars import ContextVar
 from typing import List, Dict, Optional, Any, Tuple
 from datetime import datetime
 import uvicorn
@@ -33,6 +34,12 @@ from circuit_breaker import get_all_circuit_breaker_stats
 from internal_mcp_client import InternalMCPGatewayClient
 from tool_policy_engine import ToolPolicyEngine, load_default_tool_policy_engine
 from security_heuristics import detect_prompt_injection_patterns
+from workspace_context import (
+    ensure_workspace_filter,
+    ensure_workspace_metadata,
+    get_valid_workspace_ids,
+    resolve_workspace_id,
+)
 from safety_sanitizer import (
     redact_secrets,
     redact_secrets_in_text,
@@ -68,6 +75,7 @@ RAG_EMBEDDING_SERVICE_URL = os.getenv("RAG_EMBEDDING_SERVICE_URL", "http://embed
 RAG_DEFAULT_WORKSPACE_ID = os.getenv("RAG_DEFAULT_WORKSPACE_ID", "default").strip() or "default"
 MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://mcpjungle:9100")
 MCP_GATEWAY_API_KEY = os.getenv("MCP_GATEWAY_API_KEY", "")
+WORKSPACE_ID_RESPONSE_HEADER = "X-Workspace-Id"
 AUDIT_CAPTURE_BODY_LIMIT = int(os.getenv("AUDIT_CAPTURE_BODY_LIMIT", "32768"))
 AUDIT_EXPORT_MAX_LIMIT = int(os.getenv("AUDIT_EXPORT_MAX_LIMIT", "10000"))
 
@@ -119,6 +127,80 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+WORKSPACE_OPTIONAL_PATHS = {
+    "/",
+    "/health",
+    "/metrics",
+    "/circuit-breakers",
+}
+WORKSPACE_OPTIONAL_PREFIXES = ("/docs", "/redoc", "/openapi.json")
+WORKSPACE_REQUIRED_PREFIXES = ("/v1/", "/memory", "/graph", "/internal/")
+WORKSPACE_REQUIRED_EXACT_PATHS = {"/router/info"}
+WORKSPACE_CONTEXT: ContextVar[Optional[str]] = ContextVar("workspace_id", default=None)
+
+
+def _is_workspace_enforced_path(path: str) -> bool:
+    """Return True when workspace context is mandatory for the request path."""
+    if path in WORKSPACE_OPTIONAL_PATHS:
+        return False
+    if any(path.startswith(prefix) for prefix in WORKSPACE_OPTIONAL_PREFIXES):
+        return False
+    if path in WORKSPACE_REQUIRED_EXACT_PATHS:
+        return True
+    return path.startswith(WORKSPACE_REQUIRED_PREFIXES)
+
+
+def get_current_workspace_id() -> str:
+    """Return workspace_id from request context."""
+    workspace_id = WORKSPACE_CONTEXT.get()
+    if workspace_id:
+        return workspace_id
+    raise HTTPException(status_code=500, detail="Workspace context missing")
+
+
+@app.middleware("http")
+async def enforce_workspace_context(request: Request, call_next):
+    """Require and validate workspace context on all business endpoints."""
+    path = request.url.path
+    if request.method == "OPTIONS" or not _is_workspace_enforced_path(path):
+        return await call_next(request)
+
+    workspace_id = resolve_workspace_id(request)
+    if not workspace_id:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": (
+                    "Missing workspace_id. Provide X-Workspace-Id header "
+                    "or workspace_id query parameter."
+                ),
+                "type": "workspace_error",
+                "code": "workspace_id_missing",
+            },
+        )
+
+    valid_workspace_ids = get_valid_workspace_ids()
+    if workspace_id not in valid_workspace_ids:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": f"Unknown workspace_id: {workspace_id}",
+                "type": "workspace_error",
+                "code": "workspace_id_unknown",
+            },
+        )
+
+    request.state.workspace_id = workspace_id
+    workspace_token = WORKSPACE_CONTEXT.set(workspace_id)
+    try:
+        response = await call_next(request)
+    finally:
+        WORKSPACE_CONTEXT.reset(workspace_token)
+
+    response.headers[WORKSPACE_ID_RESPONSE_HEADER] = workspace_id
+    return response
+
 # Request/Response Models
 class ChatMessage(BaseModel):
     role: str = Field(..., description="Role of the message author (system, user, assistant)")
@@ -1711,8 +1793,10 @@ async def health_check():
 @app.post("/v1/mcp")
 async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
     """Proxy MCP calls through the MCPJungle gateway service."""
+    workspace_id = get_current_workspace_id()
     started_at = time.time()
     payload = request.model_dump(exclude_none=True)
+    payload.setdefault("workspace_id", workspace_id)
     gateway_timeout_seconds = 30.0
 
     if request.action == "call_tool":
@@ -1727,12 +1811,12 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
                 server_id=request.server_id,
                 tool_name=request.tool_name or "",
                 arguments=request.arguments or {},
-                workspace_id=request.workspace_id,
+                workspace_id=request.workspace_id or workspace_id,
                 request_id=request.request_id,
                 action=request.tool_action,
                 default_timeout_seconds=gateway_timeout_seconds,
             )
-            payload.setdefault("workspace_id", resolved_workspace_id)
+            payload["workspace_id"] = resolved_workspace_id
             payload.setdefault("request_id", resolved_request_id)
             payload.setdefault("tool_action", resolved_action)
         except HTTPException as exc:
@@ -1758,6 +1842,7 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
     headers = {"content-type": "application/json"}
     if MCP_GATEWAY_API_KEY:
         headers["authorization"] = f"Bearer {MCP_GATEWAY_API_KEY}"
+    headers[WORKSPACE_ID_RESPONSE_HEADER] = payload.get("workspace_id", workspace_id)
     redacted_arguments, argument_redactions = _redact_value_for_audit(payload.get("arguments", {}))
     logger.info(
         "mcp_proxy_call action=%s server=%s tool=%s argument_redactions=%s arguments=%s",
@@ -1926,10 +2011,14 @@ async def export_audit_events(
 @app.post("/internal/mcp/tools/call", response_model=MCPToolProxyResponse)
 async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Request):
     """Route internal tool calls to MCP gateway /mcp endpoint with structured result."""
+    workspace_id = get_current_workspace_id()
     started_at = time.time()
     policy_started_at = time.perf_counter()
     request_payload = request.model_dump(exclude_none=True)
+    request_payload.setdefault("workspace_id", workspace_id)
     effective_timeout_seconds = float(os.getenv("MCP_GATEWAY_TIMEOUT_SECONDS", "10"))
+    tool_arguments = dict(request.arguments or {})
+    tool_arguments.setdefault("workspace_id", workspace_id)
     redacted_arguments, argument_redactions = _redact_value_for_audit(request.arguments or {})
     logger.info(
         "internal_mcp_tool_call server=%s tool=%s context=%s argument_redactions=%s arguments=%s",
@@ -1949,8 +2038,8 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
             raw_request=raw_request,
             server_id=request.server_id,
             tool_name=request.tool_name,
-            arguments=request.arguments or {},
-            workspace_id=request.workspace_id,
+            arguments=tool_arguments,
+            workspace_id=request.workspace_id or workspace_id,
             request_id=request.request_id,
             action=request.action,
             default_timeout_seconds=effective_timeout_seconds,
@@ -1958,6 +2047,7 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
         request_payload["workspace_id"] = resolved_workspace_id
         request_payload["request_id"] = resolved_request_id
         request_payload["action"] = resolved_action
+        tool_arguments["workspace_id"] = resolved_workspace_id
     except HTTPException as exc:
         latency_ms = (time.perf_counter() - policy_started_at) * 1000
         detail_payload = (
@@ -1997,8 +2087,9 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
     result = await client.call_tool(
         server_id=request.server_id,
         tool_name=request.tool_name,
-        arguments=request.arguments or {},
-        context=request.context or "api.internal",
+        arguments=tool_arguments,
+        context=f"{request.context or 'api.internal'} workspace={request_payload.get('workspace_id', workspace_id)}",
+        workspace_id=request_payload.get("workspace_id", workspace_id),
         timeout_seconds=effective_timeout_seconds,
     )
     payload = result.to_dict()
@@ -2035,6 +2126,8 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
     start_time = time.time()
     
     try:
+        workspace_id = get_current_workspace_id()
+
         # Validate request
         if not request.messages:
             raise HTTPException(status_code=400, detail="Messages list cannot be empty")
@@ -2057,10 +2150,11 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
 
         if security_metadata["suspicious"]:
             logger.warning(
-                "Suspicious prompt pattern detected: categories=%s risk_score=%s user=%s",
+                "Suspicious prompt pattern detected: categories=%s risk_score=%s user=%s workspace=%s",
                 security_metadata.get("matched_categories"),
                 security_metadata.get("risk_score"),
                 request.user,
+                workspace_id,
             )
 
         if request.memory and request.memory.enabled:
@@ -2075,6 +2169,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                         query=latest_user_message,
                         user_id=request.user,
                         limit=request.memory.top_k,
+                        filters=ensure_workspace_filter(None, workspace_id),
                         use_temporal_decay=request.memory.use_temporal_decay
                     )
                     if request.memory.min_score is not None:
@@ -2120,7 +2215,9 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                         "top_k": request.memory.top_k,
                         "min_score": request.memory.min_score,
                         "use_temporal_decay": request.memory.use_temporal_decay,
+                        "workspace_id": workspace_id,
                         "context_sanitization": memory_sanitization,
+                        "workspace_id": workspace_id,
                         "memories_retrieved": len(memory_results),
                         "top_score": round(max(memory_scores), 4) if memory_scores else None,
                         "avg_score": (
@@ -2147,22 +2244,13 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     status_code=400,
                     detail="RAG requires at least one user message or rag.query"
                 )
-            rag_workspace_id = _extract_workspace_id_from_filters(
-                request.rag.filters,
-                context="chat.rag",
-                required=False,
-            )
-            rag_filters = _merge_workspace_into_metadata(
-                metadata=request.rag.filters,
-                workspace_id=rag_workspace_id,
-                context="chat.rag",
-            )
             retrieval_start = time.time()
+            rag_filters = ensure_workspace_filter(request.rag.filters, workspace_id)
             rag_results = service.search_documents(
                 query=retrieval_query,
                 limit=request.rag.k,
                 filters=rag_filters,
-                workspace_id=rag_workspace_id,
+                workspace_id=workspace_id,
             )
             retrieval_time_ms = (time.time() - retrieval_start) * 1000
             if request.rag.min_score is not None:
@@ -2198,10 +2286,10 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             rag_metadata = {
                 "enabled": True,
                 "query": retrieval_query,
-                "workspace_id": rag_workspace_id,
                 "k": request.rag.k,
                 "filters": rag_filters,
                 "min_score": request.rag.min_score,
+                "workspace_id": workspace_id,
                 "chunks_retrieved": len(rag_results),
                 "context_sanitization": rag_sanitization,
                 "retrieval_time_ms": round(retrieval_time_ms, 2),
@@ -2242,6 +2330,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             routing_metadata["output_guardrail"] = guardrail_metadata
         routing_metadata = dict(routing_metadata or {})
         routing_metadata["security"] = security_metadata
+        routing_metadata["workspace_id"] = workspace_id
         
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
@@ -2268,10 +2357,13 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     store_result = memory_service_instance.add_memory(
                         messages=memory_messages,
                         user_id=request.user,
-                        metadata={
+                        metadata=ensure_workspace_metadata(
+                            {
                             "source": "chat.completions",
                             "model": response_model
-                        }
+                            },
+                            workspace_id,
+                        ),
                     )
                     if memory_metadata is None:
                         memory_metadata = {"enabled": True}
@@ -2456,13 +2548,14 @@ async def router_info():
 async def ingest_document_text(request: DocumentIngestTextRequest):
     """Ingest raw text and return UTF-8 normalized overlapping chunks."""
     try:
+        workspace_id = get_current_workspace_id()
         service = get_document_ingestion_service()
         result = service.ingest_text(
             text=request.text,
             source=request.source,
             project=request.project,
             created_at=request.created_at,
-            metadata=request.metadata
+            metadata=ensure_workspace_metadata(request.metadata, workspace_id),
         )
         return DocumentIngestResponse(
             document_id=result["document_id"],
@@ -2489,6 +2582,7 @@ async def ingest_document_file(
     except json.JSONDecodeError as e:
         raise HTTPException(status_code=400, detail=f"Invalid metadata JSON: {str(e)}")
     try:
+        workspace_id = get_current_workspace_id()
         service = get_document_ingestion_service()
         content = await file.read()
         result = service.ingest_file(
@@ -2497,7 +2591,7 @@ async def ingest_document_file(
             source=source,
             project=project,
             created_at=created_at,
-            metadata=parsed_metadata
+            metadata=ensure_workspace_metadata(parsed_metadata, workspace_id),
         )
         return DocumentIngestResponse(
             document_id=result["document_id"],
@@ -2522,18 +2616,8 @@ async def rag_ingest(request: RAGIngestRequest):
     4. Stored in Qdrant vector database
     """
     try:
-        metadata = dict(request.metadata or {})
-        workspace_id = metadata.get("workspace_id")
-        if workspace_id is None:
-            raise HTTPException(
-                status_code=400,
-                detail="/v1/rag/ingest requires metadata.workspace_id",
-            )
-        metadata = _merge_workspace_into_metadata(
-            metadata=metadata,
-            workspace_id=workspace_id,
-            context="/v1/rag/ingest",
-        )
+        workspace_id = get_current_workspace_id()
+        metadata = ensure_workspace_metadata(request.metadata, workspace_id)
         service = get_rag_service()
         result = service.ingest_document(
             text=request.text,
@@ -2559,6 +2643,7 @@ async def rag_ingest_batch(request: RAGIngestBatchRequest):
     - metadata: Optional metadata dictionary
     """
     try:
+        workspace_id = get_current_workspace_id()
         normalized_documents = []
         for index, document in enumerate(request.documents):
             if not isinstance(document, dict):
@@ -2566,27 +2651,18 @@ async def rag_ingest_batch(request: RAGIngestBatchRequest):
                     status_code=400,
                     detail=f"/v1/rag/ingest/batch document[{index}] must be an object",
                 )
-            metadata = dict(document.get("metadata") or {})
-            workspace_id = metadata.get("workspace_id")
-            if workspace_id is None:
-                raise HTTPException(
-                    status_code=400,
-                    detail=(
-                        "/v1/rag/ingest/batch requires metadata.workspace_id "
-                        f"for document[{index}]"
-                    ),
-                )
-            normalized_metadata = _merge_workspace_into_metadata(
-                metadata=metadata,
-                workspace_id=workspace_id,
-                context=f"/v1/rag/ingest/batch document[{index}]",
-            )
             normalized_document = dict(document)
-            normalized_document["metadata"] = normalized_metadata
+            normalized_document["metadata"] = ensure_workspace_metadata(
+                document.get("metadata"),
+                workspace_id,
+            )
             normalized_documents.append(normalized_document)
 
         service = get_rag_service()
-        result = service.ingest_documents_batch(documents=normalized_documents)
+        result = service.ingest_documents_batch(
+            documents=normalized_documents,
+            workspace_id=workspace_id,
+        )
         logger.info(f"Successfully ingested {result['documents_processed']} documents")
         return RAGIngestBatchResponse(**result)
     except HTTPException:
@@ -2608,15 +2684,13 @@ async def rag_search(request: RAGSearchRequest):
         List of relevant document chunks with similarity scores
     """
     try:
-        workspace_id = _extract_workspace_id_from_filters(
-            request.filters,
-            context="/v1/rag/search",
-        )
+        workspace_id = get_current_workspace_id()
+        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
         service = get_rag_service()
         results = service.search_documents(
             query=request.query,
             limit=request.limit,
-            filters=request.filters,
+            filters=rag_filters,
             workspace_id=workspace_id,
         )
         results, context_sanitization = sanitize_retrieved_context_chunks(results)
@@ -2651,15 +2725,13 @@ async def rag_semantic_search(request: RAGSemanticSearchRequest):
         Top-k semantic search results with scores and metadata
     """
     try:
-        workspace_id = _extract_workspace_id_from_filters(
-            request.filters,
-            context="/v1/rag/semantic-search",
-        )
+        workspace_id = get_current_workspace_id()
+        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
         service = get_rag_service()
         results = service.semantic_search(
             query=request.query,
             top_k=request.top_k,
-            filters=request.filters,
+            filters=rag_filters,
             collection_name=request.collection_name,
             workspace_id=workspace_id,
         )
@@ -2756,6 +2828,8 @@ async def rag_query(request: RAGQueryRequest):
     start_time = time.time()
     
     try:
+        workspace_id = get_current_workspace_id()
+        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
         if SAFETY_GATEWAY_ENABLED:
             rag_messages = request.messages or []
             rag_payload_text = "\n".join([
@@ -2764,10 +2838,6 @@ async def rag_query(request: RAGQueryRequest):
             ]).strip()
             safety_verdict = evaluate_safety_text(rag_payload_text, endpoint="/v1/rag/query")
             enforce_safety_gateway(safety_verdict)
-        workspace_id = _extract_workspace_id_from_filters(
-            request.filters,
-            context="/v1/rag/query",
-        )
         service = get_rag_service()
         logger.info(f"RAG query with k={request.k}: {request.query[:100]}...")
         
@@ -2775,7 +2845,7 @@ async def rag_query(request: RAGQueryRequest):
         results = service.search_documents(
             query=request.query,
             limit=request.k,
-            filters=request.filters,
+            filters=rag_filters,
             workspace_id=workspace_id,
         )
         graph_context = None
@@ -2790,7 +2860,7 @@ async def rag_query(request: RAGQueryRequest):
                 enriched_results = service.search_with_graph_enrichment(
                     query=request.query,
                     limit=request.k,
-                    filters=request.filters,
+                    filters=rag_filters,
                     graph_depth=1,
                     graph_limit=request.graph_limit,
                     workspace_id=workspace_id,
@@ -2843,6 +2913,7 @@ async def rag_query(request: RAGQueryRequest):
                 "retrieval_time_ms": round(retrieval_time_ms, 2),
                 "top_score": None,
                 "avg_score": None,
+                "workspace_id": workspace_id,
                 "entities_in_graph": entities_in_graph,
                 "relationships_found": relationships_found,
                 "context_sanitization": context_sanitization,
@@ -2861,6 +2932,7 @@ async def rag_query(request: RAGQueryRequest):
                 "top_score": round(scores[0], 4) if scores else None,
                 "avg_score": round(sum(scores) / len(scores), 4) if scores else None,
                 "min_score": round(min(scores), 4) if scores else None,
+                "workspace_id": workspace_id,
                 "entities_in_graph": entities_in_graph,
                 "relationships_found": relationships_found,
                 "context_sanitization": context_sanitization,
@@ -2974,10 +3046,8 @@ async def rag_graph_search(request: RAGGraphSearchRequest):
         Vector search results enriched with knowledge graph context
     """
     try:
-        workspace_id = _extract_workspace_id_from_filters(
-            request.filters,
-            context="/v1/rag/search/graph-enriched",
-        )
+        workspace_id = get_current_workspace_id()
+        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
         service = get_rag_service()
         
         if not service.graph_service:
@@ -2991,7 +3061,7 @@ async def rag_graph_search(request: RAGGraphSearchRequest):
         enriched_results = service.search_with_graph_enrichment(
             query=request.query,
             limit=request.limit,
-            filters=request.filters,
+            filters=rag_filters,
             graph_depth=request.graph_depth,
             graph_limit=request.graph_limit,
             include_entity_context=request.include_entity_context,
@@ -3059,6 +3129,8 @@ async def rag_graph_query(request: RAGGraphQueryRequest):
     start_time = time.time()
     
     try:
+        workspace_id = get_current_workspace_id()
+        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
         if SAFETY_GATEWAY_ENABLED:
             rag_messages = request.messages or []
             rag_payload_text = "\n".join([
@@ -3067,10 +3139,6 @@ async def rag_graph_query(request: RAGGraphQueryRequest):
             ]).strip()
             safety_verdict = evaluate_safety_text(rag_payload_text, endpoint="/v1/rag/query/graph-enriched")
             enforce_safety_gateway(safety_verdict)
-        workspace_id = _extract_workspace_id_from_filters(
-            request.filters,
-            context="/v1/rag/query/graph-enriched",
-        )
         service = get_rag_service()
         
         if not service.graph_service:
@@ -3085,7 +3153,7 @@ async def rag_graph_query(request: RAGGraphQueryRequest):
         enriched_results = service.search_with_graph_enrichment(
             query=request.query,
             limit=request.k,
-            filters=request.filters,
+            filters=rag_filters,
             graph_depth=request.graph_depth,
             graph_limit=request.graph_limit,
             workspace_id=workspace_id,
@@ -3110,6 +3178,7 @@ async def rag_graph_query(request: RAGGraphQueryRequest):
                 "retrieval_time_ms": round(retrieval_time_ms, 2),
                 "entities_in_graph": 0,
                 "relationships_found": 0,
+                "workspace_id": workspace_id,
                 "top_score": None,
                 "avg_score": None,
                 "context_sanitization": context_sanitization,
@@ -3128,6 +3197,7 @@ async def rag_graph_query(request: RAGGraphQueryRequest):
                 "retrieval_time_ms": round(retrieval_time_ms, 2),
                 "entities_in_graph": enriched_results['stats']['entities_in_graph'],
                 "relationships_found": enriched_results['stats']['relationships_found'],
+                "workspace_id": workspace_id,
                 "top_score": round(scores[0], 4) if scores else None,
                 "avg_score": round(sum(scores) / len(scores), 4) if scores else None,
                 "min_score": round(min(scores), 4) if scores else None,
@@ -3268,11 +3338,12 @@ async def memory_add(request: MemoryAddRequest):
         Memory ID, timestamp, and number of facts extracted
     """
     try:
+        workspace_id = get_current_workspace_id()
         service = get_memory_service()
         result = service.add_memory(
             messages=request.messages,
             user_id=request.user_id,
-            metadata=request.metadata
+            metadata=ensure_workspace_metadata(request.metadata, workspace_id),
         )
         logger.info(f"Memory added: {result['memory_id']} ({result['facts_extracted']} facts)")
         return MemoryAddResponse(**result)
@@ -3305,12 +3376,14 @@ async def memory_search(request: MemorySearchRequest):
         List of memories with combined scores, cosine scores, and temporal scores
     """
     try:
+        workspace_id = get_current_workspace_id()
+        workspace_filters = ensure_workspace_filter(request.filters, workspace_id)
         service = get_memory_service()
         results = service.search_memory(
             query=request.query,
             user_id=request.user_id,
             limit=request.limit,
-            filters=request.filters,
+            filters=workspace_filters,
             use_temporal_decay=request.use_temporal_decay
         )
         logger.info(f"Memory search: {len(results)} results for query: {request.query[:50]}...")
@@ -3444,11 +3517,12 @@ async def graph_process(request: GraphProcessRequest):
         Processing statistics including entities and relations extracted/added
     """
     try:
+        workspace_id = get_current_workspace_id()
         service = get_graph_service()
         result = service.process_document(
             text=request.text,
             document_id=request.document_id,
-            metadata=request.metadata
+            metadata=ensure_workspace_metadata(request.metadata, workspace_id),
         )
         logger.info(f"Processed document: {result['document_id']}")
         return GraphProcessResponse(**result)
@@ -3489,10 +3563,13 @@ async def graph_query(request: GraphQueryRequest):
         Query results as list of records
     """
     try:
+        workspace_id = get_current_workspace_id()
+        query_parameters = dict(request.parameters or {})
+        query_parameters.setdefault("workspace_id", workspace_id)
         service = get_graph_service()
         results = service.query_graph(
             query=request.query,
-            parameters=request.parameters
+            parameters=query_parameters,
         )
         logger.info(f"Graph query executed: {len(results)} results")
         return GraphQueryResponse(
@@ -3530,6 +3607,7 @@ async def graph_neighbors(
         GET /graph/neighbors/Alice?entity_type=Person&relation_types=WORKS_ON&max_depth=2
     """
     try:
+        _ = get_current_workspace_id()
         service = get_graph_service()
         
         # Parse relation types if provided
@@ -3574,6 +3652,7 @@ async def graph_search(request: GraphSearchRequest):
         }
     """
     try:
+        _ = get_current_workspace_id()
         service = get_graph_service()
         results = service.search_entities(
             search_text=request.search_text,
@@ -3601,6 +3680,7 @@ async def graph_stats():
         - Breakdown by relationship type (WORKS_ON, RELATES_TO, etc.)
     """
     try:
+        _ = get_current_workspace_id()
         service = get_graph_service()
         stats = service.get_graph_stats()
         logger.info(f"Graph stats: {stats['total_nodes']} nodes, {stats['total_relationships']} relationships")
@@ -3641,6 +3721,7 @@ async def add_feedback(request: FeedbackRequest):
         Feedback ID, timestamp, and status
     """
     try:
+        workspace_id = get_current_workspace_id()
         service = get_feedback_service()
         result = service.add_feedback(
             query=request.query,
@@ -3654,7 +3735,7 @@ async def add_feedback(request: FeedbackRequest):
             session_id=request.session_id,
             intent=request.intent,
             project=request.project,
-            metadata=request.metadata
+            metadata=ensure_workspace_metadata(request.metadata, workspace_id),
         )
         logger.info(f"Feedback added: {result['feedback_id']} [rating={request.rating}]")
         return FeedbackResponse(**result)
@@ -3675,6 +3756,7 @@ async def get_feedback(feedback_id: str):
         Complete feedback record with all metadata
     """
     try:
+        _ = get_current_workspace_id()
         service = get_feedback_service()
         result = service.get_feedback(feedback_id)
         
@@ -3703,13 +3785,16 @@ async def update_feedback(feedback_id: str, request: FeedbackUpdateRequest):
         Update status
     """
     try:
+        workspace_id = get_current_workspace_id()
         service = get_feedback_service()
         result = service.update_feedback(
             feedback_id=feedback_id,
             rating=request.rating,
             intent=request.intent,
             project=request.project,
-            metadata=request.metadata
+            metadata=ensure_workspace_metadata(request.metadata, workspace_id)
+            if request.metadata is not None
+            else None,
         )
         logger.info(f"Feedback updated: {feedback_id}")
         return result
@@ -3730,6 +3815,7 @@ async def delete_feedback(feedback_id: str):
         Deletion status
     """
     try:
+        _ = get_current_workspace_id()
         service = get_feedback_service()
         result = service.delete_feedback(feedback_id)
         logger.info(f"Feedback deleted: {feedback_id}")
@@ -3765,6 +3851,7 @@ async def get_model_accuracy(
         GET /v1/feedback/accuracy?model=llama-3.3-8b-instruct&intent=code
     """
     try:
+        _ = get_current_workspace_id()
         service = get_feedback_service()
         results = service.get_model_accuracy(
             model=model,
@@ -3819,6 +3906,7 @@ async def get_feedback_stats(
         GET /v1/feedback/stats?model=qwen-2.5-coder-7b&intent=code&days=30
     """
     try:
+        _ = get_current_workspace_id()
         service = get_feedback_service()
         stats = service.get_feedback_stats(
             model=model,
@@ -3876,6 +3964,7 @@ async def export_finetuning_dataset(request: FinetuningExportRequest):
         }
     """
     try:
+        _ = get_current_workspace_id()
         service = get_feedback_service()
         
         start_date = None

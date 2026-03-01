@@ -67,11 +67,13 @@ class InternalMCPGatewayClient:
             api_key=os.getenv("MCP_GATEWAY_API_KEY"),
         )
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self, workspace_id: Optional[str] = None) -> Dict[str, str]:
         headers = {"content-type": "application/json"}
         if self.api_key:
             headers["authorization"] = f"Bearer {self.api_key}"
             headers["x-api-key"] = self.api_key
+        if workspace_id:
+            headers["x-workspace-id"] = workspace_id
         return headers
 
     def is_tool_allowed(self, tool_name: str) -> bool:
@@ -85,6 +87,7 @@ class InternalMCPGatewayClient:
         tool_name: str,
         arguments: Optional[Dict[str, Any]] = None,
         context: Optional[str] = None,
+        workspace_id: Optional[str] = None,
         timeout_seconds: Optional[float] = None,
     ) -> MCPToolResult:
         started_at = time.perf_counter()
@@ -95,6 +98,27 @@ class InternalMCPGatewayClient:
             "tool_name": tool_name,
             "arguments": raw_arguments,
         }
+        if workspace_id:
+            payload["workspace_id"] = workspace_id
+
+        if not self.is_tool_allowed(tool_name):
+            latency_ms = (time.perf_counter() - started_at) * 1000
+            error = f"Tool '{tool_name}' is not allowed for API-routed MCP calls"
+            logger.warning(
+                "mcp_tool_call tool=%s status=blocked latency_ms=%.2f error=%s context=%s",
+                tool_name,
+                latency_ms,
+                error,
+                context,
+            )
+            return MCPToolResult(
+                ok=False,
+                tool_name=tool_name,
+                latency_ms=latency_ms,
+                status_code=403,
+                error=error,
+            )
+
         effective_timeout_seconds = (
             float(timeout_seconds)
             if timeout_seconds is not None and float(timeout_seconds) > 0
@@ -106,7 +130,7 @@ class InternalMCPGatewayClient:
                 response = await client.post(
                     f"{self.gateway_base_url}/mcp/tools/call",
                     json=payload,
-                    headers=self._headers(),
+                    headers=self._headers(workspace_id=workspace_id),
                 )
 
             latency_ms = (time.perf_counter() - started_at) * 1000
