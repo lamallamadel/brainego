@@ -6,6 +6,7 @@ Command-line interface for managing the learning engine service.
 
 Usage:
     python learning_engine_cli.py train [--days 7] [--ewc-lambda 500]
+    python learning_engine_cli.py train-jsonl --dataset /path/data.jsonl [--learning-rate 2e-4] [--epochs 3] [--batch-size 4]
     python learning_engine_cli.py fisher [--num-samples 1000]
     python learning_engine_cli.py list-adapters
     python learning_engine_cli.py deploy <version>
@@ -47,6 +48,43 @@ async def train(days: int, ewc_lambda: float, force: bool, base_url: str):
             print(f"  Status: {data['status']}")
         else:
             print(f"\n✗ Failed to start training: {response.text}")
+            sys.exit(1)
+
+
+async def train_jsonl(
+    dataset_path: str,
+    learning_rate: Optional[float],
+    epochs: Optional[int],
+    batch_size: Optional[int],
+    base_url: str
+):
+    """Trigger training from JSONL dataset."""
+    print("Triggering JSONL training job...")
+    print(f"  Dataset: {dataset_path}")
+    if learning_rate is not None:
+        print(f"  Learning rate: {learning_rate}")
+    if epochs is not None:
+        print(f"  Epochs: {epochs}")
+    if batch_size is not None:
+        print(f"  Batch size: {batch_size}")
+
+    payload = {
+        "dataset_path": dataset_path,
+        "learning_rate": learning_rate,
+        "epochs": epochs,
+        "batch_size": batch_size,
+    }
+
+    async with httpx.AsyncClient(timeout=600.0) as client:
+        response = await client.post(f"{base_url}/train/jsonl", json=payload)
+
+        if response.status_code == 200:
+            data = response.json()
+            print("\n✓ JSONL training job started")
+            print(f"  Job ID: {data['job_id']}")
+            print(f"  Status: {data['status']}")
+        else:
+            print(f"\n✗ Failed to start JSONL training: {response.text}")
             sys.exit(1)
 
 
@@ -206,6 +244,13 @@ def main():
     train_parser.add_argument("--ewc-lambda", type=float, default=500.0, help="EWC lambda value")
     train_parser.add_argument("--force", action="store_true", help="Force training")
     
+    # JSONL train command
+    train_jsonl_parser = subparsers.add_parser("train-jsonl", help="Trigger training from JSONL dataset")
+    train_jsonl_parser.add_argument("--dataset", required=True, help="Path to JSONL dataset")
+    train_jsonl_parser.add_argument("--learning-rate", type=float, default=None, help="Learning rate override")
+    train_jsonl_parser.add_argument("--epochs", type=int, default=None, help="Epoch count override")
+    train_jsonl_parser.add_argument("--batch-size", type=int, default=None, help="Batch size override")
+
     # Fisher command
     fisher_parser = subparsers.add_parser("fisher", help="Calculate Fisher matrix")
     fisher_parser.add_argument("--num-samples", type=int, default=1000, help="Number of samples")
@@ -242,6 +287,8 @@ def main():
         asyncio.run(train(args.days, args.ewc_lambda, args.force, args.base_url))
     elif args.command == "fisher":
         asyncio.run(calculate_fisher(args.num_samples, args.adapter, args.base_url))
+    elif args.command == "train-jsonl":
+        asyncio.run(train_jsonl(args.dataset, args.learning_rate, args.epochs, args.batch_size, args.base_url))
     elif args.command == "list-adapters":
         asyncio.run(list_adapters(args.base_url))
     elif args.command == "adapter-info":
