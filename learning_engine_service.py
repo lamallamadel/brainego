@@ -186,6 +186,8 @@ class TrainingRequest(BaseModel):
     days: int = Field(default=7, description="Number of days to look back for training data")
     ewc_lambda: Optional[float] = Field(default=None, description="EWC lambda value (overrides config)")
     force: bool = Field(default=False, description="Force training even if sample count is low")
+    trigger_source: Optional[str] = Field(default="manual", description="Source that triggered training")
+    audit_context: Optional[Dict[str, Any]] = Field(default=None, description="Audit metadata for the trigger")
 
 
 class TrainingResponse(BaseModel):
@@ -255,6 +257,15 @@ async def trigger_training(request: TrainingRequest, background_tasks: Backgroun
         # Start training in background
         job_id = f"train_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
         
+        logger.info(
+            "Training trigger received",
+            extra={
+                "job_id": job_id,
+                "trigger_source": request.trigger_source,
+                "audit_context": request.audit_context or {}
+            }
+        )
+
         background_tasks.add_task(
             trainer.train_from_feedback,
             days=request.days,

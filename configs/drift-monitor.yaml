@@ -67,6 +67,8 @@ fine_tuning:
   learning_engine_url: "http://learning-engine:8003"
   min_drift_score: 0.3      # Combined drift score threshold
   cooldown_hours: 168       # Wait 7 days between auto-triggered fine-tuning
+  fresh_data_window_days: 7 # Count fresh labeled feedback in this window
+  min_fresh_labeled_samples: 100 # Minimum recent labels required before trigger
 
 # Database configuration
 database:

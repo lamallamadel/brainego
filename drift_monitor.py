@@ -119,6 +119,8 @@ class DriftMonitorConfig(BaseModel):
     learning_engine_url: str = Field(default="http://learning-engine:8003")
     min_drift_score: float = Field(default=0.3)
     cooldown_hours: int = Field(default=168)
+    fresh_data_window_days: int = Field(default=7)
+    min_fresh_labeled_samples: int = Field(default=100)
     
     # Database
     postgres_host: str = Field(default="postgres")
@@ -157,6 +159,8 @@ def load_config(config_path: str = "configs/drift-monitor.yaml") -> DriftMonitor
             "learning_engine_url": yaml_config.get("fine_tuning", {}).get("learning_engine_url", "http://learning-engine:8003"),
             "min_drift_score": yaml_config.get("fine_tuning", {}).get("min_drift_score", 0.3),
             "cooldown_hours": yaml_config.get("fine_tuning", {}).get("cooldown_hours", 168),
+            "fresh_data_window_days": yaml_config.get("fine_tuning", {}).get("fresh_data_window_days", 7),
+            "min_fresh_labeled_samples": yaml_config.get("fine_tuning", {}).get("min_fresh_labeled_samples", 100),
             "postgres_host": yaml_config.get("database", {}).get("host", "postgres"),
             "postgres_port": yaml_config.get("database", {}).get("port", 5432),
             "postgres_db": yaml_config.get("database", {}).get("name", "ai_platform"),
@@ -491,12 +495,39 @@ class DriftMonitor:
             if hours_since_last < self.config.cooldown_hours:
                 logger.info(f"Fine-tuning cooldown active ({hours_since_last:.1f}h / {self.config.cooldown_hours}h)")
                 return False
-        
+
+        fresh_sample_count = self.get_fresh_labeled_sample_count(self.config.fresh_data_window_days)
+        if fresh_sample_count < self.config.min_fresh_labeled_samples:
+            logger.info(
+                "Skipping auto fine-tuning trigger due to insufficient fresh labeled data "
+                f"({fresh_sample_count} < {self.config.min_fresh_labeled_samples})"
+            )
+            return False
+
+        audit_context = {
+            "trigger_type": "automatic_drift",
+            "triggered_at": datetime.now().isoformat(),
+            "drift_metrics": drift_metrics,
+            "thresholds": {
+                "kl_threshold": self.config.kl_threshold,
+                "psi_threshold": self.config.psi_threshold,
+                "accuracy_min": self.config.accuracy_min,
+                "min_drift_score": self.config.min_drift_score
+            },
+            "fresh_data_gate": {
+                "window_days": self.config.fresh_data_window_days,
+                "sample_count": fresh_sample_count,
+                "required_min_samples": self.config.min_fresh_labeled_samples
+            }
+        }
+
         try:
             url = f"{self.config.learning_engine_url}/train"
             payload = {
-                "days": self.config.sliding_window_days,
-                "force": True
+                "days": self.config.fresh_data_window_days,
+                "force": False,
+                "trigger_source": "drift_monitor",
+                "audit_context": audit_context
             }
             
             async with httpx.AsyncClient() as client:
@@ -507,7 +538,7 @@ class DriftMonitor:
                     self.last_finetuning_trigger = datetime.now()
                     
                     # Store trigger record
-                    self.store_finetuning_trigger(drift_metrics, result)
+                    self.store_finetuning_trigger(drift_metrics, audit_context, result)
                     
                     # Update Prometheus metrics
                     finetuning_triggers_total.labels(trigger_type='automatic').inc()
@@ -574,12 +605,13 @@ class DriftMonitor:
         finally:
             cursor.close()
     
-    def store_finetuning_trigger(self, drift_metrics: Dict, trigger_result: Dict):
+    def store_finetuning_trigger(self, drift_metrics: Dict, audit_context: Dict, trigger_result: Dict):
         """
         Store fine-tuning trigger record.
         
         Args:
             drift_metrics: Drift metrics that triggered fine-tuning
+            audit_context: Trigger audit payload
             trigger_result: Response from learning engine
         """
         conn = self.connect_db()
@@ -594,7 +626,11 @@ class DriftMonitor:
                 """,
                 (
                     trigger_result.get('job_id'),
-                    json.dumps(drift_metrics),
+                    json.dumps({
+                        "drift_metrics": drift_metrics,
+                        "audit_context": audit_context,
+                        "learning_engine_response": trigger_result
+                    }),
                     datetime.now()
                 )
             )
@@ -602,6 +638,29 @@ class DriftMonitor:
         except Exception as e:
             conn.rollback()
             logger.error(f"Failed to store fine-tuning trigger: {e}")
+        finally:
+            cursor.close()
+
+    def get_fresh_labeled_sample_count(self, days: int) -> int:
+        """Count fresh labeled feedback samples available for training."""
+        conn = self.connect_db()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        try:
+            cursor.execute(
+                """
+                SELECT COUNT(*) AS sample_count
+                FROM feedback
+                WHERE timestamp >= NOW() - (%s || ' days')::INTERVAL
+                  AND rating IN (-1, 1)
+                """,
+                (days,)
+            )
+            result = cursor.fetchone() or {"sample_count": 0}
+            return int(result["sample_count"])
+        except Exception as e:
+            logger.error(f"Failed to count fresh labeled data: {e}")
+            return 0
         finally:
             cursor.close()
     
