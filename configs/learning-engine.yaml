@@ -45,8 +45,9 @@ scheduler:
 
 fisher:
   num_samples: 1000
+  history_days: 30
   output_dir: "/fisher_matrices"
-  description: "Fisher Information Matrix calculation settings"
+  description: "Fisher Information Matrix calculation settings (historical window + sample cap)"
 
 versioning:
   initial_version: "v1.0"

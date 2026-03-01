@@ -119,6 +119,21 @@ helm install my-ai-platform ./helm/ai-platform \
 | `maxServeDeepseek.service.port` | Service port | `8082` |
 | `maxServeDeepseek.resources.limits.nvidia.com/gpu` | GPU limit | `1` |
 
+
+### MAX Serve LoRA Control Plane
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `loraControl.port` | Internal control HTTP port exposed in MAX Serve pods | `19080` |
+| `loraControl.reloadEndpointPath` | MAX Serve internal endpoint used for adapter reload | `/internal/lora/reload` |
+| `loraControl.reloadTimeoutSeconds` | Timeout for upstream MAX Serve reload requests | `10` |
+| `loraControl.image.repository` | Sidecar image repository | `python` |
+
+Internal control endpoints provided by the sidecar:
+- `POST /internal/lora/reload` with `{"adapter_path":"...","adapter_version":"..."}` to hot-swap adapters.
+- `POST /internal/lora/rollback` to restore the previously active adapter version.
+- `GET /internal/lora/state` to inspect active/previous adapter metadata.
+
 ### Application Services
 
 #### Agent Router

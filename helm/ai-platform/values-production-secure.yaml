@@ -536,3 +536,20 @@ networkPolicyExceptions:
 # 8. Review and test disaster recovery procedures
 # 9. Perform security audit before production deployment
 # 10. Document all configuration changes
+
+# Internal LoRA control plane for MAX Serve hot-swap and rollback
+loraControl:
+  image:
+    repository: python
+    tag: "3.11-slim"
+    pullPolicy: IfNotPresent
+  port: 19080
+  reloadEndpointPath: /internal/lora/reload
+  reloadTimeoutSeconds: 10
+  resources:
+    limits:
+      memory: 256Mi
+      cpu: 200m
+    requests:
+      memory: 128Mi
+      cpu: 100m

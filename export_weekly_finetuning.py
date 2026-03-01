@@ -78,6 +78,23 @@ def main():
         choices=["jsonl"],
         help="Export format (default: jsonl)"
     )
+    parser.add_argument(
+        "--min-query-chars",
+        type=int,
+        default=10,
+        help="Minimum query length after normalization (default: 10)"
+    )
+    parser.add_argument(
+        "--min-response-chars",
+        type=int,
+        default=20,
+        help="Minimum response length after normalization (default: 20)"
+    )
+    parser.add_argument(
+        "--no-deduplicate",
+        action="store_true",
+        help="Disable deduplication of query/response pairs"
+    )
     
     args = parser.parse_args()
     
@@ -97,6 +114,12 @@ def main():
     logger.info(f"Date Range: {start_date.date()} to {end_date.date()} ({args.days} days)")
     logger.info(f"Output: {args.output_path}")
     logger.info(f"Format: {args.format}")
+    logger.info(
+        "Filters: min_query_chars=%s, min_response_chars=%s, deduplicate=%s",
+        args.min_query_chars,
+        args.min_response_chars,
+        not args.no_deduplicate,
+    )
     logger.info("=" * 60)
     
     try:
@@ -117,7 +140,10 @@ def main():
             output_path=args.output_path,
             start_date=start_date,
             end_date=end_date,
-            format=args.format
+            format=args.format,
+            min_query_chars=args.min_query_chars,
+            min_response_chars=args.min_response_chars,
+            deduplicate=not args.no_deduplicate,
         )
         
         logger.info("=" * 60)
@@ -129,6 +155,7 @@ def main():
         logger.info(f"  - Positive (👍): {result['positive_samples']} samples (2.0x weight each)")
         logger.info(f"  - Negative (👎): {result['negative_samples']} samples (0.5x weight each)")
         logger.info(f"Total Weight: {result['total_weight']:.2f}")
+        logger.info(f"Filtered Out: {result['filtered_out_samples']}")
         logger.info("=" * 60)
         
         # Calculate statistics

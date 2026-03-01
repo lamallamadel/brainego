@@ -107,6 +107,33 @@ POST /train
 
 Start a new training job using feedback data.
 
+### Trigger JSONL Training
+```bash
+POST /train/jsonl
+```
+
+Start base LoRA fine-tuning from a JSONL dataset with optional hyperparameter overrides.
+
+**Request:**
+```json
+{
+  "dataset_path": "data/train.jsonl",
+  "learning_rate": 0.0002,
+  "epochs": 3,
+  "batch_size": 4
+}
+```
+
+**Response:**
+```json
+{
+  "status": "started",
+  "message": "JSONL training job started with ID: train_jsonl_20250225_120000",
+  "job_id": "train_jsonl_20250225_120000"
+}
+```
+
+
 **Request:**
 ```json
 {

@@ -38,6 +38,11 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
+from drift_intent_metrics import (
+    calculate_population_stability_index,
+    get_intent_distribution,
+)
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -253,7 +258,7 @@ class DriftMonitor:
             offset_days: Offset from current time (0 = current, 7 = previous week)
             project: Optional project scope filter
             workspace: Optional workspace scope filter (from metadata.workspace)
-
+        
         Returns:
             List of feedback records
         """
@@ -322,6 +327,7 @@ class DriftMonitor:
         cursor.close()
         return [(row['scope_type'], row['scope_value']) for row in rows]
 
+    
     def compute_embeddings(self, texts: List[str]) -> np.ndarray:
         """
         Compute embeddings for a list of texts.
@@ -390,7 +396,7 @@ class DriftMonitor:
     
     def calculate_psi(
         self,
-        baseline_distribution: Dict[str, int],
+        reference_distribution: Dict[str, int],
         current_distribution: Dict[str, int]
     ) -> float:
         """
@@ -402,34 +408,17 @@ class DriftMonitor:
         PSI > 0.2: Significant change (drift detected)
         
         Args:
-            baseline_distribution: Baseline intent counts
+            reference_distribution: Reference-window intent counts
             current_distribution: Current intent counts
         
         Returns:
             PSI value
         """
-        # Ensure all categories are present in both distributions
-        all_intents = set(baseline_distribution.keys()) | set(current_distribution.keys())
-        
-        psi = 0.0
-        epsilon = 1e-10
-        
-        # Calculate total counts
-        baseline_total = sum(baseline_distribution.values()) or 1
-        current_total = sum(current_distribution.values()) or 1
-        
-        for intent in all_intents:
-            baseline_count = baseline_distribution.get(intent, 0)
-            current_count = current_distribution.get(intent, 0)
-            
-            # Calculate percentages
-            baseline_pct = (baseline_count / baseline_total) + epsilon
-            current_pct = (current_count / current_total) + epsilon
-            
-            # PSI formula: (actual% - expected%) * ln(actual% / expected%)
-            psi += (current_pct - baseline_pct) * np.log(current_pct / baseline_pct)
-        
-        return float(psi)
+        return calculate_population_stability_index(
+            reference_distribution=reference_distribution,
+            current_distribution=current_distribution,
+            categories=self.config.intent_categories,
+        )
     
     def get_intent_distribution(self, feedback_data: List[Dict]) -> Dict[str, int]:
         """
@@ -441,13 +430,10 @@ class DriftMonitor:
         Returns:
             Dictionary mapping intent to count
         """
-        distribution = {}
-        for record in feedback_data:
-            intent = record.get('intent', 'unknown')
-            if intent:
-                distribution[intent] = distribution.get(intent, 0) + 1
-        
-        return distribution
+        return get_intent_distribution(
+            feedback_data,
+            categories=self.config.intent_categories,
+        )
     
     def calculate_accuracy_metrics(self, feedback_data: List[Dict]) -> Dict[str, float]:
         """
@@ -789,7 +775,7 @@ class DriftMonitor:
                         severity = "warning"
                     else:
                         severity = "info"
-
+                        
                 metrics = {
                     "kl_divergence": kl_divergence,
                     "psi": psi,
@@ -831,6 +817,8 @@ class DriftMonitor:
                     message = (
                         f"Event: drift_detected\n"
                         f"Model drift detected for {scope_type}:{scope_value} with {drift_severity} severity.\n"
+                    message = (
+                        f"Model drift detected for {scope_type}:{scope_value} with {severity} severity.\n"
                         f"KL Divergence: {kl_divergence:.4f} (threshold: {self.config.kl_threshold})\n"
                         f"PSI: {psi:.4f} (threshold: {self.config.psi_threshold})\n"
                         f"Current Accuracy: {current_accuracy:.4f} (minimum: {self.config.accuracy_min})\n"
@@ -852,6 +840,9 @@ class DriftMonitor:
 
                 if drift_detected and combined_drift_score >= self.config.min_drift_score:
                     await self.trigger_finetuning(metrics)
+                    await self.send_slack_alert(severity, message, metrics)
+                    if combined_drift_score >= self.config.min_drift_score:
+                        await self.trigger_finetuning(metrics)
 
                 per_scope_results.append({
                     "scope_type": scope_type,
@@ -864,6 +855,8 @@ class DriftMonitor:
 
             drift_checks_total.labels(status='success').inc()
 
+            
+            # Record duration
             duration = asyncio.get_event_loop().time() - start_time
             drift_check_duration.observe(duration)
 
@@ -1052,9 +1045,9 @@ async def get_drift_metrics(days: int = 30, scope_type: Optional[str] = None, sc
         cursor = conn.cursor(cursor_factory=RealDictCursor)
 
         start_date = datetime.now() - timedelta(days=days)
-
+        
         query = """
-            SELECT
+            SELECT 
                 id, kl_divergence, psi, baseline_accuracy, current_accuracy,
                 drift_detected, severity, scope_type, scope_value, timestamp
             FROM drift_metrics
@@ -1067,7 +1060,7 @@ async def get_drift_metrics(days: int = 30, scope_type: Optional[str] = None, sc
         query += " ORDER BY timestamp DESC"
 
         cursor.execute(query, tuple(params))
-
+        
         results = cursor.fetchall()
         cursor.close()
 
@@ -1169,6 +1162,12 @@ async def manual_trigger_finetuning():
         
         # Trigger fine-tuning regardless of drift score
         metrics = result.get("metrics", {})
+        if not metrics:
+            scope_results = result.get("scope_results", [])
+            for scope_result in scope_results:
+                if scope_result.get("status") == "success" and scope_result.get("metrics"):
+                    metrics = scope_result["metrics"]
+                    break
         success = await drift_monitor.trigger_finetuning(metrics)
         
         if success:
