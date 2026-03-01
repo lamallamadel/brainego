@@ -656,6 +656,14 @@ learningEngine:
       value: "2e-4"
     - name: NUM_TRAIN_EPOCHS
       value: "3"
+    - name: LORA_CONTROL_BASE_URL
+      value: http://max-serve-llama:8080
+    - name: LORA_RELOAD_ENDPOINT_PATH
+      value: /internal/lora/reload
+    - name: LORA_ROLLBACK_ENDPOINT_PATH
+      value: /internal/lora/rollback
+    - name: LORA_OPERATION_TIMEOUT_SECONDS
+      value: "120"
     - name: MINIO_ENDPOINT
       value: minio:9000
     - name: MINIO_ACCESS_KEY
