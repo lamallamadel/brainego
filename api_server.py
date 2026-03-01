@@ -132,6 +132,11 @@ DEFAULT_SAFETY_BLOCK_TERMS = [
     "bypass school firewall",
     "steal password",
 ]
+SAFETY_DECISION_VERSION = "v2"
+SAFETY_REASON_SAFE = "input.clean"
+SAFETY_REASON_PAYLOAD_TOO_LARGE = "input.payload_too_large"
+SAFETY_REASON_BLOCKED_TERMS = "input.blocked_terms_detected"
+SAFETY_REASON_WARNING_TERMS = "input.warning_terms_detected"
 # Create FastAPI app
 app = FastAPI(
     title="OpenAI-Compatible API for MAX Serve with Agent Router",
@@ -1123,10 +1128,19 @@ class MeteringSummaryResponse(BaseModel):
 class SafetyVerdictResponse(BaseModel):
     verdict: str
     reason: str
+    reason_code: str = Field(..., description="Primary machine-readable safety reason code")
+    reason_codes: List[str] = Field(
+        default_factory=list,
+        description="All matched machine-readable safety reason codes",
+    )
     endpoint: str
     blocked_terms: List[str] = Field(default_factory=list)
     warning_terms: List[str] = Field(default_factory=list)
     text_length: int
+    decision_version: str = Field(
+        SAFETY_DECISION_VERSION,
+        description="Safety gateway decision schema version",
+    )
 class MCPToolProxyRequest(BaseModel):
     server_id: str = Field(..., description="Target MCP server ID")
     tool_name: str = Field(..., description="MCP tool name")
@@ -1355,6 +1369,7 @@ class MetricsStore:
         self.memory_context_items_total = 0
         self.memory_scores = []
         self.safety_verdict_counts = {"safe": 0, "warn": 0, "block": 0}
+        self.safety_reason_code_counts: Dict[str, int] = {}
         self.user_metering: Dict[str, Dict[str, int]] = {}
 
     @staticmethod
@@ -1421,12 +1436,19 @@ class MetricsStore:
     @staticmethod
     def _tokens_per_second(tokens: int, total_latency_ms: float) -> float:
         return round(tokens / (total_latency_ms / 1000), 2) if total_latency_ms > 0 else 0.0
-    def record_safety_verdict(self, verdict: str):
-        """Track safety verdict distribution for chat endpoints."""
+    def record_safety_verdict(self, verdict: str, reason_codes: Optional[List[str]] = None):
+        """Track safety verdict distribution and reason-code telemetry."""
         normalized = (verdict or "safe").lower()
         if normalized not in self.safety_verdict_counts:
             normalized = "safe"
         self.safety_verdict_counts[normalized] += 1
+        for reason_code in reason_codes or []:
+            normalized_reason = str(reason_code).strip().lower()
+            if not normalized_reason:
+                continue
+            self.safety_reason_code_counts[normalized_reason] = (
+                self.safety_reason_code_counts.get(normalized_reason, 0) + 1
+            )
     def record_memory_telemetry(
         self,
         memory_metadata: Optional[Dict[str, Any]],
@@ -1516,6 +1538,11 @@ class MetricsStore:
         if not self.latencies:
             return {
                 "request_count": self.request_count,
+                "safety": {
+                    "enabled": SAFETY_GATEWAY_ENABLED,
+                    "verdict_counts": dict(self.safety_verdict_counts),
+                    "reason_code_counts": dict(sorted(self.safety_reason_code_counts.items())),
+                },
                 "errors": self.errors,
                 "error_rate_percent": self._rate(self.errors, self.request_count),
                 "avg_latency_ms": 0,
@@ -1536,6 +1563,7 @@ class MetricsStore:
             "safety": {
                 "enabled": SAFETY_GATEWAY_ENABLED,
                 "verdict_counts": dict(self.safety_verdict_counts),
+                "reason_code_counts": dict(sorted(self.safety_reason_code_counts.items())),
             },
             "errors": self.errors,
             "error_rate_percent": self._rate(self.errors, self.request_count),
@@ -2293,6 +2321,19 @@ def _extract_text_from_messages(messages: List[ChatMessage]) -> str:
     return "\n".join(msg.content for msg in messages if getattr(msg, "content", None))
 
 
+def _dedupe_reason_codes(reason_codes: List[str]) -> List[str]:
+    """Return stable de-duplicated reason codes preserving insertion order."""
+    deduped: List[str] = []
+    seen = set()
+    for reason_code in reason_codes:
+        normalized = str(reason_code).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
+
+
 def _redact_value_for_audit(value: Any) -> Tuple[Any, int]:
     """Redact secret-like values before logging/audit emission."""
     return redact_secrets(value)
@@ -2324,32 +2365,58 @@ def evaluate_safety_text(text: str, endpoint: str) -> SafetyVerdictResponse:
     warn_terms = _load_safety_terms("SAFETY_WARN_TERMS", DEFAULT_SAFETY_WARN_TERMS)
     matched_block_terms = sorted({term for term in block_terms if term in normalized_text})
     matched_warn_terms = sorted({term for term in warn_terms if term in normalized_text})
+    text_length = len(text or "")
+    reason_codes: List[str] = []
+
+    if text_length > SAFETY_MAX_TEXT_CHARS:
+        reason_codes.append(SAFETY_REASON_PAYLOAD_TOO_LARGE)
+    if matched_block_terms:
+        reason_codes.append(SAFETY_REASON_BLOCKED_TERMS)
+    if matched_warn_terms:
+        reason_codes.append(SAFETY_REASON_WARNING_TERMS)
+    reason_codes = _dedupe_reason_codes(reason_codes)
+
     verdict = "safe"
     reason = "No safety concerns detected"
-    if len(text or "") > SAFETY_MAX_TEXT_CHARS:
+    reason_code = SAFETY_REASON_SAFE
+    if SAFETY_REASON_PAYLOAD_TOO_LARGE in reason_codes:
         verdict = "block"
         reason = f"Request payload too large for safety policy (>{SAFETY_MAX_TEXT_CHARS} chars)"
-    elif matched_block_terms:
+        reason_code = SAFETY_REASON_PAYLOAD_TOO_LARGE
+    elif SAFETY_REASON_BLOCKED_TERMS in reason_codes:
         verdict = "block"
         reason = "Detected blocked safety patterns"
-    elif matched_warn_terms:
+        reason_code = SAFETY_REASON_BLOCKED_TERMS
+    elif SAFETY_REASON_WARNING_TERMS in reason_codes:
         verdict = "warn"
         reason = "Detected warning-level safety patterns"
+        reason_code = SAFETY_REASON_WARNING_TERMS
+    else:
+        reason_codes = [SAFETY_REASON_SAFE]
+
+    if reason_code not in reason_codes:
+        reason_codes = [reason_code, *reason_codes]
+
     return SafetyVerdictResponse(
         verdict=verdict,
         reason=reason,
+        reason_code=reason_code,
+        reason_codes=reason_codes,
         endpoint=endpoint,
         blocked_terms=matched_block_terms,
         warning_terms=matched_warn_terms,
-        text_length=len(text or ""),
+        text_length=text_length,
+        decision_version=SAFETY_DECISION_VERSION,
     )
 def enforce_safety_gateway(verdict: SafetyVerdictResponse):
     """Apply verdict to request handling and persist telemetry/logs."""
-    metrics.record_safety_verdict(verdict.verdict)
+    metrics.record_safety_verdict(verdict.verdict, verdict.reason_codes)
     logger.info(
-        "Safety gateway verdict endpoint=%s verdict=%s blocked=%s warnings=%s reason=%s",
+        "Safety gateway verdict endpoint=%s verdict=%s reason_code=%s reason_codes=%s blocked=%s warnings=%s reason=%s",
         verdict.endpoint,
         verdict.verdict,
+        verdict.reason_code,
+        verdict.reason_codes,
         verdict.blocked_terms,
         verdict.warning_terms,
         verdict.reason,
@@ -3533,6 +3600,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
     start_time = time.time()
     effective_user_id: Optional[str] = None
     metering_workspace_id: Optional[str] = None
+    safety_verdict: Optional[SafetyVerdictResponse] = None
     
     try:
         workspace_id = get_current_workspace_id()
@@ -3748,6 +3816,8 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         routing_metadata["workspace_id"] = workspace_id
         routing_metadata["user_id"] = effective_user_id
         routing_metadata["role"] = get_authenticated_role(raw_request)
+        if safety_verdict is not None:
+            routing_metadata["safety"] = safety_verdict.model_dump()
         
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
@@ -3817,6 +3887,13 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                 memory_metadata["storage_error"] = str(exc)
         if request.stream:
             logger.info("Streaming response requested; returning SSE-compatible output")
+            stream_headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            }
+            if safety_verdict is not None:
+                stream_headers["X-Safety-Verdict"] = safety_verdict.verdict
+                stream_headers["X-Safety-Reason-Codes"] = ",".join(safety_verdict.reason_codes)
             return StreamingResponse(
                 stream_chat_completion_response(
                     completion_id=completion_id,
@@ -3826,10 +3903,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     finish_reason="stop"
                 ),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive"
-                }
+                headers=stream_headers
             )
         # Build response with routing metadata
         response_data = {
@@ -3855,6 +3929,8 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             },
             "x-routing-metadata": routing_metadata
         }
+        if safety_verdict is not None:
+            response_data["x-safety-metadata"] = safety_verdict.model_dump()
         if rag_metadata:
             response_data["x-rag-metadata"] = rag_metadata
             if rag_context_data is not None:
@@ -4343,6 +4419,7 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
     """
     start_time = time.time()
     metering_user_id = get_authenticated_user_id(raw_request)
+    safety_verdict: Optional[SafetyVerdictResponse] = None
     
     try:
         workspace_id = get_current_workspace_id()
@@ -4499,6 +4576,8 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
         
         retrieval_stats["generation_time_ms"] = round(generation_time_ms, 2)
         retrieval_stats["total_time_ms"] = round((time.time() - start_time) * 1000, 2)
+        if safety_verdict is not None:
+            retrieval_stats["safety"] = safety_verdict.model_dump()
         
         logger.info(
             f"RAG query completed: {len(results)} chunks retrieved, "
@@ -4690,6 +4769,7 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
     """
     start_time = time.time()
     metering_user_id = get_authenticated_user_id(raw_request)
+    safety_verdict: Optional[SafetyVerdictResponse] = None
     
     try:
         workspace_id = get_current_workspace_id()
@@ -4837,6 +4917,8 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
         
         retrieval_stats["generation_time_ms"] = round(generation_time_ms, 2)
         retrieval_stats["total_time_ms"] = round((time.time() - start_time) * 1000, 2)
+        if safety_verdict is not None:
+            retrieval_stats["safety"] = safety_verdict.model_dump()
         
         logger.info(
             f"Graph-enriched RAG query completed: {len(vector_results)} chunks, "
