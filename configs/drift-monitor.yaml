@@ -11,6 +11,13 @@ thresholds:
   psi_threshold: 0.2        # Population Stability Index threshold for intent distributions
   accuracy_min: 0.75        # Minimum acceptable accuracy (75%)
 
+# Drift policy thresholds (canonical config)
+drift_policy:
+  thresholds:
+    kl_threshold: 0.1       # kl*threshold policy base
+    psi_threshold: 0.2
+    accuracy_min: 0.75
+
 # Monitoring windows
 monitoring:
   sliding_window_days: 7    # 7-day sliding window for comparison
@@ -44,6 +51,16 @@ alerts:
     channel: "#drift-alerts"
     mention_users: []       # List of user IDs to mention on critical alerts
   
+  # Event-based Slack alerts
+  events:
+    drift_detected:
+      enabled: true
+      severity: "warning"
+    accuracy_drop:
+      enabled: true
+      severity: "critical"
+      min_drop: 0.10
+
   # Alert severity levels
   severity:
     critical:               # Triggers immediate alert and fine-tuning

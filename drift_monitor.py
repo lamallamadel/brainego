@@ -17,6 +17,12 @@ import yaml
 import json
 from datetime import datetime, timedelta
 from typing import Dict, Any, Optional, List, Tuple
+
+from drift_policy import (
+    load_thresholds,
+    load_alert_event_policies,
+    load_severity_policies,
+)
 from contextlib import asynccontextmanager
 
 import numpy as np
@@ -118,6 +124,17 @@ class DriftMonitorConfig(BaseModel):
     slack_enabled: bool = Field(default=True)
     slack_webhook_url: Optional[str] = Field(default=None)
     slack_channel: str = Field(default="#drift-alerts")
+    drift_detected_alert_enabled: bool = Field(default=True)
+    drift_detected_alert_severity: str = Field(default="warning")
+    accuracy_drop_alert_enabled: bool = Field(default=True)
+    accuracy_drop_alert_severity: str = Field(default="critical")
+    accuracy_drop_min: float = Field(default=0.10)
+    critical_kl_multiplier: float = Field(default=2.0)
+    critical_psi_multiplier: float = Field(default=2.0)
+    critical_accuracy_drop: float = Field(default=0.15)
+    warning_kl_multiplier: float = Field(default=1.5)
+    warning_psi_multiplier: float = Field(default=1.5)
+    warning_accuracy_drop: float = Field(default=0.10)
     
     # Fine-tuning
     auto_trigger_finetuning: bool = Field(default=True)
@@ -139,13 +156,17 @@ def load_config(config_path: str = "configs/drift-monitor.yaml") -> DriftMonitor
         with open(config_path, 'r') as f:
             yaml_config = yaml.safe_load(f)
         
+        thresholds = load_thresholds(yaml_config)
+        alert_event_policies = load_alert_event_policies(yaml_config)
+        severity_policies = load_severity_policies(yaml_config)
+
         # Flatten nested config
         config_dict = {
             "service_host": yaml_config.get("service", {}).get("host", "0.0.0.0"),
             "service_port": yaml_config.get("service", {}).get("port", 8004),
-            "kl_threshold": yaml_config.get("thresholds", {}).get("kl_threshold", 0.1),
-            "psi_threshold": yaml_config.get("thresholds", {}).get("psi_threshold", 0.2),
-            "accuracy_min": yaml_config.get("thresholds", {}).get("accuracy_min", 0.75),
+            "kl_threshold": thresholds.kl_threshold,
+            "psi_threshold": thresholds.psi_threshold,
+            "accuracy_min": thresholds.accuracy_min,
             "sliding_window_days": yaml_config.get("monitoring", {}).get("sliding_window_days", 7),
             "check_interval_hours": yaml_config.get("monitoring", {}).get("check_interval_hours", 6),
             "min_samples": yaml_config.get("monitoring", {}).get("min_samples", 100),
@@ -158,6 +179,17 @@ def load_config(config_path: str = "configs/drift-monitor.yaml") -> DriftMonitor
             "slack_enabled": yaml_config.get("alerts", {}).get("slack", {}).get("enabled", True),
             "slack_webhook_url": os.getenv("SLACK_WEBHOOK_URL"),
             "slack_channel": yaml_config.get("alerts", {}).get("slack", {}).get("channel", "#drift-alerts"),
+            "drift_detected_alert_enabled": alert_event_policies["drift_detected"].enabled,
+            "drift_detected_alert_severity": alert_event_policies["drift_detected"].severity,
+            "accuracy_drop_alert_enabled": alert_event_policies["accuracy_drop"].enabled,
+            "accuracy_drop_alert_severity": alert_event_policies["accuracy_drop"].severity,
+            "accuracy_drop_min": alert_event_policies["accuracy_drop"].min_drop,
+            "critical_kl_multiplier": severity_policies["critical"].kl_multiplier,
+            "critical_psi_multiplier": severity_policies["critical"].psi_multiplier,
+            "critical_accuracy_drop": severity_policies["critical"].accuracy_delta,
+            "warning_kl_multiplier": severity_policies["warning"].kl_multiplier,
+            "warning_psi_multiplier": severity_policies["warning"].psi_multiplier,
+            "warning_accuracy_drop": severity_policies["warning"].accuracy_delta,
             "auto_trigger_finetuning": yaml_config.get("fine_tuning", {}).get("auto_trigger", True),
             "learning_engine_url": yaml_config.get("fine_tuning", {}).get("learning_engine_url", "http://learning-engine:8003"),
             "min_drift_score": yaml_config.get("fine_tuning", {}).get("min_drift_score", 0.3),
@@ -168,7 +200,7 @@ def load_config(config_path: str = "configs/drift-monitor.yaml") -> DriftMonitor
             "postgres_user": yaml_config.get("database", {}).get("user", "ai_user"),
             "postgres_password": yaml_config.get("database", {}).get("password", "ai_password"),
         }
-        
+
         return DriftMonitorConfig(**config_dict)
     except Exception as e:
         logger.warning(f"Failed to load config from {config_path}: {e}, using defaults")
@@ -220,7 +252,7 @@ class DriftMonitor:
     ) -> List[Dict[str, Any]]:
         """
         Get feedback data from database for a specific time window.
-        
+
         Args:
             days: Number of days in the window
             offset_days: Offset from current time (0 = current, 7 = previous week)
@@ -232,12 +264,12 @@ class DriftMonitor:
         """
         conn = self.connect_db()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
+
         end_date = datetime.now() - timedelta(days=offset_days)
         start_date = end_date - timedelta(days=days)
-        
+
         query = """
-        SELECT 
+        SELECT
             query, response, model, rating, intent, project,
             timestamp, metadata
         FROM feedback
@@ -261,7 +293,7 @@ class DriftMonitor:
         cursor.execute(query, tuple(params))
         results = cursor.fetchall()
         cursor.close()
-        
+
         return [dict(row) for row in results]
 
     def list_monitoring_scopes(self, days: int) -> List[Tuple[str, str]]:
@@ -294,6 +326,7 @@ class DriftMonitor:
         rows = cursor.fetchall()
         cursor.close()
         return [(row['scope_type'], row['scope_value']) for row in rows]
+
     
     def compute_embeddings(self, texts: List[str]) -> np.ndarray:
         """
@@ -576,7 +609,7 @@ class DriftMonitor:
     ):
         """
         Store drift metrics in database.
-        
+
         Args:
             kl_divergence: KL Divergence value
             psi: PSI value
@@ -587,7 +620,7 @@ class DriftMonitor:
         """
         conn = self.connect_db()
         cursor = conn.cursor()
-        
+
         try:
             cursor.execute(
                 """
@@ -609,7 +642,7 @@ class DriftMonitor:
             logger.error(f"Failed to store drift metrics: {e}")
         finally:
             cursor.close()
-    
+
     def store_finetuning_trigger(self, drift_metrics: Dict, trigger_result: Dict):
         """
         Store fine-tuning trigger record.
@@ -644,16 +677,16 @@ class DriftMonitor:
     async def run_drift_check(self) -> Dict[str, Any]:
         """
         Run drift detection check.
-        
+
         Returns:
             Drift detection results
         """
         logger.info("=" * 60)
         logger.info("Running Drift Detection Check")
         logger.info("=" * 60)
-        
+
         start_time = asyncio.get_event_loop().time()
-        
+
         try:
             scopes = self.list_monitoring_scopes(self.config.sliding_window_days)
             if not scopes:
@@ -728,17 +761,21 @@ class DriftMonitor:
 
                 severity = None
                 if drift_detected:
-                    if (kl_divergence > self.config.kl_threshold * 2.0 or
-                        psi > self.config.psi_threshold * 2.0 or
-                        accuracy_delta > 0.15):
+                    if (
+                        kl_divergence > self.config.kl_threshold * self.config.critical_kl_multiplier
+                        or psi > self.config.psi_threshold * self.config.critical_psi_multiplier
+                        or accuracy_delta > self.config.critical_accuracy_drop
+                    ):
                         severity = "critical"
-                    elif (kl_divergence > self.config.kl_threshold * 1.5 or
-                          psi > self.config.psi_threshold * 1.5 or
-                          accuracy_delta > 0.10):
+                    elif (
+                        kl_divergence > self.config.kl_threshold * self.config.warning_kl_multiplier
+                        or psi > self.config.psi_threshold * self.config.warning_psi_multiplier
+                        or accuracy_delta > self.config.warning_accuracy_drop
+                    ):
                         severity = "warning"
                     else:
                         severity = "info"
-
+                        
                 metrics = {
                     "kl_divergence": kl_divergence,
                     "psi": psi,
@@ -774,6 +811,12 @@ class DriftMonitor:
                         highest_severity = severity
                         representative_metrics = metrics
                     drift_detected_total.labels(severity=severity).inc()
+
+                if drift_detected and self.config.drift_detected_alert_enabled:
+                    drift_severity = self.config.drift_detected_alert_severity
+                    message = (
+                        f"Event: drift_detected\n"
+                        f"Model drift detected for {scope_type}:{scope_value} with {drift_severity} severity.\n"
                     message = (
                         f"Model drift detected for {scope_type}:{scope_value} with {severity} severity.\n"
                         f"KL Divergence: {kl_divergence:.4f} (threshold: {self.config.kl_threshold})\n"
@@ -781,6 +824,22 @@ class DriftMonitor:
                         f"Current Accuracy: {current_accuracy:.4f} (minimum: {self.config.accuracy_min})\n"
                         f"Combined Drift Score: {combined_drift_score:.4f}"
                     )
+                    await self.send_slack_alert(drift_severity, message, metrics)
+
+                accuracy_drop_event = accuracy_delta >= self.config.accuracy_drop_min
+                if accuracy_drop_event and self.config.accuracy_drop_alert_enabled:
+                    accuracy_severity = self.config.accuracy_drop_alert_severity
+                    accuracy_message = (
+                        f"Event: accuracy_drop\n"
+                        f"Accuracy drop detected for {scope_type}:{scope_value} with {accuracy_severity} severity.\n"
+                        f"Baseline Accuracy: {baseline_accuracy:.4f}\n"
+                        f"Current Accuracy: {current_accuracy:.4f}\n"
+                        f"Accuracy Delta: {accuracy_delta:.4f} (minimum drop: {self.config.accuracy_drop_min:.4f})"
+                    )
+                    await self.send_slack_alert(accuracy_severity, accuracy_message, metrics)
+
+                if drift_detected and combined_drift_score >= self.config.min_drift_score:
+                    await self.trigger_finetuning(metrics)
                     await self.send_slack_alert(severity, message, metrics)
                     if combined_drift_score >= self.config.min_drift_score:
                         await self.trigger_finetuning(metrics)
@@ -795,11 +854,12 @@ class DriftMonitor:
                 })
 
             drift_checks_total.labels(status='success').inc()
+
             
             # Record duration
             duration = asyncio.get_event_loop().time() - start_time
             drift_check_duration.observe(duration)
-            
+
             return {
                 "status": "success",
                 "drift_detected": drift_found_any,
@@ -809,7 +869,7 @@ class DriftMonitor:
                 "checked_scopes": len(scopes),
                 "timestamp": datetime.now().isoformat()
             }
-        
+
         except Exception as e:
             logger.error(f"Drift check failed: {e}", exc_info=True)
             drift_checks_total.labels(status='error').inc()
@@ -818,7 +878,7 @@ class DriftMonitor:
                 "error": str(e),
                 "timestamp": datetime.now().isoformat()
             }
-    
+
     async def start_monitoring(self):
         """Start continuous drift monitoring"""
         self.is_monitoring = True
@@ -979,11 +1039,11 @@ async def get_drift_metrics(days: int = 30, scope_type: Optional[str] = None, sc
     """Get historical drift metrics"""
     if not drift_monitor:
         raise HTTPException(status_code=503, detail="Drift monitor not initialized")
-    
+
     try:
         conn = drift_monitor.connect_db()
         cursor = conn.cursor(cursor_factory=RealDictCursor)
-        
+
         start_date = datetime.now() - timedelta(days=days)
         
         query = """
@@ -1003,13 +1063,13 @@ async def get_drift_metrics(days: int = 30, scope_type: Optional[str] = None, sc
         
         results = cursor.fetchall()
         cursor.close()
-        
+
         return {
             "metrics": [dict(row) for row in results],
             "total": len(results),
             "days": days
         }
-    
+
     except Exception as e:
         logger.error(f"Failed to get drift metrics: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
@@ -1072,7 +1132,7 @@ async def get_drift_summary():
         )
         scoped_summary = [dict(row) for row in cursor.fetchall()]
         cursor.close()
-        
+
         return {
             "summary": dict(summary),
             "scoped_summary": scoped_summary,
