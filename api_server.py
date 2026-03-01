@@ -9,6 +9,9 @@ import time
 import json
 import uuid
 import re
+import base64
+import hashlib
+import hmac
 import logging
 import asyncio
 import re
@@ -138,6 +141,398 @@ WORKSPACE_OPTIONAL_PREFIXES = ("/docs", "/redoc", "/openapi.json")
 WORKSPACE_REQUIRED_PREFIXES = ("/v1/", "/memory", "/graph", "/internal/")
 WORKSPACE_REQUIRED_EXACT_PATHS = {"/router/info"}
 WORKSPACE_CONTEXT: ContextVar[Optional[str]] = ContextVar("workspace_id", default=None)
+AUTH_OPTIONAL_PATHS = WORKSPACE_OPTIONAL_PATHS
+AUTH_OPTIONAL_PREFIXES = WORKSPACE_OPTIONAL_PREFIXES
+AUTH_REQUIRED_PREFIXES = WORKSPACE_REQUIRED_PREFIXES
+AUTH_REQUIRED_EXACT_PATHS = WORKSPACE_REQUIRED_EXACT_PATHS | {"/audit"}
+AUTH_USER_CONTEXT: ContextVar[Optional[str]] = ContextVar("auth_user_id", default=None)
+AUTH_ROLE_CONTEXT: ContextVar[Optional[str]] = ContextVar("auth_role", default=None)
+AUTH_METHOD_CONTEXT: ContextVar[Optional[str]] = ContextVar("auth_method", default=None)
+
+
+class AuthV1Error(Exception):
+    """Typed auth error used to build consistent HTTP responses."""
+
+    def __init__(
+        self,
+        detail: str,
+        *,
+        status_code: int = 401,
+        code: str = "auth_invalid_credentials",
+    ):
+        super().__init__(detail)
+        self.detail = detail
+        self.status_code = status_code
+        self.code = code
+
+
+def _is_truthy(value: str) -> bool:
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _is_auth_v1_enabled() -> bool:
+    """Return True when auth v1 must be enforced on protected paths."""
+    return _is_truthy(os.getenv("AUTH_V1_ENABLED", "true"))
+
+
+def _is_auth_enforced_path(path: str) -> bool:
+    """Return True when endpoint requires JWT/API key authentication."""
+    if path in AUTH_OPTIONAL_PATHS:
+        return False
+    if any(path.startswith(prefix) for prefix in AUTH_OPTIONAL_PREFIXES):
+        return False
+    if path in AUTH_REQUIRED_EXACT_PATHS:
+        return True
+    return path.startswith(AUTH_REQUIRED_PREFIXES)
+
+
+def _load_auth_api_key_registry() -> Dict[str, Dict[str, str]]:
+    """Load API key identities from env (CSV and/or JSON)."""
+    registry: Dict[str, Dict[str, str]] = {}
+
+    raw_json = os.getenv("AUTH_API_KEYS_JSON", "").strip()
+    if raw_json:
+        try:
+            parsed = json.loads(raw_json)
+        except json.JSONDecodeError as exc:
+            logger.warning("Unable to parse AUTH_API_KEYS_JSON: %s", exc)
+        else:
+            if isinstance(parsed, dict):
+                for raw_key, raw_entry in parsed.items():
+                    api_key = str(raw_key).strip()
+                    if not api_key:
+                        continue
+                    normalized_entry: Dict[str, str] = {}
+                    if isinstance(raw_entry, dict):
+                        user_id = raw_entry.get("user_id") or raw_entry.get("user")
+                        role = raw_entry.get("role")
+                        if isinstance(user_id, str) and user_id.strip():
+                            normalized_entry["user_id"] = user_id.strip()
+                        if isinstance(role, str) and role.strip():
+                            normalized_entry["role"] = role.strip()
+                    elif isinstance(raw_entry, str) and raw_entry.strip():
+                        normalized_entry["user_id"] = raw_entry.strip()
+                    registry[api_key] = normalized_entry
+            elif isinstance(parsed, list):
+                for raw_key in parsed:
+                    api_key = str(raw_key).strip()
+                    if api_key:
+                        registry.setdefault(api_key, {})
+
+    raw_csv = os.getenv("AUTH_API_KEYS", "").strip() or os.getenv("API_KEYS", "").strip()
+    if raw_csv:
+        for token in raw_csv.split(","):
+            api_key = token.strip()
+            if api_key:
+                registry.setdefault(api_key, {})
+
+    return registry
+
+
+def _load_auth_role_mapping() -> Dict[str, Any]:
+    """Load user/workspace role mapping from AUTH_ROLE_MAPPING_JSON."""
+    raw_mapping = os.getenv("AUTH_ROLE_MAPPING_JSON", "").strip()
+    if not raw_mapping:
+        return {}
+    try:
+        parsed = json.loads(raw_mapping)
+    except json.JSONDecodeError as exc:
+        logger.warning("Unable to parse AUTH_ROLE_MAPPING_JSON: %s", exc)
+        return {}
+    if isinstance(parsed, dict):
+        return parsed
+    logger.warning("AUTH_ROLE_MAPPING_JSON must be a JSON object, got %s", type(parsed).__name__)
+    return {}
+
+
+def _decode_base64url_json(segment: str) -> Dict[str, Any]:
+    """Decode one JWT segment into a JSON object."""
+    if not segment:
+        raise AuthV1Error("Malformed JWT token", code="auth_jwt_malformed")
+    padded = segment + "=" * (-len(segment) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(padded.encode("utf-8"))
+        parsed = json.loads(decoded.decode("utf-8"))
+    except Exception as exc:
+        raise AuthV1Error("Malformed JWT token", code="auth_jwt_malformed") from exc
+    if not isinstance(parsed, dict):
+        raise AuthV1Error("Malformed JWT token", code="auth_jwt_malformed")
+    return parsed
+
+
+def _parse_jwt_token(token: str) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Return (header, payload) from a compact JWT token."""
+    parts = token.split(".")
+    if len(parts) != 3:
+        raise AuthV1Error("Malformed JWT token", code="auth_jwt_malformed")
+    header = _decode_base64url_json(parts[0])
+    payload = _decode_base64url_json(parts[1])
+    return header, payload
+
+
+def _verify_jwt_hs256_signature(token: str, secret: str) -> bool:
+    """Verify JWT signature for HS256 tokens."""
+    try:
+        header_segment, payload_segment, provided_signature = token.split(".")
+    except ValueError:
+        return False
+    signed_data = f"{header_segment}.{payload_segment}".encode("utf-8")
+    digest = hmac.new(secret.encode("utf-8"), signed_data, hashlib.sha256).digest()
+    expected_signature = base64.urlsafe_b64encode(digest).rstrip(b"=").decode("utf-8")
+    return hmac.compare_digest(expected_signature, provided_signature)
+
+
+def _extract_bearer_token(request: Request) -> str:
+    """Extract Bearer token from Authorization header."""
+    authorization = (request.headers.get("authorization") or "").strip()
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+    return ""
+
+
+def _coerce_unix_timestamp(value: Any) -> Optional[float]:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str) and value.strip():
+        try:
+            return float(value.strip())
+        except ValueError:
+            return None
+    return None
+
+
+def _validate_jwt_claims(payload: Dict[str, Any]) -> None:
+    """Validate temporal and optional issuer/audience claims."""
+    now = time.time()
+    exp = _coerce_unix_timestamp(payload.get("exp"))
+    if exp is not None and now >= exp:
+        raise AuthV1Error("JWT token expired", code="auth_jwt_expired")
+
+    nbf = _coerce_unix_timestamp(payload.get("nbf"))
+    if nbf is not None and now < nbf:
+        raise AuthV1Error("JWT token not active yet", code="auth_jwt_not_active")
+
+    expected_issuer = os.getenv("AUTH_JWT_ISSUER", "").strip()
+    if expected_issuer:
+        actual_issuer = str(payload.get("iss") or "").strip()
+        if actual_issuer != expected_issuer:
+            raise AuthV1Error("Invalid JWT issuer", code="auth_jwt_issuer_invalid")
+
+    expected_audience = {
+        value.strip()
+        for value in os.getenv("AUTH_JWT_AUDIENCE", "").split(",")
+        if value and value.strip()
+    }
+    if expected_audience:
+        actual_audience_raw = payload.get("aud")
+        actual_audience: set[str] = set()
+        if isinstance(actual_audience_raw, str) and actual_audience_raw.strip():
+            actual_audience = {actual_audience_raw.strip()}
+        elif isinstance(actual_audience_raw, list):
+            actual_audience = {
+                str(item).strip()
+                for item in actual_audience_raw
+                if isinstance(item, str) and item.strip()
+            }
+        if not (actual_audience & expected_audience):
+            raise AuthV1Error("Invalid JWT audience", code="auth_jwt_audience_invalid")
+
+
+def _extract_jwt_user_id(payload: Dict[str, Any]) -> Optional[str]:
+    """Resolve user_id from common JWT claim names."""
+    for claim_name in ("sub", "user_id", "uid", "email", "user"):
+        value = payload.get(claim_name)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _extract_workspace_roles_from_jwt(payload: Dict[str, Any]) -> Dict[str, str]:
+    """Extract per-workspace roles from JWT claims when available."""
+    workspace_roles: Dict[str, str] = {}
+    raw_mapping = payload.get("workspace_roles")
+    if isinstance(raw_mapping, dict):
+        for raw_workspace_id, raw_role in raw_mapping.items():
+            workspace_id = str(raw_workspace_id).strip()
+            role = str(raw_role).strip()
+            if workspace_id and role:
+                workspace_roles[workspace_id] = role
+
+    workspace_id = payload.get("workspace_id")
+    workspace_role = payload.get("workspace_role")
+    if isinstance(workspace_id, str) and workspace_id.strip() and isinstance(workspace_role, str) and workspace_role.strip():
+        workspace_roles[workspace_id.strip()] = workspace_role.strip()
+
+    return workspace_roles
+
+
+def _extract_role_from_workspace_entry(entry: Any, user_id: str) -> Optional[str]:
+    if not isinstance(entry, dict):
+        return None
+
+    direct_role = entry.get(user_id)
+    if isinstance(direct_role, str) and direct_role.strip():
+        return direct_role.strip()
+
+    users = entry.get("users")
+    if isinstance(users, dict):
+        nested_role = users.get(user_id)
+        if isinstance(nested_role, str) and nested_role.strip():
+            return nested_role.strip()
+
+    return None
+
+
+def _role_from_mapping(
+    mapping: Dict[str, Any],
+    user_id: Optional[str],
+    workspace_id: Optional[str],
+) -> Optional[str]:
+    if not user_id:
+        return None
+
+    workspace_roles = mapping.get("workspace_roles")
+    if isinstance(workspace_roles, dict):
+        if workspace_id:
+            for key in (workspace_id, "*"):
+                role = _extract_role_from_workspace_entry(workspace_roles.get(key), user_id)
+                if role:
+                    return role
+        else:
+            role = _extract_role_from_workspace_entry(workspace_roles.get("*"), user_id)
+            if role:
+                return role
+
+    user_roles = mapping.get("user_roles")
+    if isinstance(user_roles, dict):
+        role = user_roles.get(user_id)
+        if isinstance(role, str) and role.strip():
+            return role.strip()
+
+    return None
+
+
+def _fallback_role_from_claims(payload: Dict[str, Any]) -> Optional[str]:
+    direct_role = payload.get("role")
+    if isinstance(direct_role, str) and direct_role.strip():
+        return direct_role.strip()
+
+    roles = payload.get("roles")
+    if isinstance(roles, list):
+        for value in roles:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _resolve_request_role(
+    *,
+    user_id: Optional[str],
+    workspace_id: Optional[str],
+    jwt_payload: Optional[Dict[str, Any]],
+    api_key_entry: Optional[Dict[str, str]],
+) -> str:
+    """Resolve role using user->workspace mapping with claim/API key fallback."""
+    mapping = _load_auth_role_mapping()
+    role_from_mapping = _role_from_mapping(mapping, user_id, workspace_id)
+    if role_from_mapping:
+        return role_from_mapping
+
+    claim_workspace_roles = _extract_workspace_roles_from_jwt(jwt_payload or {})
+    if workspace_id and workspace_id in claim_workspace_roles:
+        return claim_workspace_roles[workspace_id]
+
+    if jwt_payload:
+        role_from_claims = _fallback_role_from_claims(jwt_payload)
+        if role_from_claims:
+            return role_from_claims
+
+    if api_key_entry:
+        role_from_key = api_key_entry.get("role")
+        if isinstance(role_from_key, str) and role_from_key.strip():
+            return role_from_key.strip()
+
+    default_role = mapping.get("default_role")
+    if isinstance(default_role, str) and default_role.strip():
+        return default_role.strip()
+    return os.getenv("AUTH_DEFAULT_ROLE", "viewer").strip() or "viewer"
+
+
+def _authenticate_request_v1(request: Request) -> Dict[str, Any]:
+    """Authenticate request using API key (header/bearer) or JWT bearer token."""
+    api_key_registry = _load_auth_api_key_registry()
+    provided_api_key = (request.headers.get("x-api-key") or "").strip()
+    bearer_token = _extract_bearer_token(request)
+
+    def _api_key_identity(api_key: str) -> Dict[str, Any]:
+        entry = api_key_registry.get(api_key)
+        if entry is None:
+            raise AuthV1Error("Invalid or missing API key", code="auth_api_key_invalid")
+        configured_user_id = entry.get("user_id")
+        header_user_id = (request.headers.get("x-user-id") or "").strip()
+        resolved_user_id = configured_user_id or header_user_id
+        if not resolved_user_id:
+            key_fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
+            resolved_user_id = f"api_key:{key_fingerprint}"
+        return {
+            "auth_method": "api_key",
+            "user_id": resolved_user_id,
+            "jwt_payload": {},
+            "api_key_entry": entry,
+        }
+
+    if provided_api_key:
+        return _api_key_identity(provided_api_key)
+
+    if bearer_token:
+        if bearer_token in api_key_registry:
+            return _api_key_identity(bearer_token)
+
+        header, payload = _parse_jwt_token(bearer_token)
+        algorithm = str(header.get("alg") or "").upper()
+        shared_secret = os.getenv("AUTH_JWT_HS256_SECRET", "")
+        require_signature = _is_truthy(os.getenv("AUTH_JWT_REQUIRE_SIGNATURE", "false"))
+
+        if shared_secret:
+            if algorithm != "HS256":
+                raise AuthV1Error("Unsupported JWT algorithm", code="auth_jwt_algorithm_invalid")
+            if not _verify_jwt_hs256_signature(bearer_token, shared_secret):
+                raise AuthV1Error("Invalid JWT signature", code="auth_jwt_signature_invalid")
+        elif require_signature:
+            raise AuthV1Error(
+                "JWT signature verification required but AUTH_JWT_HS256_SECRET is not configured",
+                code="auth_jwt_signature_required",
+            )
+
+        _validate_jwt_claims(payload)
+        user_id = _extract_jwt_user_id(payload)
+        if not user_id:
+            raise AuthV1Error("Missing JWT subject", code="auth_jwt_subject_missing")
+
+        return {
+            "auth_method": "jwt",
+            "user_id": user_id,
+            "jwt_payload": payload,
+            "api_key_entry": {},
+        }
+
+    raise AuthV1Error("Missing authentication credentials", code="auth_credentials_missing")
+
+
+def get_authenticated_user_id(request: Request) -> Optional[str]:
+    """Return authenticated user_id from request state when present."""
+    value = getattr(request.state, "auth_user_id", None)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
+
+
+def get_authenticated_role(request: Request) -> Optional[str]:
+    """Return authenticated role from request state when present."""
+    value = getattr(request.state, "auth_role", None)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return None
 
 
 def _is_workspace_enforced_path(path: str) -> bool:
@@ -200,6 +595,55 @@ async def enforce_workspace_context(request: Request, call_next):
 
     response.headers[WORKSPACE_ID_RESPONSE_HEADER] = workspace_id
     return response
+
+
+@app.middleware("http")
+async def enforce_auth_v1(request: Request, call_next):
+    """Enforce auth v1 (JWT or API key) and attach role context."""
+    path = request.url.path
+    if request.method == "OPTIONS" or not _is_auth_v1_enabled() or not _is_auth_enforced_path(path):
+        return await call_next(request)
+
+    try:
+        identity = _authenticate_request_v1(request)
+        workspace_id = resolve_workspace_id(request)
+        role = _resolve_request_role(
+            user_id=identity.get("user_id"),
+            workspace_id=workspace_id,
+            jwt_payload=identity.get("jwt_payload"),
+            api_key_entry=identity.get("api_key_entry"),
+        )
+    except AuthV1Error as exc:
+        logger.warning(
+            "Auth v1 rejected request path=%s code=%s detail=%s",
+            path,
+            exc.code,
+            exc.detail,
+        )
+        return JSONResponse(
+            status_code=exc.status_code,
+            content={
+                "detail": exc.detail,
+                "type": "authentication_error",
+                "code": exc.code,
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    request.state.auth_user_id = identity.get("user_id")
+    request.state.auth_role = role
+    request.state.auth_method = identity.get("auth_method")
+    request.state.auth_workspace_id = workspace_id
+
+    user_token = AUTH_USER_CONTEXT.set(identity.get("user_id"))
+    role_token = AUTH_ROLE_CONTEXT.set(role)
+    method_token = AUTH_METHOD_CONTEXT.set(identity.get("auth_method"))
+    try:
+        return await call_next(request)
+    finally:
+        AUTH_USER_CONTEXT.reset(user_token)
+        AUTH_ROLE_CONTEXT.reset(role_token)
+        AUTH_METHOD_CONTEXT.reset(method_token)
 
 # Request/Response Models
 class ChatMessage(BaseModel):
@@ -714,22 +1158,38 @@ class MetricsStore:
         self.total_latency = 0.0
         self.latencies = []
         self.errors = 0
+        self.tokens_generated = 0
+        self.model_stats: Dict[str, Dict[str, Any]] = {}
         self.memory_requests = 0
         self.memory_hits = 0
         self.memory_context_items_total = 0
         self.memory_scores = []
         self.safety_verdict_counts = {"safe": 0, "warn": 0, "block": 0}
-    def record_request(self, latency: float, error: bool = False):
-        self.tokens_generated = 0
-        self.model_stats: Dict[str, Dict[str, Any]] = {}
+        self.user_metering: Dict[str, Dict[str, int]] = {}
+
+    @staticmethod
+    def _normalize_user_id(value: Optional[str]) -> Optional[str]:
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+        return None
+
     def record_request(
         self,
         latency: float,
         error: bool = False,
         model: Optional[str] = None,
-        completion_tokens: int = 0
+        completion_tokens: int = 0,
+        user_id: Optional[str] = None,
     ):
         self.request_count += 1
+        normalized_user_id = self._normalize_user_id(user_id)
+        if normalized_user_id:
+            bucket = self.user_metering.setdefault(
+                normalized_user_id,
+                {"request_count": 0, "errors": 0, "tokens_generated": 0},
+            )
+            bucket["request_count"] += 1
+
         if model:
             model_bucket = self.model_stats.setdefault(
                 model,
@@ -759,6 +1219,12 @@ class MetricsStore:
             self.errors += 1
             if model:
                 model_bucket["errors"] += 1
+            if normalized_user_id:
+                bucket["errors"] += 1
+
+        if normalized_user_id and completion_tokens > 0:
+            bucket["tokens_generated"] += completion_tokens
+
     @staticmethod
     def _rate(errors: int, total: int) -> float:
         return round((errors / total) * 100, 2) if total else 0.0
@@ -793,7 +1259,30 @@ class MetricsStore:
             self.memory_scores.append(float(top_score))
         if len(self.memory_scores) > 2000:
             self.memory_scores = self.memory_scores[-2000:]
+
+    def _build_user_metering_summary(self) -> Dict[str, Any]:
+        total_users = len(self.user_metering)
+        if total_users == 0:
+            return {"total_users": 0, "users": []}
+
+        sorted_users = sorted(
+            self.user_metering.items(),
+            key=lambda item: (-item[1]["request_count"], item[0]),
+        )
+        users_summary = [
+            {
+                "user_id": user_id,
+                "request_count": data["request_count"],
+                "errors": data["errors"],
+                "tokens_generated": data["tokens_generated"],
+                "error_rate_percent": self._rate(data["errors"], data["request_count"]),
+            }
+            for user_id, data in sorted_users[:50]
+        ]
+        return {"total_users": total_users, "users": users_summary}
+
     def get_stats(self) -> Dict[str, Any]:
+        user_metering = self._build_user_metering_summary()
         memory_telemetry = {
             "memory_requests": self.memory_requests,
             "memory_hits": self.memory_hits,
@@ -844,6 +1333,7 @@ class MetricsStore:
                 "p95_latency_ms": 0,
                 "p99_latency_ms": 0,
                 "memory_telemetry": memory_telemetry,
+                "metering": user_metering,
                 "tokens_generated": self.tokens_generated,
                 "tokens_per_second": self._tokens_per_second(self.tokens_generated, self.total_latency)
             }
@@ -864,6 +1354,7 @@ class MetricsStore:
             "p95_latency_ms": round(sorted_latencies[int(n * 0.95)], 2),
             "p99_latency_ms": round(sorted_latencies[int(n * 0.99)], 2),
             "memory_telemetry": memory_telemetry,
+            "metering": user_metering,
             "tokens_generated": self.tokens_generated,
             "tokens_per_second": self._tokens_per_second(self.tokens_generated, self.total_latency)
         }
@@ -1502,7 +1993,10 @@ def _record_tool_call_audit(
         or raw_request.headers.get("x-project-id")
         or _extract_workspace_id(safe_request_payload)
     )
-    user_id = raw_request.headers.get("x-user-id") or _extract_user_id(safe_request_payload)
+    auth_user_id = get_authenticated_user_id(raw_request)
+    auth_role = get_authenticated_role(raw_request) or raw_request.headers.get("x-user-role")
+    auth_method = getattr(raw_request.state, "auth_method", None)
+    user_id = auth_user_id or raw_request.headers.get("x-user-id") or _extract_user_id(safe_request_payload)
     request_id = getattr(raw_request.state, "audit_request_id", None) or raw_request.headers.get("x-request-id")
 
     metadata = {
@@ -1513,6 +2007,8 @@ def _record_tool_call_audit(
         "request_redactions": request_redactions,
         "response_redactions": response_redactions,
         "error_redactions": error_redactions,
+        "role": auth_role,
+        "auth_method": auth_method,
     }
 
     try:
@@ -1524,6 +2020,7 @@ def _record_tool_call_audit(
             status_code=status_code,
             workspace_id=workspace_id,
             user_id=user_id,
+            role=auth_role,
             tool_name=tool_name,
             duration_ms=duration_ms,
             request_payload=safe_request_payload,
@@ -1572,6 +2069,12 @@ async def audit_request_middleware(request: Request, call_next):
         audit_error = str(exc)
         raise
     finally:
+        auth_user_id = get_authenticated_user_id(request)
+        auth_role = get_authenticated_role(request) or request.headers.get("x-user-role")
+        auth_method = getattr(request.state, "auth_method", None)
+        if not workspace_id:
+            workspace_id = getattr(request.state, "workspace_id", None) or workspace_id
+        user_id = auth_user_id or user_id
         duration_ms = round((time.time() - started_at) * 1000, 2)
         safe_request_payload, request_redactions = _redact_value_for_audit(request_payload)
         safe_audit_error, error_redactions = _redact_value_for_audit(audit_error or "")
@@ -1581,6 +2084,8 @@ async def audit_request_middleware(request: Request, call_next):
             "error": safe_audit_error or None,
             "request_redactions": request_redactions,
             "error_redactions": error_redactions,
+            "role": auth_role,
+            "auth_method": auth_method,
         }
         try:
             get_audit_service().add_event(
@@ -1591,6 +2096,7 @@ async def audit_request_middleware(request: Request, call_next):
                 status_code=status_code,
                 workspace_id=workspace_id,
                 user_id=user_id,
+                role=auth_role,
                 tool_name=tool_name,
                 duration_ms=duration_ms,
                 request_payload=safe_request_payload,
@@ -1796,7 +2302,7 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
     workspace_id = get_current_workspace_id()
     started_at = time.time()
     payload = request.model_dump(exclude_none=True)
-    payload.setdefault("workspace_id", workspace_id)
+    payload["workspace_id"] = workspace_id
     gateway_timeout_seconds = 30.0
 
     if request.action == "call_tool":
@@ -1948,6 +2454,7 @@ async def export_audit_events(
     format: str = Query("json", pattern="^(json|csv)$", description="Export format"),
     workspace_id: Optional[str] = Query(None, description="Filter by workspace identifier"),
     user_id: Optional[str] = Query(None, description="Filter by user identifier"),
+    role: Optional[str] = Query(None, description="Filter by resolved role"),
     tool_name: Optional[str] = Query(None, description="Filter by tool name"),
     event_type: Optional[str] = Query(None, pattern="^(request|tool_call)$", description="Filter by event type"),
     start_date: Optional[str] = Query(None, description="Start date (ISO-8601)"),
@@ -1963,6 +2470,7 @@ async def export_audit_events(
     query_params = raw_request.query_params
     workspace_filter = workspace_id or query_params.get("workspace")
     user_filter = user_id or query_params.get("user")
+    role_filter = role or query_params.get("role")
     tool_filter = tool_name or query_params.get("tool")
     event_filter = event_type or query_params.get("type")
 
@@ -1986,6 +2494,7 @@ async def export_audit_events(
             export_format=format,
             workspace_id=workspace_filter,
             user_id=user_filter,
+            role=role_filter,
             tool_name=tool_filter,
             event_type=event_filter,
             start_date=start_filter,
@@ -2124,9 +2633,12 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
     Automatically selects the best model based on intent classification.
     """
     start_time = time.time()
+    effective_user_id: Optional[str] = None
     
     try:
         workspace_id = get_current_workspace_id()
+        authenticated_user_id = get_authenticated_user_id(raw_request)
+        effective_user_id = authenticated_user_id or request.user
 
         # Validate request
         if not request.messages:
@@ -2153,7 +2665,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                 "Suspicious prompt pattern detected: categories=%s risk_score=%s user=%s workspace=%s",
                 security_metadata.get("matched_categories"),
                 security_metadata.get("risk_score"),
-                request.user,
+                effective_user_id,
                 workspace_id,
             )
 
@@ -2167,7 +2679,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     service = get_memory_service()
                     memory_results = service.search_memory(
                         query=latest_user_message,
-                        user_id=request.user,
+                        user_id=effective_user_id,
                         limit=request.memory.top_k,
                         filters=ensure_workspace_filter(None, workspace_id),
                         use_temporal_decay=request.memory.use_temporal_decay
@@ -2331,6 +2843,8 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         routing_metadata = dict(routing_metadata or {})
         routing_metadata["security"] = security_metadata
         routing_metadata["workspace_id"] = workspace_id
+        routing_metadata["user_id"] = effective_user_id
+        routing_metadata["role"] = get_authenticated_role(raw_request)
         
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
@@ -2340,7 +2854,8 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         metrics.record_request(
             latency_ms,
             model=response_model,
-            completion_tokens=completion_tokens
+            completion_tokens=completion_tokens,
+            user_id=effective_user_id,
         )
         if request.memory and request.memory.enabled and request.memory.auto_store:
             try:
@@ -2356,7 +2871,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     ]
                     store_result = memory_service_instance.add_memory(
                         messages=memory_messages,
-                        user_id=request.user,
+                        user_id=effective_user_id,
                         metadata=ensure_workspace_metadata(
                             {
                             "source": "chat.completions",
@@ -2436,10 +2951,20 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         return response_data
         
     except HTTPException:
-        metrics.record_request((time.time() - start_time) * 1000, error=True, model=request.model)
+        metrics.record_request(
+            (time.time() - start_time) * 1000,
+            error=True,
+            model=request.model,
+            user_id=effective_user_id,
+        )
         raise
     except Exception as e:
-        metrics.record_request((time.time() - start_time) * 1000, error=True, model=request.model)
+        metrics.record_request(
+            (time.time() - start_time) * 1000,
+            error=True,
+            model=request.model,
+            user_id=effective_user_id,
+        )
         logger.error(f"Unexpected error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 @app.post("/v1/chat")
@@ -2456,6 +2981,7 @@ async def unified_chat(request: UnifiedChatRequest, raw_request: Request):
         )
         enforce_safety_gateway(safety_verdict)
     resolved_user = request.user_id or request.user
+    resolved_user = get_authenticated_user_id(raw_request) or resolved_user
     completion_request = ChatCompletionRequest(
         model=request.model,
         messages=request.messages,
@@ -2801,7 +3327,7 @@ async def rag_stats():
         raise HTTPException(status_code=500, detail=f"Stats error: {str(e)}")
 @app.post("/v1/rag/query", response_model=RAGQueryResponse)
 @app.post("/v1/rag/queryAPI", response_model=RAGQueryResponse)
-async def rag_query(request: RAGQueryRequest):
+async def rag_query(request: RAGQueryRequest, raw_request: Request):
     """
     RAG query endpoint: retrieves relevant context and generates augmented response.
     
@@ -2826,6 +3352,7 @@ async def rag_query(request: RAGQueryRequest):
         RAGQueryResponse with generated text, retrieved context, and usage stats
     """
     start_time = time.time()
+    metering_user_id = get_authenticated_user_id(raw_request)
     
     try:
         workspace_id = get_current_workspace_id()
@@ -3012,15 +3539,15 @@ async def rag_query(request: RAGQueryRequest):
             retrieval_stats=retrieval_stats
         )
         
-        metrics.record_request((time.time() - start_time) * 1000)
+        metrics.record_request((time.time() - start_time) * 1000, user_id=metering_user_id)
         
         return response
         
     except HTTPException:
-        metrics.record_request((time.time() - start_time) * 1000, error=True)
+        metrics.record_request((time.time() - start_time) * 1000, error=True, user_id=metering_user_id)
         raise
     except Exception as e:
-        metrics.record_request((time.time() - start_time) * 1000, error=True)
+        metrics.record_request((time.time() - start_time) * 1000, error=True, user_id=metering_user_id)
         logger.error(f"Error in RAG query: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"RAG query error: {str(e)}")
 @app.post("/v1/rag/search/graph-enriched", response_model=RAGGraphSearchResponse)
@@ -3100,7 +3627,7 @@ async def rag_graph_search(request: RAGGraphSearchRequest):
         logger.error(f"Error in graph-enriched search: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Graph-enriched search error: {str(e)}")
 @app.post("/v1/rag/query/graph-enriched", response_model=RAGGraphQueryResponse)
-async def rag_graph_query(request: RAGGraphQueryRequest):
+async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
     """
     Graph-enriched RAG query: generates responses using both vector and graph context.
     
@@ -3127,6 +3654,7 @@ async def rag_graph_query(request: RAGGraphQueryRequest):
         Generated response augmented with vector and graph context
     """
     start_time = time.time()
+    metering_user_id = get_authenticated_user_id(raw_request)
     
     try:
         workspace_id = get_current_workspace_id()
@@ -3306,15 +3834,15 @@ async def rag_graph_query(request: RAGGraphQueryRequest):
             retrieval_stats=retrieval_stats
         )
         
-        metrics.record_request((time.time() - start_time) * 1000)
+        metrics.record_request((time.time() - start_time) * 1000, user_id=metering_user_id)
         
         return response
         
     except HTTPException:
-        metrics.record_request((time.time() - start_time) * 1000, error=True)
+        metrics.record_request((time.time() - start_time) * 1000, error=True, user_id=metering_user_id)
         raise
     except Exception as e:
-        metrics.record_request((time.time() - start_time) * 1000, error=True)
+        metrics.record_request((time.time() - start_time) * 1000, error=True, user_id=metering_user_id)
         logger.error(f"Error in graph-enriched RAG query: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Graph-enriched RAG query error: {str(e)}")
 @app.post("/memory/add", response_model=MemoryAddResponse)

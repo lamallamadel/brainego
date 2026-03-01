@@ -90,6 +90,7 @@ class AuditService:
                         request_id VARCHAR(255),
                         workspace_id VARCHAR(255),
                         user_id VARCHAR(255),
+                        role VARCHAR(64),
                         tool_name VARCHAR(255),
                         endpoint TEXT,
                         method VARCHAR(16),
@@ -102,9 +103,11 @@ class AuditService:
                     )
                     """
                 )
+                cur.execute("ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS role VARCHAR(64)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_workspace_id ON audit_events(workspace_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_user_id ON audit_events(user_id)")
+                cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_role ON audit_events(role)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_tool_name ON audit_events(tool_name)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_event_type ON audit_events(event_type)")
                 conn.commit()
@@ -129,6 +132,7 @@ class AuditService:
         status_code: Optional[int],
         workspace_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        role: Optional[str] = None,
         tool_name: Optional[str] = None,
         duration_ms: Optional[float] = None,
         request_payload: Optional[Dict[str, Any]] = None,
@@ -162,11 +166,11 @@ class AuditService:
                     """
                     INSERT INTO audit_events (
                         event_id, event_type, timestamp, request_id,
-                        workspace_id, user_id, tool_name, endpoint, method,
+                        workspace_id, user_id, role, tool_name, endpoint, method,
                         status_code, duration_ms, request_payload, response_payload, metadata
                     ) VALUES (
                         %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s, %s,
                         %s, %s, %s::jsonb, %s::jsonb, %s::jsonb
                     )
                     RETURNING event_id, timestamp
@@ -178,6 +182,7 @@ class AuditService:
                         request_id,
                         workspace_id,
                         user_id,
+                        role,
                         tool_name,
                         endpoint,
                         method,
@@ -205,6 +210,7 @@ class AuditService:
     def _build_filters(
         workspace_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        role: Optional[str] = None,
         tool_name: Optional[str] = None,
         event_type: Optional[str] = None,
         start_date: Optional[datetime] = None,
@@ -219,6 +225,9 @@ class AuditService:
         if user_id:
             where_clauses.append("user_id = %s")
             params.append(user_id)
+        if role:
+            where_clauses.append("role = %s")
+            params.append(role)
         if tool_name:
             where_clauses.append("tool_name = %s")
             params.append(tool_name)
@@ -249,6 +258,7 @@ class AuditService:
         self,
         workspace_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        role: Optional[str] = None,
         tool_name: Optional[str] = None,
         event_type: Optional[str] = None,
         start_date: Optional[datetime] = None,
@@ -272,6 +282,7 @@ class AuditService:
         where_sql, params = self._build_filters(
             workspace_id=workspace_id,
             user_id=user_id,
+            role=role,
             tool_name=tool_name,
             event_type=event_type,
             start_date=start_date,
@@ -299,6 +310,7 @@ class AuditService:
                         request_id,
                         workspace_id,
                         user_id,
+                        role,
                         tool_name,
                         endpoint,
                         method,
@@ -335,6 +347,7 @@ class AuditService:
             "request_id",
             "workspace_id",
             "user_id",
+            "role",
             "tool_name",
             "endpoint",
             "method",
@@ -359,6 +372,7 @@ class AuditService:
         export_format: str = "json",
         workspace_id: Optional[str] = None,
         user_id: Optional[str] = None,
+        role: Optional[str] = None,
         tool_name: Optional[str] = None,
         event_type: Optional[str] = None,
         start_date: Optional[datetime] = None,
@@ -376,6 +390,7 @@ class AuditService:
         result = self.list_events(
             workspace_id=workspace_id,
             user_id=user_id,
+            role=role,
             tool_name=tool_name,
             event_type=event_type,
             start_date=start_date,
@@ -387,6 +402,7 @@ class AuditService:
         filters = {
             "workspace_id": workspace_id,
             "user_id": user_id,
+            "role": role,
             "tool_name": tool_name,
             "event_type": event_type,
             "start_date": start_date.isoformat() if start_date else None,
