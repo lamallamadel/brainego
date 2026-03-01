@@ -490,6 +490,9 @@ class MCPToolProxyRequest(BaseModel):
     tool_name: str = Field(..., description="MCP tool name")
     arguments: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Tool call arguments")
     context: Optional[str] = Field(None, description="Optional caller context for logging")
+    workspace_id: Optional[str] = Field(None, description="Workspace policy scope")
+    request_id: Optional[str] = Field(None, description="Request ID for per-request tool budgets")
+    action: Optional[str] = Field(None, description="Optional explicit action (read/write/delete)")
 class MCPToolProxyResponse(BaseModel):
     ok: bool
     tool_name: str
@@ -1204,6 +1207,9 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest):
         tool_name=request.tool_name,
         arguments=request.arguments or {},
         context=request.context or "api.internal",
+        workspace_id=request.workspace_id,
+        request_id=request.request_id,
+        action=request.action,
     )
     payload = result.to_dict()
     if not result.ok:

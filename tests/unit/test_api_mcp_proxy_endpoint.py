@@ -35,3 +35,13 @@ def test_v1_mcp_proxy_targets_mcp_gateway() -> None:
     content = SOURCE.read_text(encoding="utf-8")
     assert 'MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://mcpjungle:9100")' in content
     assert 'f"{MCP_GATEWAY_URL}/mcp"' in content
+
+
+def test_internal_mcp_tool_proxy_supports_workspace_policy_fields() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "workspace_id: Optional[str]" in content
+    assert "request_id: Optional[str]" in content
+    assert "action: Optional[str]" in content
+    assert "workspace_id=request.workspace_id" in content
+    assert "request_id=request.request_id" in content
+    assert "action=request.action" in content

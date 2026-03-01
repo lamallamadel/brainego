@@ -1,0 +1,44 @@
+# Workspace-scoped MCP tool policy (deny-by-default).
+# Any workspace not listed below is denied.
+
+version: 1
+default_workspace: default
+
+workspaces:
+  default:
+    # Only listed MCP servers are callable from the internal proxy.
+    allowed_mcp_servers:
+      - mcp-github
+      - mcp-notion
+      - mcp-filesystem
+      - mcp-slack
+      - mcp-gmail
+      - mcp-calendar
+      - mcp-docs
+
+    # Action classes accepted by this workspace policy.
+    allowed_tool_actions:
+      - read
+      - write
+      - delete
+
+    # Allowed tools by action (wildcard possible).
+    allowed_tool_names:
+      read: ["*"]
+      write: ["*"]
+      delete: ["*"]
+
+    # Optional argument allowlists.
+    allowlists:
+      servers:
+        mcp-filesystem:
+          path:
+            - "/workspace/**"
+            - "workspace/**"
+          target_path:
+            - "/workspace/**"
+            - "workspace/**"
+
+    # Per-request budget and timeout controls.
+    max_tool_calls_per_request: 25
+    per_call_timeout_seconds: 10
