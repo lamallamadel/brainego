@@ -2,7 +2,7 @@
 """
 Audit event persistence and export service.
 
-Stores structured audit events (HTTP requests + tool calls) in PostgreSQL and
+Stores structured audit events (HTTP requests + tool events) in PostgreSQL and
 supports filtered export as JSON/CSV.
 """
 
@@ -18,7 +18,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
-_SUPPORTED_EVENT_TYPES = {"request", "tool_call"}
+_SUPPORTED_EVENT_TYPES = {"request", "tool_event", "tool_call"}
 
 
 class AuditService:
@@ -85,7 +85,9 @@ class AuditService:
                     CREATE TABLE IF NOT EXISTS audit_events (
                         id SERIAL PRIMARY KEY,
                         event_id VARCHAR(255) UNIQUE NOT NULL,
-                        event_type VARCHAR(32) NOT NULL CHECK (event_type IN ('request', 'tool_call')),
+                        event_type VARCHAR(32) NOT NULL CHECK (
+                            event_type IN ('request', 'tool_event', 'tool_call')
+                        ),
                         timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
                         request_id VARCHAR(255),
                         workspace_id VARCHAR(255),
@@ -104,6 +106,31 @@ class AuditService:
                     """
                 )
                 cur.execute("ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS role VARCHAR(64)")
+                cur.execute(
+                    """
+                    DO $$
+                    DECLARE
+                        constraint_name TEXT;
+                    BEGIN
+                        FOR constraint_name IN
+                            SELECT conname
+                            FROM pg_constraint
+                            WHERE conrelid = 'audit_events'::regclass
+                              AND contype = 'c'
+                              AND pg_get_constraintdef(oid) ILIKE '%event_type%'
+                        LOOP
+                            EXECUTE format(
+                                'ALTER TABLE audit_events DROP CONSTRAINT %I',
+                                constraint_name
+                            );
+                        END LOOP;
+
+                        ALTER TABLE audit_events
+                        ADD CONSTRAINT audit_events_event_type_check
+                        CHECK (event_type IN ('request', 'tool_event', 'tool_call'));
+                    END $$;
+                    """
+                )
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_workspace_id ON audit_events(workspace_id)")
                 cur.execute("CREATE INDEX IF NOT EXISTS idx_audit_events_user_id ON audit_events(user_id)")

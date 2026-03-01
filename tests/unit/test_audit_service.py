@@ -19,7 +19,7 @@ def test_build_filters_supports_workspace_user_date_and_tool():
         user_id="user-1",
         role="workspace_admin",
         tool_name="search_docs",
-        event_type="tool_call",
+        event_type="tool_event",
         start_date=start,
         end_date=end,
     )
@@ -31,7 +31,7 @@ def test_build_filters_supports_workspace_user_date_and_tool():
     assert "event_type = %s" in where_sql
     assert "timestamp >= %s" in where_sql
     assert "timestamp <= %s" in where_sql
-    assert params == ["ws-1", "user-1", "workspace_admin", "search_docs", "tool_call", start, end]
+    assert params == ["ws-1", "user-1", "workspace_admin", "search_docs", "tool_event", start, end]
 
 
 @pytest.mark.unit
@@ -116,7 +116,7 @@ def test_export_events_csv_returns_csv_payload(monkeypatch):
             "events": [
                 {
                     "event_id": "evt-csv",
-                    "event_type": "tool_call",
+                    "event_type": "tool_event",
                     "timestamp": "2026-03-01T00:00:00+00:00",
                     "request_id": "req-csv",
                     "workspace_id": "ws-csv",
@@ -140,7 +140,7 @@ def test_export_events_csv_returns_csv_payload(monkeypatch):
     assert result["format"] == "csv"
     assert result["total_events"] == 1
     assert "csv_data" in result
-    assert "evt-csv,tool_call" in result["csv_data"]
+    assert "evt-csv,tool_event" in result["csv_data"]
 
 
 @pytest.mark.unit
