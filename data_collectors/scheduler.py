@@ -84,6 +84,17 @@ class CollectionScheduler:
                     }
                 },
                 {
+                    "name": "github_repo_codebase_sync",
+                    "source": "github_repo",
+                    "interval": "6h",
+                    "config": {
+                        "repo_name": os.getenv("GITHUB_DEFAULT_REPO"),
+                        "workspace_id": os.getenv("GITHUB_DEFAULT_WORKSPACE", "default"),
+                        "incremental": True,
+                        "reindex": False,
+                    }
+                },
+                {
                     "name": "notion_collection",
                     "source": "notion",
                     "interval": "4h",
@@ -132,7 +143,10 @@ class CollectionScheduler:
             logger.info(f"Skipping disabled job: {name}")
             return
 
-        if source == "github" and not _is_enabled(os.getenv("ENABLE_GITHUB_INGESTION"), default=True):
+        if source in {"github", "github_repo"} and not _is_enabled(
+            os.getenv("ENABLE_GITHUB_INGESTION"),
+            default=True,
+        ):
             logger.info("GitHub ingestion is disabled by ENABLE_GITHUB_INGESTION")
             return
         
