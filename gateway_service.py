@@ -32,6 +32,7 @@ from rag_service import RAGIngestionService
 from memory_service import MemoryService
 from memory_scoring_config import load_memory_scoring_config
 from circuit_breaker import get_circuit_breaker, CircuitBreakerConfig, CircuitBreakerError, get_all_circuit_breaker_stats
+from safety_policy_engine import load_default_safety_policy_engine
 
 # Configure logging
 logging.basicConfig(
@@ -86,6 +87,7 @@ app.add_middleware(
 
 # Security scheme
 security = HTTPBearer()
+safety_policy_engine = load_default_safety_policy_engine()
 
 
 # Authentication dependency
@@ -453,6 +455,17 @@ async def chat_completions(
         # Validate request
         if not request.messages:
             raise HTTPException(status_code=400, detail="Messages list cannot be empty")
+
+        safety_matches = []
+        safety_warnings = []
+        for message in request.messages:
+            result = safety_policy_engine.evaluate_text(message.content, target="request")
+            if result.blocked:
+                raise HTTPException(status_code=400, detail="Request blocked by safety policy")
+            if result.action == "redact":
+                message.content = result.content
+            safety_matches.extend(result.matches)
+            safety_warnings.extend(result.warnings)
         
         # Format prompt
         prompt = format_chat_prompt(request.messages)
@@ -467,6 +480,15 @@ async def chat_completions(
         }
         
         generated_text, prompt_tokens, completion_tokens = await call_max_serve(prompt, params)
+
+        response_safety = safety_policy_engine.evaluate_text(generated_text, target="response")
+        if response_safety.blocked:
+            generated_text = "I can't provide that response due to safety policies."
+        elif response_safety.action == "redact":
+            generated_text = response_safety.content
+
+        safety_matches.extend(response_safety.matches)
+        safety_warnings.extend(response_safety.warnings)
         
         # Calculate latency
         latency_ms = (time.time() - start_time) * 1000
@@ -492,6 +514,13 @@ async def chat_completions(
         )
         
         logger.info(f"Request completed in {latency_ms:.2f}ms")
+        if safety_matches:
+            logger.info(
+                "Safety policy matches: %s",
+                [f"{match.category}:{match.rule_id}:{match.action}" for match in safety_matches],
+            )
+        if safety_warnings:
+            logger.warning("Safety policy warnings: %s", safety_warnings)
         
         return response
         
@@ -542,6 +571,17 @@ async def unified_chat(
     try:
         if not request.messages:
             raise HTTPException(status_code=400, detail="Messages list cannot be empty")
+
+        safety_matches = []
+        safety_warnings = []
+        for message in request.messages:
+            result = safety_policy_engine.evaluate_text(message.content, target="request")
+            if result.blocked:
+                raise HTTPException(status_code=400, detail="Request blocked by safety policy")
+            if result.action == "redact":
+                message.content = result.content
+            safety_matches.extend(result.matches)
+            safety_warnings.extend(result.warnings)
         
         logger.info(f"Unified chat request from {auth['name']} (user_id: {request.user_id})")
         
@@ -645,6 +685,17 @@ async def unified_chat(
         
         generation_start = time.time()
         generated_text, prompt_tokens, completion_tokens = await call_max_serve(prompt, params)
+
+        response_safety = safety_policy_engine.evaluate_text(generated_text, target="response")
+        if response_safety.blocked:
+            generated_text = "I can't provide that response due to safety policies."
+            retrieval_stats["response_blocked_by_safety"] = True
+        elif response_safety.action == "redact":
+            generated_text = response_safety.content
+            retrieval_stats["response_redacted_by_safety"] = True
+
+        safety_matches.extend(response_safety.matches)
+        safety_warnings.extend(response_safety.warnings)
         generation_time_ms = (time.time() - generation_start) * 1000
         retrieval_stats["generation_ms"] = round(generation_time_ms, 2)
         
@@ -680,6 +731,17 @@ async def unified_chat(
         # Calculate total latency
         total_latency_ms = (time.time() - start_time) * 1000
         retrieval_stats["total_latency_ms"] = round(total_latency_ms, 2)
+        if safety_matches:
+            retrieval_stats["safety_matches"] = [
+                {
+                    "category": match.category,
+                    "rule_id": match.rule_id,
+                    "action": match.action,
+                }
+                for match in safety_matches
+            ]
+        if safety_warnings:
+            retrieval_stats["safety_warnings"] = safety_warnings
         metrics.record_request(total_latency_ms)
         
         # Build context response
