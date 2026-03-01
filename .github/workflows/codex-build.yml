@@ -109,6 +109,14 @@ jobs:
           TESTCONTAINERS_HOST_OVERRIDE: testcontainers.cloud
         run: |
           pytest tests/integration/ -v --tb=short -s 2>&1 | tee integration-test-output.log
+
+      - name: Run LoRA non-regression gate (when candidate outputs are present)
+        if: ${{ hashFiles('artifacts/lora_candidate_outputs.json') != '' }}
+        run: |
+          python scripts/lora_non_regression.py \
+            --suite tests/contract/fixtures/lora_regression_prompts.ndjson \
+            --baseline-output tests/contract/fixtures/lora_baseline_outputs.ndjson \
+            --candidate-output artifacts/lora_candidate_outputs.json
       
       # Upload test results
       - name: Upload test results
