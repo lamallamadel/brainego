@@ -1,0 +1,142 @@
+#!/usr/bin/env python3
+"""Write-action confirmation helpers for MCP tool calls."""
+
+from __future__ import annotations
+
+import copy
+import threading
+import time
+import uuid
+from dataclasses import dataclass
+from datetime import datetime
+from typing import Any, Callable, Dict, Optional
+
+
+WRITE_CONFIRMATION_VERBS = ("create", "update", "add", "append", "post")
+WRITE_CONFIRMATION_TARGETS = ("issue", "comment")
+
+
+def requires_write_confirmation(tool_name: str) -> bool:
+    """
+    Return True when tool name looks like an issue/comment write action.
+
+    Examples that should require explicit confirmation:
+      - github_create_issue
+      - github_update_issue
+      - github_create_issue_comment
+      - linear_create_comment
+    """
+    normalized = (tool_name or "").strip().lower()
+    if not normalized:
+        return False
+
+    has_target = any(target in normalized for target in WRITE_CONFIRMATION_TARGETS)
+    has_write_verb = any(verb in normalized for verb in WRITE_CONFIRMATION_VERBS)
+    return has_target and has_write_verb
+
+
+@dataclass(frozen=True)
+class PendingWritePlan:
+    """Stored write-call plan awaiting explicit confirmation."""
+
+    confirmation_id: str
+    requested_by: str
+    server_id: str
+    tool_name: str
+    arguments: Dict[str, Any]
+    created_at_epoch: float
+    expires_at_epoch: float
+
+    def to_public_dict(self) -> Dict[str, Any]:
+        return {
+            "confirmation_id": self.confirmation_id,
+            "server_id": self.server_id,
+            "tool_name": self.tool_name,
+            "arguments": copy.deepcopy(self.arguments),
+            "created_at": datetime.utcfromtimestamp(self.created_at_epoch).isoformat() + "Z",
+            "expires_at": datetime.utcfromtimestamp(self.expires_at_epoch).isoformat() + "Z",
+        }
+
+
+class PendingWritePlanStore:
+    """In-memory storage for pending write confirmations."""
+
+    def __init__(
+        self,
+        ttl_seconds: int = 600,
+        max_entries: int = 1000,
+        time_fn: Optional[Callable[[], float]] = None,
+    ):
+        self.ttl_seconds = max(1, ttl_seconds)
+        self.max_entries = max(1, max_entries)
+        self._time_fn = time_fn or time.time
+        self._plans: Dict[str, PendingWritePlan] = {}
+        self._lock = threading.Lock()
+
+    def create_plan(
+        self,
+        requested_by: str,
+        server_id: str,
+        tool_name: str,
+        arguments: Optional[Dict[str, Any]] = None,
+    ) -> PendingWritePlan:
+        now = self._time_fn()
+        confirmation_id = str(uuid.uuid4())
+        plan = PendingWritePlan(
+            confirmation_id=confirmation_id,
+            requested_by=requested_by,
+            server_id=server_id,
+            tool_name=tool_name,
+            arguments=copy.deepcopy(arguments or {}),
+            created_at_epoch=now,
+            expires_at_epoch=now + self.ttl_seconds,
+        )
+
+        with self._lock:
+            self._cleanup_expired_locked(now)
+            if len(self._plans) >= self.max_entries:
+                # Drop oldest plan to preserve bounded memory usage.
+                oldest_id = min(self._plans.items(), key=lambda item: item[1].created_at_epoch)[0]
+                self._plans.pop(oldest_id, None)
+            self._plans[confirmation_id] = plan
+
+        return plan
+
+    def consume_plan(
+        self,
+        confirmation_id: str,
+        requested_by: str,
+        server_id: str,
+        tool_name: str,
+        arguments: Optional[Dict[str, Any]] = None,
+    ) -> tuple[bool, Optional[str]]:
+        now = self._time_fn()
+        normalized_arguments = copy.deepcopy(arguments or {})
+
+        with self._lock:
+            self._cleanup_expired_locked(now)
+            plan = self._plans.get(confirmation_id)
+            if not plan:
+                return False, "Unknown or expired confirmation_id"
+
+            if plan.requested_by != requested_by:
+                return False, "confirmation_id does not belong to this caller"
+
+            if (
+                plan.server_id != server_id
+                or plan.tool_name != tool_name
+                or plan.arguments != normalized_arguments
+            ):
+                return False, "Confirmed request does not match pending plan"
+
+            self._plans.pop(confirmation_id, None)
+            return True, None
+
+    def _cleanup_expired_locked(self, now: float) -> None:
+        expired_plan_ids = [
+            plan_id
+            for plan_id, plan in self._plans.items()
+            if plan.expires_at_epoch <= now
+        ]
+        for plan_id in expired_plan_ids:
+            self._plans.pop(plan_id, None)

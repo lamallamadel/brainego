@@ -52,3 +52,23 @@ def test_metrics_include_mcp_error_rate_fields() -> None:
     source_text = SOURCE.read_text(encoding="utf-8")
     assert '"mcp_errors"' in source_text
     assert '"mcp_error_rate"' in source_text
+
+
+def test_mcp_tool_request_supports_write_confirmation_fields() -> None:
+    source_text = SOURCE.read_text(encoding="utf-8")
+    assert "confirm: bool = Field(" in source_text
+    assert "confirmation_id: Optional[str] = Field(" in source_text
+
+
+def test_write_actions_return_pending_confirmation_when_unconfirmed() -> None:
+    source_text = SOURCE.read_text(encoding="utf-8")
+    assert 'requires_write_confirmation(request.tool_name)' in source_text
+    assert '"status": "pending_confirmation"' in source_text
+    assert "write_confirmation_store.create_plan(" in source_text
+    assert "confirm=true and confirmation_id" in source_text
+
+
+def test_unified_mcp_passes_confirm_fields_to_call_tool_request() -> None:
+    source_text = SOURCE.read_text(encoding="utf-8")
+    assert 'confirm=bool(request.get("confirm", False))' in source_text
+    assert 'confirmation_id=request.get("confirmation_id")' in source_text
