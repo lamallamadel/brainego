@@ -251,6 +251,7 @@ class FisherInformationCalculator:
     
     def compute_ewc_loss(
         self,
+        model: torch.nn.Module,
         old_params: Dict[str, torch.Tensor],
         ewc_lambda: float = 500.0
     ) -> torch.Tensor:
@@ -260,6 +261,7 @@ class FisherInformationCalculator:
         Loss = λ/2 * Σ F_i * (θ_i - θ*_i)^2
         
         Args:
+            model: Model being fine-tuned
             old_params: Parameters from previous task
             ewc_lambda: EWC regularization strength
         
@@ -270,11 +272,16 @@ class FisherInformationCalculator:
             logger.warning("Fisher matrix not calculated, returning zero loss")
             return torch.tensor(0.0, device=self.device)
         
-        loss = 0.0
-        for name, param in self.model.named_parameters():
+        try:
+            first_param = next(model.parameters())
+            loss = torch.tensor(0.0, device=first_param.device)
+        except StopIteration:
+            return torch.tensor(0.0, device=self.device)
+
+        for name, param in model.named_parameters():
             if param.requires_grad and name in self.fisher_dict and name in old_params:
-                fisher = self.fisher_dict[name]
-                old_param = old_params[name]
-                loss += (fisher * (param - old_param) ** 2).sum()
-        
+                fisher = self.fisher_dict[name].to(param.device)
+                old_param = old_params[name].to(param.device)
+                loss = loss + (fisher * (param - old_param) ** 2).sum()
+
         return (ewc_lambda / 2) * loss

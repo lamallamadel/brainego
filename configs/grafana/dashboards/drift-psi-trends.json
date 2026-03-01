@@ -109,7 +109,11 @@
       "id": 1,
       "options": {
         "legend": {
-          "calcs": ["last", "mean", "max"],
+          "calcs": [
+            "last",
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "right",
           "showLegend": true
@@ -208,7 +212,11 @@
       "id": 2,
       "options": {
         "legend": {
-          "calcs": ["last", "mean", "max"],
+          "calcs": [
+            "last",
+            "mean",
+            "max"
+          ],
           "displayMode": "table",
           "placement": "right",
           "showLegend": true
@@ -280,7 +288,9 @@
         "orientation": "auto",
         "reduceOptions": {
           "values": false,
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": ""
         },
         "showThresholdLabels": false,
@@ -352,7 +362,9 @@
         "orientation": "auto",
         "reduceOptions": {
           "values": false,
-          "calcs": ["mean"],
+          "calcs": [
+            "mean"
+          ],
           "fields": ""
         },
         "textMode": "auto"
@@ -429,7 +441,9 @@
         "orientation": "auto",
         "reduceOptions": {
           "values": false,
-          "calcs": ["lastNotNull"],
+          "calcs": [
+            "lastNotNull"
+          ],
           "fields": ""
         },
         "textMode": "auto"
@@ -528,7 +542,9 @@
         "footer": {
           "countRows": false,
           "fields": "",
-          "reducer": ["sum"],
+          "reducer": [
+            "sum"
+          ],
           "show": false
         },
         "showHeader": true
@@ -548,12 +564,140 @@
       ],
       "title": "Recent PSI Measurements",
       "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "postgres",
+        "uid": "PostgreSQL"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "PSI (Population Stability Index)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "opacity",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.1
+              },
+              {
+                "color": "orange",
+                "value": 0.2
+              },
+              {
+                "color": "red",
+                "value": 0.3
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "id": 7,
+      "options": {
+        "legend": {
+          "calcs": [
+            "last",
+            "mean",
+            "max"
+          ],
+          "displayMode": "table",
+          "placement": "right",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "postgres",
+            "uid": "PostgreSQL"
+          },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "WITH daily_counts AS (\n  SELECT\n    DATE(created_at) AS day,\n    intent,\n    COUNT(*)::float AS cnt\n  FROM feedback\n  WHERE intent IS NOT NULL\n    AND $__timeFilter(created_at)\n  GROUP BY DATE(created_at), intent\n),\ndaily_dist AS (\n  SELECT\n    day,\n    intent,\n    cnt / NULLIF(SUM(cnt) OVER (PARTITION BY day), 0) AS day_pct\n  FROM daily_counts\n),\noverall_dist AS (\n  SELECT\n    intent,\n    SUM(cnt) / NULLIF(SUM(SUM(cnt)) OVER (), 0) AS baseline_pct\n  FROM daily_counts\n  GROUP BY intent\n)\nSELECT\n  dd.day AS time,\n  dd.intent AS metric,\n  (dd.day_pct - od.baseline_pct) * LN(\n    GREATEST(dd.day_pct, 0.000001) / GREATEST(od.baseline_pct, 0.000001)\n  ) AS value\nFROM daily_dist dd\nJOIN overall_dist od ON dd.intent = od.intent\nORDER BY dd.day, dd.intent",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [
+                  "value"
+                ],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "PSI Trend by Intent (Contribution)",
+      "type": "timeseries"
     }
   ],
   "refresh": "30s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["drift", "monitoring", "psi"],
+  "tags": [
+    "drift",
+    "monitoring",
+    "psi"
+  ],
   "templating": {
     "list": []
   },
@@ -565,6 +709,6 @@
   "timezone": "",
   "title": "Drift Monitoring - PSI Trends",
   "uid": "drift-psi-trends",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

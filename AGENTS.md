@@ -10,6 +10,45 @@ This AGENTS.md is the operational reference for setup, commands, and style.
 
 ---
 
+## Linear Batch Tasks & PR Workflow (INST-01)
+
+### Git workflow
+
+* Work on a single feature branch unless told otherwise.
+* Process requested Linear issues strictly in the order provided.
+* Do not start the next issue before:
+  1. code changes are complete,
+  2. relevant tests pass,
+  3. one git commit is created for the current issue.
+
+### Commit rules
+
+* Exactly one commit per Linear issue.
+* Commit message format:
+
+  `<type>(<issue>): <summary>`
+* Example:
+
+  `feat(AFR-XYW): add campaign metadata validator`
+
+### Pull request rules
+
+* Open exactly one PR after all requested issues are complete.
+* PR title format:
+
+  `batch(linear): AFR-XYA AFR-XYB AFR-XYC AFR-XYD`
+* PR body must contain one section per issue with:
+  * what changed
+  * tests run
+  * risk / notes
+
+### Stop conditions
+
+* If one issue is blocked, stop immediately and report the blocker.
+* Never silently skip an issue.
+
+---
+
 ## Codex Resource Unavailability Pattern (Formal & General)
 
 **Problem:** Codex Cloud is completely offline (zero network, zero shell access for pip/docker/etc).

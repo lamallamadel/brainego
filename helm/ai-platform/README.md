@@ -8,7 +8,7 @@ This Helm chart deploys a complete AI platform including:
 
 - **Inference Engines**: MAX Serve with Llama 3.3 8B, Qwen 2.5 Coder 7B, and DeepSeek R1 7B
 - **API Layer**: Agent Router, Gateway Service, MCPJungle Gateway
-- **AI Services**: Learning Engine, Mem0 Memory Service
+- **AI Services**: Learning Engine, MAML Meta-Learning Service, Mem0 Memory Service
 - **Data Stores**: Qdrant (vector), Redis (cache), PostgreSQL (relational), Neo4j (graph), MinIO (object storage)
 - **Observability**: Prometheus, Grafana, Jaeger
 
@@ -119,6 +119,21 @@ helm install my-ai-platform ./helm/ai-platform \
 | `maxServeDeepseek.service.port` | Service port | `8082` |
 | `maxServeDeepseek.resources.limits.nvidia.com/gpu` | GPU limit | `1` |
 
+
+### MAX Serve LoRA Control Plane
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `loraControl.port` | Internal control HTTP port exposed in MAX Serve pods | `19080` |
+| `loraControl.reloadEndpointPath` | MAX Serve internal endpoint used for adapter reload | `/internal/lora/reload` |
+| `loraControl.reloadTimeoutSeconds` | Timeout for upstream MAX Serve reload requests | `10` |
+| `loraControl.image.repository` | Sidecar image repository | `python` |
+
+Internal control endpoints provided by the sidecar:
+- `POST /internal/lora/reload` with `{"adapter_path":"...","adapter_version":"..."}` to hot-swap adapters.
+- `POST /internal/lora/rollback` to restore the previously active adapter version.
+- `GET /internal/lora/state` to inspect active/previous adapter metadata.
+
 ### Application Services
 
 #### Agent Router
@@ -148,6 +163,15 @@ helm install my-ai-platform ./helm/ai-platform \
 | `learningEngine.service.port` | Service port | `8003` |
 | `learningEngine.resources.limits.nvidia.com/gpu` | GPU limit | `1` |
 | `learningEngine.persistence.loraAdapters.size` | LoRA adapter storage | `20Gi` |
+
+#### MAML Meta-Learning Service
+
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| `mamlService.enabled` | Enable MAML service deployment | `true` |
+| `mamlService.service.port` | Service port | `8005` |
+| `mamlCronJob.enabled` | Enable monthly meta-training CronJob | `true` |
+| `mamlCronJob.schedule` | Cron schedule for monthly run | `"0 2 1 * *"` |
 
 ### Data Stores
 

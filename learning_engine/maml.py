@@ -222,8 +222,9 @@ class MAMLLearner:
             batch_loss = 0.0
             
             for task_data in task_batch:
-                # Split into support and query sets
-                support_set, query_set = self._split_support_query(task_data)
+                # Use precomputed support/query splits when provided (project tasks),
+                # otherwise build an ephemeral split for raw task datasets.
+                support_set, query_set = self._resolve_task_split(task_data)
                 
                 # Inner loop: Adapt to task
                 adapted_model, _, _ = self.inner_loop(support_set)
@@ -394,6 +395,22 @@ class MAMLLearner:
         """Sample a batch of tasks"""
         import random
         return random.sample(task_batches, min(num_tasks, len(task_batches)))
+
+    def _resolve_task_split(
+        self,
+        task_data: Any,
+    ) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+        """Return support/query sets from either pre-split task descriptors or raw samples."""
+        if isinstance(task_data, dict) and "support_set" in task_data and "query_set" in task_data:
+            support_set = task_data.get("support_set") or []
+            query_set = task_data.get("query_set") or []
+            if support_set and query_set:
+                return support_set, query_set
+
+            interactions = task_data.get("interactions") or []
+            return self._split_support_query(interactions)
+
+        return self._split_support_query(task_data)
     
     def _split_support_query(
         self,

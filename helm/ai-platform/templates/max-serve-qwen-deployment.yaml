@@ -51,6 +51,31 @@ spec:
         {{- toYaml .Values.maxServeQwen.affinity | nindent 8 }}
       {{- end }}
       containers:
+        - name: lora-control
+          image: "{{ .Values.loraControl.image.repository }}:{{ .Values.loraControl.image.tag }}"
+          imagePullPolicy: {{ .Values.loraControl.image.pullPolicy }}
+          command:
+            - python3
+            - /opt/lora-control/lora_control.py
+          ports:
+            - name: lora-ctrl
+              containerPort: {{ .Values.loraControl.port }}
+              protocol: TCP
+          env:
+            - name: LORA_CONTROL_PORT
+              value: "{{ .Values.loraControl.port }}"
+            - name: MAX_SERVE_RELOAD_TIMEOUT_SECONDS
+              value: "{{ .Values.loraControl.reloadTimeoutSeconds }}"
+            - name: MAX_SERVE_RELOAD_URL
+              value: "http://127.0.0.1:{{ .Values.maxServeQwen.service.targetPort }}{{ .Values.loraControl.reloadEndpointPath }}"
+          resources:
+            {{- toYaml .Values.loraControl.resources | nindent 12 }}
+          volumeMounts:
+            - name: lora-control-script
+              mountPath: /opt/lora-control/lora_control.py
+              subPath: lora_control.py
+            - name: lora-control-state
+              mountPath: /var/run/lora-control
         - name: max-serve-qwen
           image: "{{ .Values.maxServeQwen.image.repository }}:{{ .Values.maxServeQwen.image.tag }}"
           imagePullPolicy: {{ .Values.maxServeQwen.image.pullPolicy }}
@@ -86,6 +111,12 @@ spec:
               mountPath: {{ .Values.maxServeQwen.persistence.logs.mountPath }}
             {{- end }}
       volumes:
+        - name: lora-control-script
+          configMap:
+            name: max-serve-lora-control
+            defaultMode: 0555
+        - name: lora-control-state
+          emptyDir: {}
         {{- if .Values.maxServeQwen.persistence.models.enabled }}
         - name: models
           persistentVolumeClaim:

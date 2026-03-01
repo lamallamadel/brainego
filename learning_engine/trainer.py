@@ -16,6 +16,7 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 import json
 from pathlib import Path
+from collections import Counter
 
 from transformers import (
     AutoModelForCausalLM,
@@ -36,6 +37,7 @@ import psycopg2
 from .fisher import FisherInformationCalculator
 from .storage import AdapterStorage
 from . import metrics as learning_metrics
+from .data_loader import load_dataset_from_file
 
 logger = logging.getLogger(__name__)
 
@@ -73,6 +75,7 @@ class LoRATrainer:
             "metrics": {},
             "last_run": {}
         }
+        self.last_dataset_diagnostics: Dict[str, Any] = {}
         
         logger.info("LoRA Trainer initialized")
     
@@ -157,27 +160,57 @@ class LoRATrainer:
         cursor.execute(query, (days,))
         rows = cursor.fetchall()
         
-        # Process samples with weights
+        # Process samples with diagnostics and basic cleaning
         samples = []
+        dropped_reasons: Counter = Counter()
+        feedback_distribution: Counter = Counter()
+        intent_distribution: Counter = Counter()
+        project_distribution: Counter = Counter()
+
         for row in rows:
             request_data = json.loads(row[0]) if isinstance(row[0], str) else row[0]
             response_data = json.loads(row[1]) if isinstance(row[1], str) else row[1]
             feedback_type = row[2]
+            feedback_distribution[feedback_type] += 1
             
             # Extract messages
             messages = request_data.get('messages', [])
             assistant_response = response_data.get('choices', [{}])[0].get('message', {}).get('content', '')
-            
+
+            # Basic cleaning rules to remove low-value or broken examples
+            if not messages or not isinstance(messages, list):
+                dropped_reasons["missing_messages"] += 1
+                continue
+
             # Format as training sample
             input_text = self._format_messages(messages)
             output_text = assistant_response
-            
+
+            if not input_text:
+                dropped_reasons["empty_input"] += 1
+                continue
+            if not output_text or not str(output_text).strip():
+                dropped_reasons["empty_output"] += 1
+                continue
+            if len(input_text.strip()) < 15:
+                dropped_reasons["short_input"] += 1
+                continue
+            if len(str(output_text).strip()) < 15:
+                dropped_reasons["short_output"] += 1
+                continue
+            if input_text.strip() == str(output_text).strip():
+                dropped_reasons["duplicate_input_output"] += 1
+                continue
+
+            intent_distribution[self._extract_intent(request_data, response_data)] += 1
+            project_distribution[self._extract_project(request_data, response_data)] += 1
+
             # Apply weights based on feedback
             weight = 2.0 if feedback_type == 'thumbs_up' else 0.5
             
             samples.append({
                 'input': input_text,
-                'output': output_text,
+                'output': str(output_text).strip(),
                 'weight': weight,
                 'feedback_type': feedback_type
             })
@@ -185,24 +218,127 @@ class LoRATrainer:
         cursor.close()
         conn.close()
         
-        logger.info(f"✓ Loaded {len(samples)} training samples")
-        
-        # Log statistics
+        self.last_dataset_diagnostics = {
+            "raw_examples": len(rows),
+            "kept_examples": len(samples),
+            "dropped_examples": len(rows) - len(samples),
+            "drop_reasons": dict(dropped_reasons),
+            "feedback_distribution": dict(feedback_distribution),
+            "intent_distribution": dict(intent_distribution),
+            "project_distribution": dict(project_distribution),
+        }
+
+        logger.info(f"✓ Loaded {len(samples)} training samples (from {len(rows)} raw examples)")
+        logger.info("Dataset diagnostics: %s", self.last_dataset_diagnostics)
+
+        # Log weighted feedback summary for kept samples
         positive = sum(1 for s in samples if s['feedback_type'] == 'thumbs_up')
         negative = len(samples) - positive
-        logger.info(f"  Positive samples: {positive} (2.0x weight)")
-        logger.info(f"  Negative samples: {negative} (0.5x weight)")
+        logger.info(f"  Positive samples kept: {positive} (2.0x weight)")
+        logger.info(f"  Negative samples kept: {negative} (0.5x weight)")
         
         return samples
     
+    def load_historical_data(
+        self,
+        historical_days: int = 30,
+        recent_days: int = 7
+    ) -> List[Dict[str, str]]:
+        """Load historical feedback data for Fisher approximation."""
+        logger.info(
+            f"Loading historical feedback data from {historical_days}d to {recent_days}d ago..."
+        )
+
+        conn = psycopg2.connect(
+            host=self.config.postgres_host,
+            port=self.config.postgres_port,
+            dbname=self.config.postgres_db,
+            user=self.config.postgres_user,
+            password=self.config.postgres_password
+        )
+
+        cursor = conn.cursor()
+        query = """
+        SELECT 
+            request_data,
+            response_data,
+            feedback_type
+        FROM feedback
+        WHERE created_at >= NOW() - INTERVAL %s
+          AND created_at < NOW() - INTERVAL %s
+          AND feedback_type IN ('thumbs_up', 'thumbs_down')
+        ORDER BY created_at DESC
+        """
+
+        cursor.execute(query, (f"{historical_days} days", f"{recent_days} days"))
+        rows = cursor.fetchall()
+
+        samples = []
+        for row in rows:
+            request_data = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+            response_data = json.loads(row[1]) if isinstance(row[1], str) else row[1]
+
+            messages = request_data.get('messages', [])
+            assistant_response = response_data.get('choices', [{}])[0].get('message', {}).get('content', '')
+
+            samples.append({
+                'input': self._format_messages(messages),
+                'output': assistant_response,
+                'weight': 1.0,
+                'feedback_type': row[2]
+            })
+
+        cursor.close()
+        conn.close()
+
+        logger.info(f"✓ Loaded {len(samples)} historical samples for Fisher")
+        return samples
+
     def _format_messages(self, messages: List[Dict]) -> str:
         """Format messages for training"""
         formatted = []
         for msg in messages:
             role = msg.get('role', 'user')
-            content = msg.get('content', '')
+            content = str(msg.get('content', '')).strip()
+            if not content:
+                continue
             formatted.append(f"{role}: {content}")
         return "\n".join(formatted)
+
+    def _extract_intent(self, request_data: Dict[str, Any], response_data: Dict[str, Any]) -> str:
+        """Best-effort intent extraction for diagnostics."""
+        candidates = [
+            request_data.get("intent"),
+            request_data.get("metadata", {}).get("intent") if isinstance(request_data.get("metadata"), dict) else None,
+            response_data.get("intent"),
+            response_data.get("x-routing-metadata"),
+        ]
+        for candidate in candidates:
+            if isinstance(candidate, dict):
+                value = candidate.get("intent")
+                if value:
+                    return str(value)
+            if isinstance(candidate, str) and candidate.strip():
+                try:
+                    parsed = json.loads(candidate)
+                    if isinstance(parsed, dict) and parsed.get("intent"):
+                        return str(parsed["intent"])
+                except json.JSONDecodeError:
+                    return candidate.strip()
+        return "unknown"
+
+    def _extract_project(self, request_data: Dict[str, Any], response_data: Dict[str, Any]) -> str:
+        """Best-effort project extraction for diagnostics."""
+        metadata = request_data.get("metadata") if isinstance(request_data.get("metadata"), dict) else {}
+        candidates = [
+            request_data.get("project"),
+            metadata.get("project"),
+            response_data.get("project"),
+        ]
+        for candidate in candidates:
+            if isinstance(candidate, str) and candidate.strip():
+                return candidate.strip()
+        return "unknown"
     
     def prepare_dataset(
         self,
@@ -255,7 +391,10 @@ class LoRATrainer:
         days: int = 7,
         ewc_lambda: float = 500.0,
         force: bool = False,
-        job_id: Optional[str] = None
+        job_id: Optional[str] = None,
+        dataset_id: Optional[str] = None,
+        author: Optional[str] = None,
+        validation_metrics: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         """
         Train LoRA adapter from feedback data with EWC regularization.
@@ -347,7 +486,8 @@ class LoRATrainer:
                 return {
                     "status": "skipped",
                     "message": msg,
-                    "samples": len(samples)
+                    "samples": len(samples),
+                    "dataset_diagnostics": self.last_dataset_diagnostics,
                 }
             
             # Load base model
@@ -363,39 +503,30 @@ class LoRATrainer:
             
             # Calculate Fisher matrix if not exists
             if not self.fisher_calculator.get_fisher_dict():
-                logger.info("Calculating Fisher Information Matrix...")
-                self.fisher_calculator.calculate_fim(samples, num_samples=1000)
+                logger.info("Calculating Fisher Information Matrix from historical data...")
+                historical_samples = self.load_historical_data(
+                    historical_days=getattr(self.config, "fisher_history_days", 30),
+                    recent_days=days
+                )
+                fisher_samples = historical_samples if historical_samples else samples
+                self.fisher_calculator.calculate_fim(
+                    fisher_samples,
+                    num_samples=getattr(self.config, "fisher_num_samples", 1000)
+                )
             
             # Prepare dataset
             dataset = self.prepare_dataset(samples)
             
-            # Training arguments
             output_dir = f"./lora_checkpoints/{self.training_status['current_job']}"
-            training_args = TrainingArguments(
+            train_result = self._run_training(
+                dataset=dataset,
                 output_dir=output_dir,
-                num_train_epochs=self.config.num_train_epochs,
-                per_device_train_batch_size=self.config.batch_size,
-                gradient_accumulation_steps=self.config.gradient_accumulation_steps,
                 learning_rate=self.config.learning_rate,
-                warmup_steps=self.config.warmup_steps,
-                logging_steps=10,
-                save_strategy="epoch",
-                fp16=True,
-                report_to="none"
-            )
-            
-            # Custom trainer with EWC
-            trainer = EWCTrainer(
-                model=self.model,
-                args=training_args,
-                train_dataset=dataset,
-                data_collator=DataCollatorForLanguageModeling(
-                    tokenizer=self.tokenizer,
-                    mlm=False
-                ),
+                epochs=self.config.num_train_epochs,
+                batch_size=self.config.batch_size,
                 fisher_calculator=self.fisher_calculator,
                 old_params=old_params,
-                ewc_lambda=ewc_lambda
+                ewc_lambda=ewc_lambda,
             )
             
             # Train
@@ -424,6 +555,14 @@ class LoRATrainer:
                     "days": days,
                     "ewc_lambda": ewc_lambda,
                     "train_loss": train_result.training_loss,
+                    "dataset_id": dataset_id or self.training_status['current_job'],
+                    "validation_metrics": validation_metrics or {
+                        "train_loss": train_result.training_loss
+                    },
+                    "author": author or "learning-engine",
+                    "timestamp": datetime.now().isoformat(),
+                },
+                    "dataset_diagnostics": self.last_dataset_diagnostics,
                     "timestamp": datetime.now().isoformat()
                 }
             )
@@ -436,7 +575,6 @@ class LoRATrainer:
                 "initial_loss": initial_loss,
                 "final_loss": final_loss,
                 "ewc_lambda": ewc_lambda,
-                "duration_seconds": train_result.metrics.get('train_runtime', 0),
                 "dataset_id": dataset_id,
                 "dataset_size": len(samples),
                 "thresholds": {
@@ -444,6 +582,8 @@ class LoRATrainer:
                     "ewc_lambda": ewc_lambda
                 },
                 "decision": decision_context
+                "dataset_diagnostics": self.last_dataset_diagnostics,
+                "duration_seconds": train_result.metrics.get('train_runtime', 0)
             }
             
             self.training_status["metrics"] = metrics
@@ -560,6 +700,156 @@ class LoRATrainer:
             major += 1
             minor = 0
         return f"v{major}.{minor}"
+
+    def train_from_jsonl(
+        self,
+        dataset_path: str,
+        learning_rate: Optional[float] = None,
+        epochs: Optional[int] = None,
+        batch_size: Optional[int] = None,
+        job_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """
+        Train a base LoRA adapter from a JSONL dataset.
+
+        Args:
+            dataset_path: Path to JSONL file with input/output pairs
+            learning_rate: Optional learning rate override
+            epochs: Optional epoch override
+            batch_size: Optional batch size override
+            job_id: Optional job identifier
+
+        Returns:
+            Training result metadata
+        """
+        logger.info("=" * 60)
+        logger.info("Starting Base LoRA Fine-tuning from JSONL")
+        logger.info("=" * 60)
+
+        self.training_status["is_training"] = True
+        self.training_status["current_job"] = job_id or f"train_jsonl_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+        try:
+            if not Path(dataset_path).exists():
+                raise FileNotFoundError(f"Dataset file not found: {dataset_path}")
+
+            samples = load_dataset_from_file(dataset_path)
+            if not samples:
+                raise ValueError("Dataset is empty")
+
+            if self.model is None:
+                self.load_base_model()
+                self.setup_lora()
+
+            dataset = self.prepare_dataset(samples)
+
+            output_dir = f"./lora_checkpoints/{self.training_status['current_job']}"
+            train_result = self._run_training(
+                dataset=dataset,
+                output_dir=output_dir,
+                learning_rate=learning_rate or self.config.learning_rate,
+                epochs=epochs or self.config.num_train_epochs,
+                batch_size=batch_size or self.config.batch_size,
+            )
+
+            self.current_version = self._increment_version(self.current_version)
+            adapter_path = os.path.join(output_dir, "adapter")
+            self.model.save_pretrained(adapter_path)
+
+            self.storage.upload_adapter(
+                local_path=adapter_path,
+                version=self.current_version,
+                metadata={
+                    "job_id": self.training_status['current_job'],
+                    "dataset_path": dataset_path,
+                    "samples": len(samples),
+                    "learning_rate": learning_rate or self.config.learning_rate,
+                    "epochs": epochs or self.config.num_train_epochs,
+                    "batch_size": batch_size or self.config.batch_size,
+                    "train_loss": train_result.training_loss,
+                    "timestamp": datetime.now().isoformat()
+                }
+            )
+
+            metrics = {
+                "version": self.current_version,
+                "samples": len(samples),
+                "train_loss": train_result.training_loss,
+                "learning_rate": learning_rate or self.config.learning_rate,
+                "epochs": epochs or self.config.num_train_epochs,
+                "batch_size": batch_size or self.config.batch_size,
+                "duration_seconds": train_result.metrics.get('train_runtime', 0),
+            }
+            self.training_status["metrics"] = metrics
+            self.training_status["last_job"] = self.training_status["current_job"]
+
+            return {
+                "status": "success",
+                "version": self.current_version,
+                "metrics": metrics,
+            }
+
+        except Exception as e:
+            logger.error(f"JSONL training failed: {e}", exc_info=True)
+            return {
+                "status": "failed",
+                "error": str(e)
+            }
+        finally:
+            self.training_status["is_training"] = False
+            self.training_status["current_job"] = None
+
+    def _run_training(
+        self,
+        dataset: Dataset,
+        output_dir: str,
+        learning_rate: float,
+        epochs: int,
+        batch_size: int,
+        fisher_calculator: Optional[FisherInformationCalculator] = None,
+        old_params: Optional[Dict[str, torch.Tensor]] = None,
+        ewc_lambda: float = 0.0,
+    ):
+        """Run training with optional EWC regularization."""
+        training_args = TrainingArguments(
+            output_dir=output_dir,
+            num_train_epochs=epochs,
+            per_device_train_batch_size=batch_size,
+            gradient_accumulation_steps=self.config.gradient_accumulation_steps,
+            learning_rate=learning_rate,
+            warmup_steps=self.config.warmup_steps,
+            logging_steps=10,
+            save_strategy="epoch",
+            fp16=True,
+            report_to="none"
+        )
+
+        if fisher_calculator and old_params:
+            run_trainer = EWCTrainer(
+                model=self.model,
+                args=training_args,
+                train_dataset=dataset,
+                data_collator=DataCollatorForLanguageModeling(
+                    tokenizer=self.tokenizer,
+                    mlm=False
+                ),
+                fisher_calculator=fisher_calculator,
+                old_params=old_params,
+                ewc_lambda=ewc_lambda
+            )
+        else:
+            run_trainer = Trainer(
+                model=self.model,
+                args=training_args,
+                train_dataset=dataset,
+                data_collator=DataCollatorForLanguageModeling(
+                    tokenizer=self.tokenizer,
+                    mlm=False
+                ),
+            )
+
+        logger.info("Starting training...")
+        return run_trainer.train()
     
     def get_status(self) -> Dict[str, Any]:
         """Get current training status"""
@@ -586,8 +876,11 @@ class EWCTrainer(Trainer):
         self.old_params = old_params
         self.ewc_lambda = ewc_lambda
     
-    def compute_loss(self, model, inputs, return_outputs=False):
+    def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
         """Compute loss with EWC regularization"""
+        inputs = dict(inputs)
+        inputs.pop("weight", None)
+
         # Standard loss
         outputs = model(**inputs)
         loss = outputs.loss
@@ -595,6 +888,7 @@ class EWCTrainer(Trainer):
         # Add EWC regularization
         if self.fisher_calculator.get_fisher_dict() and self.old_params:
             ewc_loss = self.fisher_calculator.compute_ewc_loss(
+                model,
                 self.old_params,
                 self.ewc_lambda
             )

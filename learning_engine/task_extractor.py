@@ -141,6 +141,83 @@ class TaskExtractor:
             logger.info(f"  {project}: {len(samples)} samples ({positive} positive)")
         
         return filtered_tasks
+
+    def build_project_task_splits(
+        self,
+        project_tasks: Dict[str, List[Dict[str, Any]]],
+        support_ratio: float = 0.8,
+        min_support_samples: int = 1,
+        min_query_samples: int = 1
+    ) -> Dict[str, Dict[str, Any]]:
+        """
+        Build support/query splits for each project task.
+
+        Args:
+            project_tasks: Mapping of project -> interaction samples
+            support_ratio: Target ratio of samples in support set
+            min_support_samples: Lower bound for support set size
+            min_query_samples: Lower bound for query set size
+
+        Returns:
+            Mapping of project -> task descriptor with support/query splits
+        """
+        project_task_splits: Dict[str, Dict[str, Any]] = {}
+
+        for project, interactions in project_tasks.items():
+            if len(interactions) < (min_support_samples + min_query_samples):
+                logger.debug(
+                    "Skipping project '%s': not enough samples to build split (%d)",
+                    project,
+                    len(interactions),
+                )
+                continue
+
+            shuffled = interactions.copy()
+            import random
+            random.shuffle(shuffled)
+
+            split_idx = int(len(shuffled) * support_ratio)
+            split_idx = max(min_support_samples, split_idx)
+            split_idx = min(len(shuffled) - min_query_samples, split_idx)
+
+            support_set = shuffled[:split_idx]
+            query_set = shuffled[split_idx:]
+
+            project_task_splits[project] = {
+                "task_id": f"project_{project}",
+                "project": project,
+                "interactions": shuffled,
+                "support_set": support_set,
+                "query_set": query_set,
+                "support_size": len(support_set),
+                "query_size": len(query_set),
+            }
+
+        logger.info("✓ Built support/query splits for %d project tasks", len(project_task_splits))
+        return project_task_splits
+
+    def extract_project_task_splits(
+        self,
+        days: int = 30,
+        min_samples_per_project: int = 20,
+        positive_only: bool = False,
+        support_ratio: float = 0.8,
+        min_support_samples: int = 1,
+        min_query_samples: int = 1,
+    ) -> Dict[str, Dict[str, Any]]:
+        """Extract per-project interaction tasks and materialize support/query sets."""
+        project_tasks = self.extract_project_tasks(
+            days=days,
+            min_samples_per_project=min_samples_per_project,
+            positive_only=positive_only,
+        )
+
+        return self.build_project_task_splits(
+            project_tasks=project_tasks,
+            support_ratio=support_ratio,
+            min_support_samples=min_support_samples,
+            min_query_samples=min_query_samples,
+        )
     
     def extract_intent_tasks(
         self,
@@ -328,14 +405,20 @@ class TaskExtractor:
         logger.info(f"Extracting all tasks: strategy={strategy}, days={days}")
         
         if strategy == "project":
-            task_dict = self.extract_project_tasks(days, min_samples)
+            task_dict = self.extract_project_task_splits(
+                days=days,
+                min_samples_per_project=min_samples,
+            )
         elif strategy == "intent":
             task_dict = self.extract_intent_tasks(days, min_samples)
         elif strategy == "temporal":
             task_dict = self.extract_temporal_tasks(days, min_samples_per_window=min_samples)
         elif strategy == "mixed":
             # Combine multiple strategies
-            project_tasks = self.extract_project_tasks(days, min_samples)
+            project_tasks = self.extract_project_task_splits(
+                days=days,
+                min_samples_per_project=min_samples,
+            )
             intent_tasks = self.extract_intent_tasks(days, min_samples)
             
             # Merge with unique keys

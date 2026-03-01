@@ -8,6 +8,7 @@ and efficient retrieval for fast adaptation.
 import os
 import logging
 import json
+from io import BytesIO
 import torch
 import shutil
 from typing import Dict, List, Optional, Any
@@ -81,7 +82,9 @@ class MetaWeightsStorage:
         self,
         weights: Dict[str, torch.Tensor],
         version: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        training_config: Optional[Dict[str, Any]] = None,
+        linked_adapter_versions: Optional[List[str]] = None
     ) -> str:
         """
         Upload meta-weights to MinIO.
@@ -90,6 +93,8 @@ class MetaWeightsStorage:
             weights: Dictionary of meta-weights
             version: Version identifier (e.g., "v1.0", "2024-01-15")
             metadata: Optional metadata (performance metrics, tasks, etc.)
+            training_config: Meta-training configuration used to produce this version
+            linked_adapter_versions: LoRA adapter versions depending on these meta-weights
         
         Returns:
             Object path in MinIO
@@ -107,7 +112,7 @@ class MetaWeightsStorage:
             
             # Upload weights
             object_name = f"meta-weights/{version}/meta_weights.pt"
-            self.client.fput_object(
+            upload_result = self.client.fput_object(
                 self.bucket_name,
                 object_name,
                 weights_path
@@ -115,23 +120,21 @@ class MetaWeightsStorage:
             
             logger.info(f"✓ Meta-weights uploaded: {object_name}")
             
-            # Upload metadata if provided
-            if metadata:
-                metadata["version"] = version
-                metadata["uploaded_at"] = datetime.now().isoformat()
-                
-                metadata_str = json.dumps(metadata, indent=2, default=str)
-                metadata_name = f"meta-weights/{version}/metadata.json"
-                
-                self.client.put_object(
-                    self.bucket_name,
-                    metadata_name,
-                    data=metadata_str.encode('utf-8'),
-                    length=len(metadata_str),
-                    content_type='application/json'
-                )
-                
-                logger.info(f"✓ Metadata uploaded: {metadata_name}")
+            # Build and upload metadata
+            metadata_doc = dict(metadata or {})
+            metadata_doc["version"] = version
+            metadata_doc["uploaded_at"] = datetime.now().isoformat()
+            metadata_doc["weights_object_path"] = object_name
+            metadata_doc["weights_object_version_id"] = getattr(upload_result, "version_id", None)
+            metadata_doc["training_config"] = training_config or metadata_doc.get("training_config", {})
+            metadata_doc["linked_adapter_versions"] = sorted(
+                set(linked_adapter_versions or metadata_doc.get("linked_adapter_versions", []))
+            )
+
+            metadata_name = f"meta-weights/{version}/metadata.json"
+            self._put_json(metadata_name, metadata_doc)
+
+            logger.info(f"✓ Metadata uploaded: {metadata_name}")
             
             # Cleanup
             shutil.rmtree(temp_dir)
@@ -238,17 +241,7 @@ class MetaWeightsStorage:
         try:
             metadata_name = f"meta-weights/{version}/metadata.json"
             
-            response = self.client.get_object(
-                self.bucket_name,
-                metadata_name
-            )
-            
-            metadata = json.loads(response.read().decode('utf-8'))
-            
-            response.close()
-            response.release_conn()
-            
-            return metadata
+            return self._get_json(metadata_name)
             
         except S3Error as e:
             if e.code == "NoSuchKey":
@@ -275,6 +268,55 @@ class MetaWeightsStorage:
         # Return version with latest timestamp
         latest = max(versions, key=lambda v: v.get('uploaded_at', ''))
         return latest.get('version')
+
+    def link_adapter_to_meta_weights(
+        self,
+        meta_version: str,
+        adapter_version: str
+    ) -> bool:
+        """
+        Link a downstream LoRA adapter to a meta-weights version.
+
+        Args:
+            meta_version: Meta-weights version identifier
+            adapter_version: Dependent LoRA adapter version identifier
+
+        Returns:
+            True if successful
+        """
+        metadata = self.get_metadata(meta_version)
+        if not metadata:
+            logger.error(f"Cannot link adapter {adapter_version}: meta version {meta_version} not found")
+            return False
+
+        linked = set(metadata.get("linked_adapter_versions", []))
+        linked.add(adapter_version)
+        metadata["linked_adapter_versions"] = sorted(linked)
+
+        try:
+            metadata_name = f"meta-weights/{meta_version}/metadata.json"
+            self._put_json(metadata_name, metadata)
+            logger.info(f"✓ Linked adapter {adapter_version} -> meta-weights {meta_version}")
+            return True
+        except S3Error as e:
+            logger.error(f"Failed to link adapter to meta-weights: {e}")
+            return False
+
+    def get_adapter_dependencies(self, adapter_version: str) -> List[str]:
+        """
+        Get all meta-weights versions linked to a downstream LoRA adapter.
+
+        Args:
+            adapter_version: LoRA adapter version identifier
+
+        Returns:
+            List of dependent meta-weights versions
+        """
+        dependencies = []
+        for version_data in self.list_versions():
+            if adapter_version in version_data.get("linked_adapter_versions", []):
+                dependencies.append(version_data.get("version"))
+        return [version for version in dependencies if version]
     
     def delete_version(self, version: str) -> bool:
         """
@@ -461,3 +503,23 @@ class MetaWeightsStorage:
         except S3Error as e:
             logger.error(f"Failed to backup version: {e}")
             return False
+
+    def _put_json(self, object_name: str, payload: Dict[str, Any]):
+        """Upload a JSON document to MinIO."""
+        payload_bytes = json.dumps(payload, indent=2, default=str).encode("utf-8")
+        self.client.put_object(
+            self.bucket_name,
+            object_name,
+            data=BytesIO(payload_bytes),
+            length=len(payload_bytes),
+            content_type="application/json"
+        )
+
+    def _get_json(self, object_name: str) -> Dict[str, Any]:
+        """Download and parse a JSON document from MinIO."""
+        response = self.client.get_object(self.bucket_name, object_name)
+        try:
+            return json.loads(response.read().decode("utf-8"))
+        finally:
+            response.close()
+            response.release_conn()
