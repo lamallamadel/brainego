@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Needs: python-package:httpx>=0.28.1
 """Internal MCP gateway client for brainego API services."""
 
 import logging
@@ -45,7 +46,7 @@ class InternalMCPGatewayClient:
         api_key: Optional[str] = None,
     ):
         self.gateway_base_url = gateway_base_url.rstrip("/")
-        # Kept for backward compatibility only; policy enforcement is centralized in api_server.
+        # Backward compatibility only; authorization lives in api_server proxy.
         self.allowed_tools = {
             tool.strip() for tool in (allowed_tools or set()) if tool and tool.strip()
         }
@@ -82,6 +83,7 @@ class InternalMCPGatewayClient:
         tool_name: str,
         arguments: Optional[Dict[str, Any]] = None,
         context: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
     ) -> MCPToolResult:
         started_at = time.perf_counter()
         payload = {
@@ -89,9 +91,14 @@ class InternalMCPGatewayClient:
             "tool_name": tool_name,
             "arguments": arguments or {},
         }
+        effective_timeout_seconds = (
+            float(timeout_seconds)
+            if timeout_seconds is not None and float(timeout_seconds) > 0
+            else self.timeout_seconds
+        )
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            async with httpx.AsyncClient(timeout=effective_timeout_seconds) as client:
                 response = await client.post(
                     f"{self.gateway_base_url}/mcp/tools/call",
                     json=payload,

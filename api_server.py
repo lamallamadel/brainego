@@ -31,7 +31,7 @@ from feedback_service import FeedbackService
 from audit_service import AuditService
 from circuit_breaker import get_all_circuit_breaker_stats
 from internal_mcp_client import InternalMCPGatewayClient
-from internal_mcp_tool_policy import evaluate_tool_policy
+from tool_policy_engine import ToolPolicyEngine, load_default_tool_policy_engine
 from security_heuristics import detect_prompt_injection_patterns
 
 # Configure logging
@@ -223,6 +223,10 @@ class MCPGatewayRequest(BaseModel):
     tool_name: Optional[str] = Field(None, description="Required for call_tool")
     uri: Optional[str] = Field(None, description="Required for read_resource")
     arguments: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Optional tool arguments")
+    workspace_id: Optional[str] = Field(None, description="Workspace identifier for policy scope")
+    request_id: Optional[str] = Field(None, description="Request identifier for per-request quotas")
+    tool_action: Optional[str] = Field(None, description="Optional explicit action (read/write/delete)")
+    context: Optional[str] = Field(None, description="Optional caller context for audit logs")
 class ChatCompletionChoice(BaseModel):
     index: int
     message: ChatMessage
@@ -530,6 +534,9 @@ class MCPToolProxyRequest(BaseModel):
     tool_name: str = Field(..., description="MCP tool name")
     arguments: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Tool call arguments")
     context: Optional[str] = Field(None, description="Optional caller context for logging")
+    workspace_id: Optional[str] = Field(None, description="Workspace policy scope")
+    request_id: Optional[str] = Field(None, description="Request ID for per-request tool budgets")
+    action: Optional[str] = Field(None, description="Optional explicit action (read/write/delete)")
 class MCPToolProxyResponse(BaseModel):
     ok: bool
     tool_name: str
@@ -800,6 +807,7 @@ feedback_service = None
 audit_service = None
 document_ingestion_service = None
 mcp_gateway_client = None
+tool_policy_engine = None
 # Graceful shutdown flag
 shutdown_in_progress = False
 
@@ -973,17 +981,160 @@ def get_mcp_gateway_client() -> InternalMCPGatewayClient:
     return mcp_gateway_client
 
 
-def enforce_mcp_tool_policy(tool_name: str) -> None:
-    """Apply the MCP tool allow/deny policy uniformly at API entrypoints."""
-    decision = evaluate_tool_policy(
-        tool_name=tool_name,
-        allowed_tools_raw=os.getenv("MCP_ALLOWED_TOOLS", ""),
+def get_tool_policy_engine() -> ToolPolicyEngine:
+    """Get or initialize deny-by-default tool policy engine."""
+    global tool_policy_engine
+    if tool_policy_engine is None:
+        logger.info("Initializing tool policy engine...")
+        tool_policy_engine = load_default_tool_policy_engine()
+        logger.info("Tool policy engine initialized")
+    return tool_policy_engine
+
+
+def _infer_tool_action(tool_name: str, explicit_action: Optional[str]) -> str:
+    """Infer read/write/delete action when caller did not provide one."""
+    normalized_action = (explicit_action or "").strip().lower()
+    if normalized_action in {"read", "write", "delete"}:
+        return normalized_action
+
+    lowered_tool_name = (tool_name or "").strip().lower()
+    if any(token in lowered_tool_name for token in ("delete", "remove", "destroy", "drop", "erase")):
+        return "delete"
+    if any(
+        token in lowered_tool_name
+        for token in ("create", "update", "write", "append", "modify", "post", "send", "upload", "add")
+    ):
+        return "write"
+    return "read"
+
+
+def _extract_workspace_id_from_tool_arguments(arguments: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Extract workspace ID from common tool argument conventions."""
+    if not isinstance(arguments, dict):
+        return None
+
+    for key in ("workspace_id", "workspace", "project", "project_id"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    metadata = arguments.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("workspace_id", "workspace", "project", "project_id"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _resolve_tool_policy_context(
+    *,
+    raw_request: Request,
+    explicit_workspace_id: Optional[str],
+    explicit_request_id: Optional[str],
+    arguments: Optional[Dict[str, Any]],
+) -> Tuple[Optional[str], str]:
+    """Resolve workspace/request identifiers from request body and headers."""
+    workspace_id_candidates = [
+        explicit_workspace_id,
+        raw_request.headers.get("x-workspace-id"),
+        raw_request.headers.get("x-project-id"),
+        _extract_workspace_id_from_tool_arguments(arguments),
+    ]
+    resolved_workspace_id = next(
+        (str(value).strip() for value in workspace_id_candidates if isinstance(value, str) and value.strip()),
+        None,
+    )
+    resolved_request_id = (
+        (explicit_request_id or "").strip()
+        or str(getattr(raw_request.state, "audit_request_id", "")).strip()
+        or (raw_request.headers.get("x-request-id") or "").strip()
+        or str(uuid.uuid4())
+    )
+    return resolved_workspace_id, resolved_request_id
+
+
+def _build_policy_denied_detail(
+    *,
+    reason: str,
+    workspace_id: Optional[str],
+    request_id: Optional[str],
+) -> Dict[str, Any]:
+    """Build stable PolicyDenied payload."""
+    detail: Dict[str, Any] = {
+        "ok": False,
+        "error": "PolicyDenied",
+        "code": "PolicyDenied",
+        "reason": reason,
+    }
+    if workspace_id:
+        detail["workspace_id"] = workspace_id
+    if request_id:
+        detail["request_id"] = request_id
+    return detail
+
+
+def enforce_mcp_tool_policy(
+    *,
+    raw_request: Request,
+    server_id: str,
+    tool_name: str,
+    arguments: Optional[Dict[str, Any]] = None,
+    workspace_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    action: Optional[str] = None,
+    default_timeout_seconds: float = 30.0,
+) -> Tuple[str, str, str, float]:
+    """Enforce deny-by-default policy at MCP tool execution point."""
+    normalized_tool_name = (tool_name or "").strip()
+    if not normalized_tool_name:
+        raise HTTPException(status_code=400, detail="Missing required field: tool_name")
+
+    resolved_workspace_id, resolved_request_id = _resolve_tool_policy_context(
+        raw_request=raw_request,
+        explicit_workspace_id=workspace_id,
+        explicit_request_id=request_id,
+        arguments=arguments,
+    )
+
+    if not resolved_workspace_id:
+        raise HTTPException(
+            status_code=403,
+            detail=_build_policy_denied_detail(
+                reason="workspace_id is required by tool policy",
+                workspace_id=None,
+                request_id=resolved_request_id,
+            ),
+        )
+
+    resolved_action = _infer_tool_action(normalized_tool_name, action)
+    policy_engine = get_tool_policy_engine()
+    decision = policy_engine.evaluate_tool_call(
+        workspace_id=resolved_workspace_id,
+        request_id=resolved_request_id,
+        server_id=server_id,
+        tool_name=normalized_tool_name,
+        action=resolved_action,
+        arguments=arguments or {},
+        default_timeout_seconds=default_timeout_seconds,
     )
     if not decision.allowed:
         raise HTTPException(
-            status_code=403 if decision.reason != "Missing required field: tool_name" else 400,
-            detail=decision.reason or "MCP tool call denied by policy",
+            status_code=403,
+            detail=_build_policy_denied_detail(
+                reason=decision.reason or "MCP tool call denied by policy",
+                workspace_id=decision.workspace_id or resolved_workspace_id,
+                request_id=resolved_request_id,
+            ),
         )
+
+    effective_timeout_seconds = float(decision.timeout_seconds or default_timeout_seconds)
+    return (
+        decision.workspace_id or resolved_workspace_id,
+        resolved_request_id,
+        resolved_action,
+        effective_timeout_seconds,
+    )
 def format_chat_prompt(messages: List[ChatMessage]) -> str:
     """Format messages into Llama 3.3 chat format."""
     prompt_parts = []
@@ -1527,14 +1678,54 @@ async def health_check():
 async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
     """Proxy MCP calls through the MCPJungle gateway service."""
     started_at = time.time()
+    payload = request.model_dump(exclude_none=True)
+    gateway_timeout_seconds = 30.0
+
     if request.action == "call_tool":
-        enforce_mcp_tool_policy(request.tool_name or "")
+        try:
+            (
+                resolved_workspace_id,
+                resolved_request_id,
+                resolved_action,
+                gateway_timeout_seconds,
+            ) = enforce_mcp_tool_policy(
+                raw_request=raw_request,
+                server_id=request.server_id,
+                tool_name=request.tool_name or "",
+                arguments=request.arguments or {},
+                workspace_id=request.workspace_id,
+                request_id=request.request_id,
+                action=request.tool_action,
+                default_timeout_seconds=gateway_timeout_seconds,
+            )
+            payload.setdefault("workspace_id", resolved_workspace_id)
+            payload.setdefault("request_id", resolved_request_id)
+            payload.setdefault("tool_action", resolved_action)
+        except HTTPException as exc:
+            detail_payload = (
+                exc.detail
+                if isinstance(exc.detail, dict)
+                else {"error": "PolicyDenied", "reason": str(exc.detail), "code": "PolicyDenied"}
+            )
+            _record_tool_call_audit(
+                raw_request=raw_request,
+                server_id=request.server_id,
+                tool_name=request.tool_name,
+                status_code=exc.status_code,
+                duration_ms=round((time.time() - started_at) * 1000, 2),
+                ok=False,
+                request_payload=payload,
+                response_payload=detail_payload,
+                context=request.context or "api.v1.mcp",
+                error=str(detail_payload.get("reason") or detail_payload.get("error") or exc.detail),
+            )
+            raise HTTPException(status_code=exc.status_code, detail=detail_payload)
+
     headers = {"content-type": "application/json"}
     if MCP_GATEWAY_API_KEY:
         headers["authorization"] = f"Bearer {MCP_GATEWAY_API_KEY}"
-    payload = request.model_dump(exclude_none=True)
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=gateway_timeout_seconds) as client:
             response = await client.post(
                 f"{MCP_GATEWAY_URL}/mcp",
                 headers=headers,
@@ -1553,7 +1744,7 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
                     ok=True,
                     request_payload=payload,
                     response_payload=response_payload,
-                    context="api.v1.mcp",
+                    context=request.context or "api.v1.mcp",
                 )
             return response_payload
     except httpx.HTTPStatusError as exc:
@@ -1567,7 +1758,7 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
                 ok=False,
                 request_payload=payload,
                 response_payload={"error": exc.response.text},
-                context="api.v1.mcp",
+                context=request.context or "api.v1.mcp",
                 error=exc.response.text,
             )
         raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
@@ -1582,7 +1773,7 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
                 ok=False,
                 request_payload=payload,
                 response_payload={"error": str(exc)},
-                context="api.v1.mcp",
+                context=request.context or "api.v1.mcp",
                 error=str(exc),
             )
         raise HTTPException(status_code=502, detail=f"MCP gateway unreachable: {exc}")
@@ -1674,16 +1865,42 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
     """Route internal tool calls to MCP gateway /mcp endpoint with structured result."""
     started_at = time.time()
     policy_started_at = time.perf_counter()
+    request_payload = request.model_dump(exclude_none=True)
+    effective_timeout_seconds = float(os.getenv("MCP_GATEWAY_TIMEOUT_SECONDS", "10"))
     try:
-        enforce_mcp_tool_policy(request.tool_name)
+        (
+            resolved_workspace_id,
+            resolved_request_id,
+            resolved_action,
+            effective_timeout_seconds,
+        ) = enforce_mcp_tool_policy(
+            raw_request=raw_request,
+            server_id=request.server_id,
+            tool_name=request.tool_name,
+            arguments=request.arguments or {},
+            workspace_id=request.workspace_id,
+            request_id=request.request_id,
+            action=request.action,
+            default_timeout_seconds=effective_timeout_seconds,
+        )
+        request_payload["workspace_id"] = resolved_workspace_id
+        request_payload["request_id"] = resolved_request_id
+        request_payload["action"] = resolved_action
     except HTTPException as exc:
         latency_ms = (time.perf_counter() - policy_started_at) * 1000
+        detail_payload = (
+            exc.detail
+            if isinstance(exc.detail, dict)
+            else {"error": "PolicyDenied", "reason": str(exc.detail), "code": "PolicyDenied"}
+        )
+        detail_data = {k: v for k, v in detail_payload.items() if k not in {"ok", "error"}}
         denied_payload = MCPToolProxyResponse(
             ok=False,
             tool_name=request.tool_name,
             latency_ms=latency_ms,
             status_code=exc.status_code,
-            error=str(exc.detail),
+            data=detail_data or None,
+            error=str(detail_payload.get("error") or "PolicyDenied"),
         ).model_dump()
         _record_tool_call_audit(
             raw_request=raw_request,
@@ -1692,10 +1909,10 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
             status_code=exc.status_code,
             duration_ms=round(latency_ms, 2),
             ok=False,
-            request_payload=request.model_dump(exclude_none=True),
+            request_payload=request_payload,
             response_payload=denied_payload,
             context=request.context or "api.internal",
-            error=str(exc.detail),
+            error=str(detail_payload.get("reason") or detail_payload.get("error") or exc.detail),
         )
         return JSONResponse(status_code=exc.status_code, content=denied_payload)
     client = get_mcp_gateway_client()
@@ -1704,6 +1921,7 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
         tool_name=request.tool_name,
         arguments=request.arguments or {},
         context=request.context or "api.internal",
+        timeout_seconds=effective_timeout_seconds,
     )
     payload = result.to_dict()
     _record_tool_call_audit(
@@ -1713,7 +1931,7 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
         status_code=result.status_code,
         duration_ms=round((time.time() - started_at) * 1000, 2),
         ok=result.ok,
-        request_payload=request.model_dump(exclude_none=True),
+        request_payload=request_payload,
         response_payload=payload,
         context=request.context or "api.internal",
         error=result.error,
