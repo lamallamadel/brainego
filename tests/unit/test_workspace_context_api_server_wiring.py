@@ -29,5 +29,7 @@ def test_workspace_id_propagates_through_chat_rag_and_memory_layers() -> None:
 def test_workspace_id_propagates_to_mcp_tool_layer() -> None:
     assert "headers[WORKSPACE_ID_RESPONSE_HEADER] = workspace_id" in API_SERVER_SOURCE
     assert 'payload["workspace_id"] = workspace_id' in API_SERVER_SOURCE
+    assert "workspace_id = _enforce_workspace_match(" in API_SERVER_SOURCE
     assert 'tool_arguments.setdefault("workspace_id", workspace_id)' in API_SERVER_SOURCE
+    assert 'tool_arguments["workspace_id"] = resolved_workspace_id' in API_SERVER_SOURCE
     assert "workspace_id=workspace_id," in API_SERVER_SOURCE
