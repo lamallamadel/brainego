@@ -465,7 +465,7 @@ class DriftMonitor:
             "attachments": [
                 {
                     "color": colors.get(severity, "#808080"),
-                    "title": f"[{severity.upper()}] Drift Monitor Alert",
+                    "title": f"[{severity.upper()}] Model Drift Detected",
                     "text": message,
                     "fields": [
                         {
@@ -549,7 +549,7 @@ class DriftMonitor:
                     # Send success alert
                     await self.send_slack_alert(
                         "info",
-                        f"Event: finetuning_triggered\nAutomatic fine-tuning triggered due to drift detection.\nJob ID: {result.get('job_id')}",
+                        f"Automatic fine-tuning triggered due to drift detection.\nJob ID: {result.get('job_id')}",
                         drift_metrics
                     )
                     
