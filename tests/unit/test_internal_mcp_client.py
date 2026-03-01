@@ -1,3 +1,5 @@
+# Needs: python-package:pytest>=9.0.2
+# Needs: python-package:httpx>=0.28.1
 import pytest
 
 import pathlib
@@ -98,3 +100,78 @@ async def test_call_tool_http_error(monkeypatch):
     assert result.ok is False
     assert result.status_code == 500
     assert result.error == "upstream error"
+
+
+@pytest.mark.unit
+@pytest.mark.anyio
+async def test_call_tool_redacts_secrets_in_success_payload(monkeypatch):
+    captured_request_payload = {}
+    response = _FakeResponse(
+        status_code=200,
+        json_data={
+            "token": "sk-secretvalue12345",
+            "nested": {"api_key": "api_key=abc123456789"},
+        },
+    )
+
+    class _CaptureAsyncClient:
+        def __init__(self, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, *args, **kwargs):
+            captured_request_payload["json"] = kwargs.get("json")
+            return response
+
+    monkeypatch.setattr("internal_mcp_client.httpx.AsyncClient", _CaptureAsyncClient)
+
+    client = InternalMCPGatewayClient(
+        gateway_base_url="http://gateway:9100",
+        allowed_tools={"search_docs"},
+        timeout_seconds=1.0,
+    )
+
+    result = await client.call_tool(
+        "mcp-docs",
+        "search_docs",
+        {"token": "sk-secretvalue12345"},
+        context="rag",
+    )
+
+    # Tool execution receives original args, but returned payload is redacted.
+    assert captured_request_payload["json"]["arguments"]["token"] == "sk-secretvalue12345"
+    assert result.ok is True
+    assert "sk-secretvalue12345" not in str(result.data)
+    assert "[REDACTED_SECRET]" in str(result.data)
+
+
+@pytest.mark.unit
+@pytest.mark.anyio
+async def test_call_tool_redacts_secrets_in_error_payload(monkeypatch):
+    response = _FakeResponse(
+        status_code=500,
+        text='{"error":"token leak sk-secretvalue12345"}',
+    )
+
+    def _factory(**kwargs):
+        return _FakeAsyncClient(response=response)
+
+    monkeypatch.setattr("internal_mcp_client.httpx.AsyncClient", _factory)
+
+    client = InternalMCPGatewayClient(
+        gateway_base_url="http://gateway:9100",
+        allowed_tools=set(),
+        timeout_seconds=1.0,
+    )
+
+    result = await client.call_tool("mcp-docs", "search_docs", {"query": "hello"})
+
+    assert result.ok is False
+    assert result.status_code == 500
+    assert "sk-secretvalue12345" not in (result.error or "")
+    assert "[REDACTED_SECRET]" in (result.error or "")
