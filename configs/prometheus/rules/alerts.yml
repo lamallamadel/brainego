@@ -94,6 +94,56 @@ groups:
           summary: "High MCP error rate"
           description: "MCP error rate is {{ $value }}% (threshold: 1%)"
 
+  - name: safety_alerts
+    interval: 30s
+    rules:
+      # Blocked/safety-denied request ratio spike (>5%)
+      - alert: SafetyBlockedRequestSpike
+        expr: |
+          (
+            rate(http_requests_total{status=~"403|429"}[5m]) /
+            rate(http_requests_total[5m])
+          ) * 100 > 5
+        for: 3m
+        labels:
+          severity: warning
+          component: safety
+        annotations:
+          summary: "Safety blocked-request ratio spike"
+          description: "{{ $labels.job }} blocked/safety-denied request ratio is {{ $value }}% (threshold: 5%)"
+
+      # Robustness regression: model accuracy drops 8 points compared to 6h baseline
+      - alert: SafetyRobustnessDrop
+        expr: |
+          max by (model) (model_accuracy)
+          < on(model)
+          (max by (model) (avg_over_time(model_accuracy[6h])) - 0.08)
+        for: 10m
+        labels:
+          severity: critical
+          component: safety
+        annotations:
+          summary: "Safety robustness score dropped"
+          description: "Model {{ $labels.model }} robustness/accuracy dropped by more than 8 points vs 6h baseline"
+
+      # After LoRA rollout, catch sharp quality degradation in first 30m
+      - alert: PostLoraSafetyRegression
+        expr: |
+          changes(lora_versions_total[30m]) > 0
+          and on(model)
+          (
+            max by (model) (model_accuracy)
+            < on(model)
+            (max by (model) (avg_over_time(model_accuracy[24h])) - 0.05)
+          )
+        for: 5m
+        labels:
+          severity: critical
+          component: safety
+        annotations:
+          summary: "Post-LoRA safety degradation detected"
+          description: "Model {{ $labels.model }} accuracy regressed by >5 points within 30m of a LoRA version change"
+
   - name: gpu_alerts
     interval: 30s
     rules:
