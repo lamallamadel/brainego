@@ -10,13 +10,50 @@ INJECTION_REMOVAL_TOKEN = "[Context removed: potential prompt-injection content]
 
 SECRET_PATTERNS = [
     re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b"),
     re.compile(r"\bsk-[A-Za-z0-9_-]{10,}\b"),
+    re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
     re.compile(r"\b(?:ghp|gho|ghu|ghs|github_pat)_[A-Za-z0-9_]{20,}\b"),
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
     re.compile(
         r"(?i)\b(api[_ -]?key|token|secret|password|client_secret|aws_secret_access_key)\b"
         r"\s*[:=]\s*[\"']?[A-Za-z0-9_\-\/+=]{6,}[\"']?"
     ),
 ]
+
+SENSITIVE_KEY_EXACT_MATCHES = {
+    "api_key",
+    "apikey",
+    "x_api_key",
+    "authorization",
+    "bearer_token",
+    "token",
+    "access_token",
+    "refresh_token",
+    "id_token",
+    "session_token",
+    "secret",
+    "client_secret",
+    "password",
+    "passwd",
+    "passphrase",
+    "private_key",
+    "aws_access_key_id",
+    "aws_secret_access_key",
+    "github_pat",
+    "pat",
+}
+SENSITIVE_KEY_SUFFIX_MATCHES = (
+    "_api_key",
+    "_apikey",
+    "_token",
+    "_secret",
+    "_password",
+    "_passwd",
+    "_private_key",
+)
 
 UNTRUSTED_CONTEXT_INJECTION_PATTERNS = [
     re.compile(
@@ -28,6 +65,40 @@ UNTRUSTED_CONTEXT_INJECTION_PATTERNS = [
     ),
     re.compile(r"(?i)\b(override|bypass)\b.{0,80}\b(policy|safety|guardrail|system)\b"),
 ]
+
+
+def _normalize_key_name(key: str) -> str:
+    """Normalize key names across snake_case, kebab-case and camelCase."""
+    key_with_boundaries = re.sub(r"(?<!^)(?=[A-Z])", "_", key)
+    normalized = re.sub(r"[^a-zA-Z0-9]+", "_", key_with_boundaries).strip("_").lower()
+    return normalized
+
+
+def _is_sensitive_key_name(key: Any) -> bool:
+    """Return True when a mapping key name likely stores a secret."""
+    if not isinstance(key, str) or not key.strip():
+        return False
+    normalized = _normalize_key_name(key)
+    if not normalized:
+        return False
+    if normalized in SENSITIVE_KEY_EXACT_MATCHES:
+        return True
+    return normalized.endswith(SENSITIVE_KEY_SUFFIX_MATCHES)
+
+
+def _redact_sensitive_field_value(value: Any) -> Tuple[Any, int]:
+    """Force redaction for fields explicitly named as secrets."""
+    if value is None:
+        return value, 0
+    if isinstance(value, str):
+        if not value or value == REDACTION_TOKEN:
+            return value, 0
+        return REDACTION_TOKEN, 1
+    if isinstance(value, (dict, list, tuple, set)):
+        if not value:
+            return value, 0
+        return REDACTION_TOKEN, 1
+    return REDACTION_TOKEN, 1
 
 
 def redact_secrets_in_text(text: str) -> Tuple[str, int]:
@@ -52,7 +123,10 @@ def redact_secrets(value: Any) -> Tuple[Any, int]:
         total = 0
         sanitized: Dict[Any, Any] = {}
         for key, item in value.items():
-            sanitized_item, count = redact_secrets(item)
+            if _is_sensitive_key_name(key):
+                sanitized_item, count = _redact_sensitive_field_value(item)
+            else:
+                sanitized_item, count = redact_secrets(item)
             sanitized[key] = sanitized_item
             total += count
         return sanitized, total

@@ -27,3 +27,9 @@ def test_mcp_proxy_paths_redact_arguments_and_outputs_for_audit() -> None:
 def test_output_guardrails_include_secret_redaction_path() -> None:
     assert "redacted_text, redaction_count = redact_secrets_in_text(generated_text)" in API_SERVER_SOURCE
     assert '"reason": "secret_redaction"' in API_SERVER_SOURCE
+
+
+def test_request_audit_redacts_query_params_and_log_previews() -> None:
+    assert "safe_query_params, query_param_redactions = _redact_value_for_audit(dict(request.query_params))" in API_SERVER_SOURCE
+    assert '"query_params_redactions": query_param_redactions' in API_SERVER_SOURCE
+    assert "def _redacted_log_preview(value: Any, limit: int = 100) -> str:" in API_SERVER_SOURCE

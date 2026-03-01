@@ -75,3 +75,45 @@ def test_sanitize_retrieved_context_chunks_returns_aggregate_stats() -> None:
     assert stats["secret_redactions"] >= 2
     assert "AKIAABCDEFGHIJKLMNOP" not in sanitized[0]["text"]
     assert "sk-secretvalue12345" not in str(sanitized[0]["metadata"])
+
+
+def test_redact_secrets_redacts_sensitive_key_names_even_without_known_prefixes() -> None:
+    payload = {
+        "token": "plain-token-value-without-prefix",
+        "apiKey": "1234567890abcdef",
+        "nested": {"Authorization": "Bearer just-a-secret-string"},
+    }
+
+    redacted, redaction_count = redact_secrets(payload)
+
+    assert redacted["token"] == REDACTION_TOKEN
+    assert redacted["apiKey"] == REDACTION_TOKEN
+    assert redacted["nested"]["Authorization"] == REDACTION_TOKEN
+    assert redaction_count >= 3
+
+
+def test_redact_secrets_does_not_redact_token_metrics_fields() -> None:
+    payload = {
+        "prompt_tokens": 120,
+        "completion_tokens": 42,
+        "total_tokens": 162,
+    }
+
+    redacted, redaction_count = redact_secrets(payload)
+
+    assert redacted == payload
+    assert redaction_count == 0
+
+
+def test_redact_secrets_in_text_covers_pat_and_bearer_jwt_patterns() -> None:
+    raw = (
+        "gitlab=glpat-abcdefghijklmnopqrstuvwxyz123456 "
+        "auth=Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.signaturetokenvalue123"
+    )
+
+    redacted, redaction_count = redact_secrets(raw)
+
+    assert "glpat-" not in redacted
+    assert "Bearer eyJ" not in redacted
+    assert REDACTION_TOKEN in redacted
+    assert redaction_count >= 2
