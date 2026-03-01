@@ -31,7 +31,8 @@ def main():
         "platform-overview.json",
         "learning-engine.json",
         "mcp-activity.json",
-        "safety-guardrails-overview.json"
+        "safety-guardrails-overview.json",
+        "usage-metering.json",
     ]
     
     all_valid = True
