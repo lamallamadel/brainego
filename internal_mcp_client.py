@@ -89,6 +89,8 @@ class InternalMCPGatewayClient:
         context: Optional[str] = None,
         workspace_id: Optional[str] = None,
         timeout_seconds: Optional[float] = None,
+        confirm: Optional[bool] = None,
+        confirmation_id: Optional[str] = None,
     ) -> MCPToolResult:
         started_at = time.perf_counter()
         raw_arguments = arguments or {}
@@ -100,6 +102,10 @@ class InternalMCPGatewayClient:
         }
         if workspace_id:
             payload["workspace_id"] = workspace_id
+        if confirm is not None:
+            payload["confirm"] = bool(confirm)
+        if confirmation_id:
+            payload["confirmation_id"] = confirmation_id
 
         # Authorization is enforced centrally by api_server/tool_policy_engine.
         # Keep the legacy local allowlist as an optional observability signal only.

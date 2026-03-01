@@ -10,6 +10,8 @@ workspaces:
     # Only listed MCP servers are callable from the internal proxy.
     allowed_mcp_servers:
       - mcp-github
+      - mcp-linear
+      - mcp-jira
       - mcp-notion
       - mcp-filesystem
       - mcp-slack
@@ -38,13 +40,19 @@ workspaces:
           - read
           - write
         tool_scopes:
+          # GitHub is intentionally read-only in v1.
           read: ["*"]
-          # Write stays deny-by-default until an admin grants explicit tool scopes.
-          write: []
+          # Scoped issue-tracker writes only (Linear/Jira).
+          write:
+            - "linear_create_issue"
+            - "linear_update_issue"
+            - "jira_create_issue"
+            - "jira_update_issue"
         required_scopes:
-          # Explicit scope claim required for write actions.
+          # Explicit policy scopes are mandatory for any write call.
           write:
             - "mcp.tool.write"
+            - "mcp.issue_tracker.write"
 
       viewer:
         allowed_tool_actions:
@@ -61,8 +69,12 @@ workspaces:
     # Legacy allowed tools by action (wildcard possible).
     allowed_tool_names:
       read: ["*"]
-      write: ["*"]
-      delete: ["*"]
+      write:
+        - "linear_create_issue"
+        - "linear_update_issue"
+        - "jira_create_issue"
+        - "jira_update_issue"
+      delete: []
 
     # Optional argument allowlists.
     allowlists:
