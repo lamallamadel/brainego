@@ -14,7 +14,7 @@ import os
 import logging
 import asyncio
 from datetime import datetime
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -44,6 +44,8 @@ class LearningEngineConfig(BaseModel):
     model_name: str = Field(default="llama-3.3-8b-instruct")
     
     # LoRA configuration
+    lora_enabled: bool = Field(default=True)
+    initial_adapter_version: Optional[str] = Field(default=None)
     lora_rank: int = Field(default=16)
     lora_alpha: int = Field(default=32)
     lora_dropout: float = Field(default=0.05)
@@ -90,6 +92,8 @@ def load_config() -> LearningEngineConfig:
         service_port=int(os.getenv("LEARNING_ENGINE_PORT", "8003")),
         base_model_path=os.getenv("BASE_MODEL_PATH", "/models/llama-3.3-8b-instruct-q4_k_m.gguf"),
         model_name=os.getenv("MODEL_NAME", "llama-3.3-8b-instruct"),
+        lora_enabled=os.getenv("LORA_ENABLED", "true").lower() == "true",
+        initial_adapter_version=os.getenv("ACTIVE_LORA_ADAPTER"),
         lora_rank=int(os.getenv("LORA_RANK", "16")),
         lora_alpha=int(os.getenv("LORA_ALPHA", "32")),
         lora_dropout=float(os.getenv("LORA_DROPOUT", "0.05")),
@@ -116,6 +120,36 @@ trainer: Optional[LoRATrainer] = None
 fisher_calculator: Optional[FisherInformationCalculator] = None
 storage: Optional[AdapterStorage] = None
 scheduler: Optional[TrainingScheduler] = None
+
+
+class LoRAState:
+    """In-memory runtime state for LoRA kill-switch and rollback operations."""
+
+    def __init__(self, enabled: bool, active_version: Optional[str]):
+        self.enabled = enabled
+        self.active_adapter_version = active_version
+        self.previous_adapter_version: Optional[str] = None
+        self.last_operation: str = "initialized"
+        self.last_reason: Optional[str] = None
+        self.updated_at = datetime.utcnow()
+        self.rollback_history: List[Dict[str, Any]] = []
+
+    def as_dict(self) -> Dict[str, Any]:
+        return {
+            "enabled": self.enabled,
+            "active_adapter_version": self.active_adapter_version,
+            "previous_adapter_version": self.previous_adapter_version,
+            "last_operation": self.last_operation,
+            "last_reason": self.last_reason,
+            "updated_at": self.updated_at.isoformat() + "Z",
+            "rollback_history": self.rollback_history,
+        }
+
+
+lora_state = LoRAState(
+    enabled=config.lora_enabled,
+    active_version=config.initial_adapter_version,
+)
 
 
 @asynccontextmanager
@@ -224,6 +258,23 @@ class HealthResponse(BaseModel):
     components: Dict[str, str]
 
 
+class LoRAStatusResponse(BaseModel):
+    """Current LoRA runtime state."""
+    enabled: bool
+    active_adapter_version: Optional[str] = None
+    previous_adapter_version: Optional[str] = None
+    last_operation: str
+    last_reason: Optional[str] = None
+    updated_at: str
+    rollback_history: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class LoRAOperationRequest(BaseModel):
+    """Payload for LoRA control operations."""
+    adapter_version: Optional[str] = Field(default=None, description="Target adapter version")
+    reason: str = Field(default="manual_operation", description="Reason for the operation")
+
+
 # API Endpoints
 @app.get("/health", response_model=HealthResponse)
 async def health_check():
@@ -243,6 +294,66 @@ async def health_check():
         version="1.0.0",
         components=components
     )
+
+
+@app.get("/lora/status", response_model=LoRAStatusResponse)
+async def get_lora_status():
+    """Get LoRA kill-switch status and current adapter context."""
+    return LoRAStatusResponse(**lora_state.as_dict())
+
+
+@app.post("/lora/disable", response_model=LoRAStatusResponse)
+async def disable_lora(request: LoRAOperationRequest):
+    """Disable LoRA adapters and route inference back to the base model."""
+    lora_state.previous_adapter_version = lora_state.active_adapter_version
+    lora_state.active_adapter_version = None
+    lora_state.enabled = False
+    lora_state.last_operation = "disabled"
+    lora_state.last_reason = request.reason
+    lora_state.updated_at = datetime.utcnow()
+
+    return LoRAStatusResponse(**lora_state.as_dict())
+
+
+@app.post("/lora/enable", response_model=LoRAStatusResponse)
+async def enable_lora(request: LoRAOperationRequest):
+    """Enable LoRA adapters and optionally pin a specific adapter version."""
+    lora_state.enabled = True
+    lora_state.last_operation = "enabled"
+    lora_state.last_reason = request.reason
+    lora_state.updated_at = datetime.utcnow()
+
+    if request.adapter_version:
+        lora_state.previous_adapter_version = lora_state.active_adapter_version
+        lora_state.active_adapter_version = request.adapter_version
+
+    return LoRAStatusResponse(**lora_state.as_dict())
+
+
+@app.post("/lora/rollback", response_model=LoRAStatusResponse)
+async def rollback_lora(request: LoRAOperationRequest):
+    """Rollback the active LoRA adapter version, with base-model fallback."""
+    from_version = lora_state.active_adapter_version
+    target_version = request.adapter_version if request.adapter_version is not None else lora_state.previous_adapter_version
+
+    lora_state.previous_adapter_version = from_version
+    lora_state.active_adapter_version = target_version
+    lora_state.last_operation = "rollback"
+    lora_state.last_reason = request.reason
+    lora_state.updated_at = datetime.utcnow()
+
+    lora_state.rollback_history.append({
+        "timestamp": lora_state.updated_at.isoformat() + "Z",
+        "from_version": from_version,
+        "to_version": target_version,
+        "reason": request.reason,
+    })
+
+    # Rollback to base model when no target adapter is specified/available
+    if target_version is None:
+        lora_state.enabled = False
+
+    return LoRAStatusResponse(**lora_state.as_dict())
 
 
 @app.post("/train", response_model=TrainingResponse)
@@ -349,6 +460,11 @@ async def deploy_adapter(version: str):
     """Deploy an adapter to MAX Serve (hot-swap)"""
     if not storage:
         raise HTTPException(status_code=503, detail="Storage not initialized")
+    if not lora_state.enabled:
+        raise HTTPException(
+            status_code=409,
+            detail="LoRA is disabled by kill-switch. Re-enable via POST /lora/enable before deploying adapters."
+        )
     
     try:
         # Download adapter

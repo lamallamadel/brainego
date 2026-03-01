@@ -6,6 +6,8 @@ model:
   base_path: "/models/llama-3.3-8b-instruct-q4_k_m.gguf"
 
 lora:
+  enabled: true
+  active_adapter: null
   rank: 16
   alpha: 32
   dropout: 0.05
