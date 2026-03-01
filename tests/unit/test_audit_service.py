@@ -17,6 +17,7 @@ def test_build_filters_supports_workspace_user_date_and_tool():
     where_sql, params = AuditService._build_filters(
         workspace_id="ws-1",
         user_id="user-1",
+        role="workspace_admin",
         tool_name="search_docs",
         event_type="tool_call",
         start_date=start,
@@ -25,11 +26,12 @@ def test_build_filters_supports_workspace_user_date_and_tool():
 
     assert "workspace_id = %s" in where_sql
     assert "user_id = %s" in where_sql
+    assert "role = %s" in where_sql
     assert "tool_name = %s" in where_sql
     assert "event_type = %s" in where_sql
     assert "timestamp >= %s" in where_sql
     assert "timestamp <= %s" in where_sql
-    assert params == ["ws-1", "user-1", "search_docs", "tool_call", start, end]
+    assert params == ["ws-1", "user-1", "workspace_admin", "search_docs", "tool_call", start, end]
 
 
 @pytest.mark.unit
@@ -68,6 +70,7 @@ def test_export_events_json_uses_list_events_result(monkeypatch):
     def _fake_list_events(**kwargs):
         assert kwargs["workspace_id"] == "workspace-a"
         assert kwargs["user_id"] == "user-a"
+        assert kwargs["role"] == "workspace_reader"
         assert kwargs["tool_name"] == "tool-a"
         return {
             "status": "success",
@@ -82,6 +85,7 @@ def test_export_events_json_uses_list_events_result(monkeypatch):
         export_format="json",
         workspace_id="workspace-a",
         user_id="user-a",
+        role="workspace_reader",
         tool_name="tool-a",
         limit=25,
         offset=5,
@@ -94,6 +98,7 @@ def test_export_events_json_uses_list_events_result(monkeypatch):
     assert result["events"] == [{"event_id": "evt-1"}]
     assert result["filters"]["workspace_id"] == "workspace-a"
     assert result["filters"]["user_id"] == "user-a"
+    assert result["filters"]["role"] == "workspace_reader"
     assert result["filters"]["tool_name"] == "tool-a"
 
 
