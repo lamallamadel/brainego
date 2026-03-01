@@ -1116,6 +1116,7 @@ class SafetyVerdictResponse(BaseModel):
     reason: str
     endpoint: str
     blocked_terms: List[str] = Field(default_factory=list)
+    blocked_categories: List[str] = Field(default_factory=list)
     warning_terms: List[str] = Field(default_factory=list)
     text_length: int
 class MCPToolProxyRequest(BaseModel):
@@ -1346,6 +1347,7 @@ class MetricsStore:
         self.memory_context_items_total = 0
         self.memory_scores = []
         self.safety_verdict_counts = {"safe": 0, "warn": 0, "block": 0}
+        self.safety_blocked_category_counts: Dict[str, int] = {}
         self.user_metering: Dict[str, Dict[str, int]] = {}
 
     @staticmethod
@@ -1412,12 +1414,22 @@ class MetricsStore:
     @staticmethod
     def _tokens_per_second(tokens: int, total_latency_ms: float) -> float:
         return round(tokens / (total_latency_ms / 1000), 2) if total_latency_ms > 0 else 0.0
-    def record_safety_verdict(self, verdict: str):
+    def record_safety_verdict(self, verdict: str, blocked_categories: Optional[List[str]] = None):
         """Track safety verdict distribution for chat endpoints."""
         normalized = (verdict or "safe").lower()
         if normalized not in self.safety_verdict_counts:
             normalized = "safe"
         self.safety_verdict_counts[normalized] += 1
+        if normalized != "block":
+            return
+        for category in sorted({str(item).strip().lower() for item in (blocked_categories or []) if str(item).strip()}):
+            self.safety_blocked_category_counts[category] = (
+                self.safety_blocked_category_counts.get(category, 0) + 1
+            )
+        if not blocked_categories:
+            self.safety_blocked_category_counts["unspecified"] = (
+                self.safety_blocked_category_counts.get("unspecified", 0) + 1
+            )
     def record_memory_telemetry(
         self,
         memory_metadata: Optional[Dict[str, Any]],
@@ -1507,6 +1519,11 @@ class MetricsStore:
         if not self.latencies:
             return {
                 "request_count": self.request_count,
+                "safety": {
+                    "enabled": SAFETY_GATEWAY_ENABLED,
+                    "verdict_counts": dict(self.safety_verdict_counts),
+                    "blocked_category_counts": dict(self.safety_blocked_category_counts),
+                },
                 "errors": self.errors,
                 "error_rate_percent": self._rate(self.errors, self.request_count),
                 "avg_latency_ms": 0,
@@ -1527,6 +1544,7 @@ class MetricsStore:
             "safety": {
                 "enabled": SAFETY_GATEWAY_ENABLED,
                 "verdict_counts": dict(self.safety_verdict_counts),
+                "blocked_category_counts": dict(self.safety_blocked_category_counts),
             },
             "errors": self.errors,
             "error_rate_percent": self._rate(self.errors, self.request_count),
@@ -1589,11 +1607,30 @@ class UsageMeteringMetrics:
             ["workspace_id", "user_id", "endpoint", "method"],
             buckets=(0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 2.5, 5.0, 10.0, 30.0),
         )
+        self.safety_verdicts_total = Counter(
+            "api_safety_verdicts_total",
+            "Total safety gateway verdicts by workspace/endpoint/verdict.",
+            ["workspace_id", "endpoint", "verdict"],
+        )
+        self.safety_blocked_categories_total = Counter(
+            "api_safety_blocked_categories_total",
+            "Total blocked safety categories by workspace/endpoint/category.",
+            ["workspace_id", "endpoint", "category"],
+        )
 
     @staticmethod
     def _sanitize_label(value: Optional[str], fallback: str) -> str:
         if isinstance(value, str):
             normalized = value.strip()
+            if normalized:
+                return normalized[:120]
+        return fallback
+
+    @staticmethod
+    def _sanitize_category_label(value: Optional[str], fallback: str) -> str:
+        if isinstance(value, str):
+            normalized = re.sub(r"[^a-z0-9_:-]+", "_", value.strip().lower())
+            normalized = re.sub(r"_+", "_", normalized).strip("_")
             if normalized:
                 return normalized[:120]
         return fallback
@@ -1705,6 +1742,42 @@ class UsageMeteringMetrics:
             tool_name=tool_label,
             status=status_label,
         ).inc()
+
+    def record_safety_verdict(
+        self,
+        *,
+        workspace_id: Optional[str],
+        endpoint: Optional[str],
+        verdict: Optional[str],
+        blocked_categories: Optional[List[str]] = None,
+    ) -> None:
+        workspace_label = self._sanitize_label(workspace_id, "unknown_workspace")
+        endpoint_label = self._sanitize_label(endpoint, "unknown_endpoint")
+        verdict_label = self._sanitize_category_label(verdict, "safe")
+        if verdict_label not in {"safe", "warn", "block"}:
+            verdict_label = "safe"
+
+        self.safety_verdicts_total.labels(
+            workspace_id=workspace_label,
+            endpoint=endpoint_label,
+            verdict=verdict_label,
+        ).inc()
+
+        if verdict_label != "block":
+            return
+
+        categories = blocked_categories or ["unspecified"]
+        for category in sorted(
+            {
+                self._sanitize_category_label(item, "unspecified")
+                for item in categories
+            }
+        ):
+            self.safety_blocked_categories_total.labels(
+                workspace_id=workspace_label,
+                endpoint=endpoint_label,
+                category=category,
+            ).inc()
 
 
 metrics = MetricsStore()
@@ -2279,6 +2352,23 @@ def _load_safety_terms(env_var_name: str, defaults: List[str]) -> List[str]:
         return [term.lower() for term in defaults]
     parsed_terms = [term.strip().lower() for term in raw_terms.split(",") if term.strip()]
     return parsed_terms or [term.lower() for term in defaults]
+
+
+def _derive_blocked_categories(
+    *,
+    verdict: str,
+    reason: str,
+    matched_block_terms: List[str],
+) -> List[str]:
+    """Derive stable blocked categories used for telemetry and Prometheus labels."""
+    if verdict != "block":
+        return []
+    if matched_block_terms:
+        return sorted({term.strip().lower() for term in matched_block_terms if term.strip()})
+    normalized_reason = (reason or "").lower()
+    if "too large" in normalized_reason or "payload" in normalized_reason:
+        return ["payload_too_large"]
+    return ["policy_block"]
 def _extract_text_from_messages(messages: List[ChatMessage]) -> str:
     """Flatten chat messages into a single string for gateway checks."""
     return "\n".join(msg.content for msg in messages if getattr(msg, "content", None))
@@ -2307,22 +2397,40 @@ def evaluate_safety_text(text: str, endpoint: str) -> SafetyVerdictResponse:
     elif matched_warn_terms:
         verdict = "warn"
         reason = "Detected warning-level safety patterns"
+    blocked_categories = _derive_blocked_categories(
+        verdict=verdict,
+        reason=reason,
+        matched_block_terms=matched_block_terms,
+    )
     return SafetyVerdictResponse(
         verdict=verdict,
         reason=reason,
         endpoint=endpoint,
         blocked_terms=matched_block_terms,
+        blocked_categories=blocked_categories,
         warning_terms=matched_warn_terms,
         text_length=len(text or ""),
     )
 def enforce_safety_gateway(verdict: SafetyVerdictResponse):
     """Apply verdict to request handling and persist telemetry/logs."""
-    metrics.record_safety_verdict(verdict.verdict)
+    metrics.record_safety_verdict(
+        verdict.verdict,
+        blocked_categories=verdict.blocked_categories,
+    )
+    workspace_id = WORKSPACE_CONTEXT.get() or RAG_DEFAULT_WORKSPACE_ID
+    usage_metering.record_safety_verdict(
+        workspace_id=workspace_id,
+        endpoint=verdict.endpoint,
+        verdict=verdict.verdict,
+        blocked_categories=verdict.blocked_categories,
+    )
     logger.info(
-        "Safety gateway verdict endpoint=%s verdict=%s blocked=%s warnings=%s reason=%s",
+        "Safety gateway verdict endpoint=%s workspace=%s verdict=%s blocked=%s categories=%s warnings=%s reason=%s",
         verdict.endpoint,
+        workspace_id,
         verdict.verdict,
         verdict.blocked_terms,
+        verdict.blocked_categories,
         verdict.warning_terms,
         verdict.reason,
     )
