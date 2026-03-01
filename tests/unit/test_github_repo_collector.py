@@ -28,10 +28,17 @@ from data_collectors.github_collector import GitHubCollector
 
 
 class _FakeTreeEntry:
-    def __init__(self, path: str, size: int = 64, entry_type: str = "blob"):
+    def __init__(
+        self,
+        path: str,
+        size: int = 64,
+        entry_type: str = "blob",
+        sha: Optional[str] = None,
+    ):
         self.path = path
         self.size = size
         self.type = entry_type
+        self.sha = sha or f"tree-{path}"
 
 
 class _FakeContent:
@@ -161,6 +168,7 @@ def test_collect_repository_codebase_full_sync_emits_required_metadata(tmp_path:
         assert metadata["workspace"] == "workspace-alpha"
         assert metadata["workspace_id"] == "workspace-alpha"
         assert metadata["lang"] in {"python", "markdown"}
+        assert metadata["file_hash"]
         assert metadata["document_id"] == GitHubCollector.build_repository_document_id(
             repo_name="acme/repo",
             path=metadata["path"],
@@ -173,6 +181,10 @@ def test_collect_repository_codebase_full_sync_emits_required_metadata(tmp_path:
         "README.md",
         "src/main.py",
     ]
+    assert state_payload["acme/repo:workspace-alpha:main"]["indexed_file_hashes"] == {
+        "README.md": "blob-b",
+        "src/main.py": "blob-a",
+    }
 
 
 def test_collect_repository_codebase_incremental_sync_uses_default_branch(tmp_path: Path) -> None:
@@ -245,3 +257,105 @@ def test_collect_repository_codebase_incremental_sync_uses_default_branch(tmp_pa
         "src/new_feature.ts",
         "src/unchanged.py",
     ]
+
+
+def test_collect_repository_codebase_reindex_is_idempotent_by_file_hash(tmp_path: Path) -> None:
+    state_path = tmp_path / "github-sync-state.json"
+    tree_entries = [
+        _FakeTreeEntry("src/main.py", sha="blob-main-v1"),
+        _FakeTreeEntry("README.md", sha="blob-readme-v1"),
+    ]
+
+    repo = _FakeRepo(
+        full_name="acme/repo",
+        default_branch="main",
+        head_commit="c1",
+        tree_entries=tree_entries,
+        contents={
+            "src/main.py": _FakeContent("print('v1')\n", "blob-main-v1"),
+            "README.md": _FakeContent("# Repo\n", "blob-readme-v1"),
+        },
+    )
+
+    collector = _build_collector(repo)
+    initial_result = collector.collect_repository_codebase(
+        repo_name="acme/repo",
+        workspace_id="workspace-alpha",
+        state_path=str(state_path),
+        incremental=True,
+        reindex=False,
+    )
+    assert initial_result["sync"]["mode"] == "full"
+    assert len(initial_result["documents"]) == 2
+
+    reindex_result = collector.collect_repository_codebase(
+        repo_name="acme/repo",
+        workspace_id="workspace-alpha",
+        state_path=str(state_path),
+        incremental=True,
+        reindex=True,
+    )
+
+    assert reindex_result["sync"]["mode"] == "full_reindex"
+    assert reindex_result["documents"] == []
+    assert reindex_result["deleted_paths"] == []
+    assert reindex_result["sync"]["paths_collected"] == 0
+    assert reindex_result["sync"]["paths_skipped_unchanged"] == 2
+    assert sorted(reindex_result["skipped_unchanged_paths"]) == [
+        "README.md",
+        "src/main.py",
+    ]
+
+
+def test_collect_repository_codebase_incremental_skips_compare_noise_with_same_hash(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "github-sync-state.json"
+
+    repo_v1 = _FakeRepo(
+        full_name="acme/repo",
+        default_branch="main",
+        head_commit="c1",
+        tree_entries=[_FakeTreeEntry("src/main.py", sha="blob-main-v1")],
+        contents={"src/main.py": _FakeContent("print('v1')\n", "blob-main-v1")},
+    )
+    _build_collector(repo_v1).collect_repository_codebase(
+        repo_name="acme/repo",
+        workspace_id="workspace-alpha",
+        state_path=str(state_path),
+        incremental=True,
+    )
+
+    repo_v2 = _FakeRepo(
+        full_name="acme/repo",
+        default_branch="main",
+        head_commit="c2",
+        tree_entries=[_FakeTreeEntry("src/main.py", sha="blob-main-v1")],
+        contents={"src/main.py": _FakeContent("print('v1')\n", "blob-main-v1")},
+        comparisons={
+            ("c1", "c2"): [
+                _FakeCompareFile(filename="src/main.py", status="modified"),
+            ]
+        },
+    )
+
+    result = _build_collector(repo_v2).collect_repository_codebase(
+        repo_name="acme/repo",
+        workspace_id="workspace-alpha",
+        state_path=str(state_path),
+        incremental=True,
+    )
+
+    assert result["sync"]["mode"] == "incremental"
+    assert result["sync"]["previous_commit"] == "c1"
+    assert result["sync"]["current_commit"] == "c2"
+    assert result["documents"] == []
+    assert result["sync"]["paths_collected"] == 0
+    assert result["sync"]["paths_skipped_unchanged"] == 1
+    assert result["skipped_unchanged_paths"] == ["src/main.py"]
+
+    state_payload = json.loads(state_path.read_text(encoding="utf-8"))
+    state_entry = state_payload["acme/repo:workspace-alpha:main"]
+    assert state_entry["last_commit"] == "c2"
+    assert state_entry["indexed_paths"] == ["src/main.py"]
+    assert state_entry["indexed_file_hashes"] == {"src/main.py": "blob-main-v1"}
