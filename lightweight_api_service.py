@@ -2,6 +2,8 @@
 """Lightweight API service that proxies chat, RAG and memory endpoints."""
 
 import os
+import json
+import re
 from typing import Dict, Set
 
 import httpx
@@ -16,6 +18,30 @@ FORWARD_TIMEOUT_SECONDS = float(os.getenv("FORWARD_TIMEOUT_SECONDS", "20"))
 
 ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 EXCLUDED_HEADERS = {"host", "content-length", "connection"}
+
+GUARDRAIL_SUSPICIOUS_REQUEST_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(print|show|dump|reveal|exfiltrat(e|ion)|leak)\b.{0,80}\b(secret|credential|token|api[_ -]?key)\b",
+        r"\b(os\.environ|environment variable|env var|\.env|process\.env)\b",
+        r"\b(internal config|runtime config|system prompt|service account)\b",
+    )
+]
+GUARDRAIL_UNSAFE_REQUEST_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(build|make|create)\b.{0,30}\b(bomb|explosive|ied)\b",
+        r"\bhow to\b.{0,40}\b(bomb|explosive|weapon)\b",
+    )
+]
+GUARDRAIL_SECRET_OUTPUT_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bsk-[a-z0-9]{8,}\b",
+        r"\b(api[_ -]?key|token|secret|password)\s*[:=]\s*[\"']?[a-z0-9_\-\/+=]{6,}[\"']?",
+        r"\b(aws_access_key_id|aws_secret_access_key|client_secret)\b",
+    )
+]
 
 app = FastAPI(
     title="Lightweight API Service",
@@ -84,10 +110,97 @@ def _forward_headers(request: Request) -> Dict[str, str]:
     }
 
 
+def _guardrail_mode() -> str:
+    """Return safety policy mode for secret/exfiltration guardrails."""
+    mode = os.getenv("SAFETY_GUARDRAIL_MODE", "block").strip().lower()
+    if mode not in {"off", "block", "redact"}:
+        return "block"
+    return mode
+
+
+def _extract_text_values(payload):
+    if isinstance(payload, str):
+        yield payload
+    elif isinstance(payload, list):
+        for item in payload:
+            yield from _extract_text_values(item)
+    elif isinstance(payload, dict):
+        for value in payload.values():
+            yield from _extract_text_values(value)
+
+
+def _contains_suspicious_exfiltration_request(raw_body: bytes) -> bool:
+    if not raw_body:
+        return False
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return False
+
+    for text in _extract_text_values(payload):
+        normalized = text.strip()
+        if not normalized:
+            continue
+        for pattern in GUARDRAIL_SUSPICIOUS_REQUEST_PATTERNS:
+            if pattern.search(normalized):
+                return True
+    return False
+
+
+
+
+def _contains_unsafe_request(raw_body: bytes) -> bool:
+    if not raw_body:
+        return False
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return False
+
+    for text in _extract_text_values(payload):
+        normalized = text.strip()
+        if not normalized:
+            continue
+        for pattern in GUARDRAIL_UNSAFE_REQUEST_PATTERNS:
+            if pattern.search(normalized):
+                return True
+    return False
+
+def _redact_secrets(content: bytes) -> bytes:
+    text = content.decode("utf-8", errors="ignore")
+    for pattern in GUARDRAIL_SECRET_OUTPUT_PATTERNS:
+        text = pattern.sub("[REDACTED_SECRET]", text)
+    return text.encode("utf-8")
+
+
+def _contains_secret_like_output(content: bytes) -> bool:
+    text = content.decode("utf-8", errors="ignore")
+    return any(pattern.search(text) for pattern in GUARDRAIL_SECRET_OUTPUT_PATTERNS)
+
+
 async def _forward_request(request: Request, downstream_url: str) -> Response:
     """Forward the incoming request and return downstream response transparently."""
     try:
         body = await request.body()
+        mode = _guardrail_mode()
+        if mode != "off" and _contains_suspicious_exfiltration_request(body):
+            if mode == "block":
+                raise HTTPException(
+                    status_code=403,
+                    detail="I'm sorry, but I can't help with requests to expose secrets or environment configuration.",
+                )
+            body = json.dumps({"guardrail": "Request content redacted by safety policy"}).encode("utf-8")
+
+        if mode != "off" and _contains_unsafe_request(body):
+            if mode == "block":
+                raise HTTPException(
+                    status_code=403,
+                    detail="I'm sorry, but I can't help with requests for harmful instructions.",
+                )
+            body = json.dumps({"guardrail": "Unsafe request content redacted by safety policy"}).encode("utf-8")
+
         async with httpx.AsyncClient(timeout=FORWARD_TIMEOUT_SECONDS) as client:
             response = await client.request(
                 method=request.method,
@@ -107,8 +220,18 @@ async def _forward_request(request: Request, downstream_url: str) -> Response:
         if key.lower() not in EXCLUDED_HEADERS
     }
 
+    mode = _guardrail_mode()
+    response_content = response.content
+    if mode != "off" and _contains_secret_like_output(response_content):
+        if mode == "block":
+            raise HTTPException(
+                status_code=403,
+                detail="Response blocked by safety policy: secret or credential leakage detected",
+            )
+        response_content = _redact_secrets(response_content)
+
     return Response(
-        content=response.content,
+        content=response_content,
         status_code=response.status_code,
         media_type=response.headers.get("content-type"),
         headers=response_headers,
