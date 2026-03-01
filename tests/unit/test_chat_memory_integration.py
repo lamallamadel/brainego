@@ -23,7 +23,7 @@ def test_memory_retrieval_branch_and_system_injection_exist():
     """Memory-enabled branch should retrieve memories and inject a system message."""
     assert "if request.memory and request.memory.enabled:" in API_SERVER_SOURCE
     assert "memory_results = service.search_memory(" in API_SERVER_SOURCE
-    assert "messages_for_generation = [memory_system_message, *messages_for_generation]" in API_SERVER_SOURCE
+    assert "messages_for_generation = prepend_context_system_message(" in API_SERVER_SOURCE
     assert "Remembered context:" in API_SERVER_SOURCE
 
 
