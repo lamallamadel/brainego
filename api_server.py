@@ -154,6 +154,7 @@ AUTH_OPTIONAL_PATHS = WORKSPACE_OPTIONAL_PATHS
 AUTH_OPTIONAL_PREFIXES = WORKSPACE_OPTIONAL_PREFIXES
 AUTH_REQUIRED_PREFIXES = WORKSPACE_REQUIRED_PREFIXES
 AUTH_REQUIRED_EXACT_PATHS = WORKSPACE_REQUIRED_EXACT_PATHS | {"/audit"}
+AUTH_REQUIRED_EXACT_PATHS.update({"/audit/query", "/audit/export"})
 AUTH_USER_CONTEXT: ContextVar[Optional[str]] = ContextVar("auth_user_id", default=None)
 AUTH_ROLE_CONTEXT: ContextVar[Optional[str]] = ContextVar("auth_role", default=None)
 AUTH_METHOD_CONTEXT: ContextVar[Optional[str]] = ContextVar("auth_method", default=None)
@@ -2756,7 +2757,8 @@ async def root():
             "feedback_accuracy": "GET /v1/feedback/accuracy",
             "feedback_stats": "GET /v1/feedback/stats",
             "feedback_export": "POST /v1/feedback/export/finetuning",
-            "audit_export": "GET /audit?format=json|csv",
+            "audit_query": "GET /audit/query",
+            "audit_export": "GET /audit/export?format=json|csv (alias: /audit)",
             "mcp_tool_proxy": "POST /internal/mcp/tools/call"
         },
         "prometheus_metrics": "http://localhost:8000/metrics"
@@ -2990,6 +2992,7 @@ async def get_circuit_breakers():
     }
 
 
+@app.get("/audit/export", response_model=AuditExportResponse)
 @app.get("/audit", response_model=AuditExportResponse)
 async def export_audit_events(
     raw_request: Request,
@@ -3087,6 +3090,39 @@ async def export_audit_events(
     except Exception as exc:
         logger.error("Error exporting audit events: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Audit export error: {exc}")
+
+
+@app.get("/audit/query", response_model=AuditExportResponse)
+async def query_audit_events(
+    raw_request: Request,
+    workspace_id: Optional[str] = Query(None, description="Filter by workspace identifier"),
+    user_id: Optional[str] = Query(None, description="Filter by user identifier"),
+    role: Optional[str] = Query(None, description="Filter by resolved role"),
+    tool_name: Optional[str] = Query(None, description="Filter by tool name"),
+    event_type: Optional[str] = Query(None, pattern="^(request|tool_call)$", description="Filter by event type"),
+    start_date: Optional[str] = Query(None, description="Start date (ISO-8601)"),
+    end_date: Optional[str] = Query(None, description="End date (ISO-8601)"),
+    limit: int = Query(1000, ge=1, le=AUDIT_EXPORT_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    """
+    Query structured audit events as JSON.
+
+    This endpoint is a convenience wrapper over /audit/export with format=json.
+    """
+    return await export_audit_events(
+        raw_request=raw_request,
+        format="json",
+        workspace_id=workspace_id,
+        user_id=user_id,
+        role=role,
+        tool_name=tool_name,
+        event_type=event_type,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.post("/admin/workspaces", response_model=WorkspaceResponse)

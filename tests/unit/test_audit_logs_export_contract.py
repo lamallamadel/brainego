@@ -24,6 +24,7 @@ def test_api_server_wires_audit_service_and_request_middleware() -> None:
 def test_audit_export_endpoint_supports_required_filters_and_formats() -> None:
     api_server = _read("api_server.py")
 
+    assert '@app.get("/audit/export", response_model=AuditExportResponse)' in api_server
     assert '@app.get("/audit", response_model=AuditExportResponse)' in api_server
     assert 'format: str = Query("json", pattern="^(json|csv)$"' in api_server
     assert "workspace_id: Optional[str] = Query(None, description=\"Filter by workspace identifier\")" in api_server
@@ -34,6 +35,22 @@ def test_audit_export_endpoint_supports_required_filters_and_formats() -> None:
     assert "end_date: Optional[str] = Query(None, description=\"End date (ISO-8601)\")" in api_server
     assert "service.export_events(" in api_server
     assert 'media_type="text/csv"' in api_server
+
+
+def test_audit_query_endpoint_wraps_json_export_with_same_filters() -> None:
+    api_server = _read("api_server.py")
+
+    assert '@app.get("/audit/query", response_model=AuditExportResponse)' in api_server
+    assert "async def query_audit_events(" in api_server
+    assert "return await export_audit_events(" in api_server
+    assert 'format="json"' in api_server
+
+
+def test_root_metadata_exposes_audit_query_and_export_endpoints() -> None:
+    api_server = _read("api_server.py")
+
+    assert '"audit_query": "GET /audit/query"' in api_server
+    assert '"audit_export": "GET /audit/export?format=json|csv (alias: /audit)"' in api_server
 
 
 def test_tool_call_routes_emit_dedicated_audit_events() -> None:
@@ -60,3 +77,10 @@ def test_init_sql_declares_audit_table_and_indexes() -> None:
     assert "CREATE INDEX IF NOT EXISTS idx_audit_events_user_id ON audit_events(user_id);" in init_sql
     assert "CREATE INDEX IF NOT EXISTS idx_audit_events_role ON audit_events(role);" in init_sql
     assert "CREATE INDEX IF NOT EXISTS idx_audit_events_tool_name ON audit_events(tool_name);" in init_sql
+
+
+def test_auth_protects_all_audit_query_and_export_paths() -> None:
+    api_server = _read("api_server.py")
+
+    assert "AUTH_REQUIRED_EXACT_PATHS = WORKSPACE_REQUIRED_EXACT_PATHS | {\"/audit\"}" in api_server
+    assert "AUTH_REQUIRED_EXACT_PATHS.update({\"/audit/query\", \"/audit/export\"})" in api_server
