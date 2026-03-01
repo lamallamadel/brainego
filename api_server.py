@@ -48,6 +48,8 @@ from workspace_context import (
 )
 from safety_sanitizer import (
     redact_secrets,
+    redact_sensitive,
+    redact_sensitive_in_text,
     redact_secrets_in_text,
     sanitize_retrieved_context_chunks,
     sanitize_untrusted_context_text,
@@ -1320,13 +1322,15 @@ def _record_metering_event(
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Best-effort metering event persistence."""
+    safe_request_id, _ = _redact_value_for_audit(request_id or "")
+    safe_metadata, _ = _redact_value_for_audit(metadata or {})
     try:
         get_metering_service().add_event(
             workspace_id=workspace_id,
             meter_key=meter_key,
             quantity=quantity,
-            request_id=request_id,
-            metadata=metadata,
+            request_id=safe_request_id or None,
+            metadata=safe_metadata,
         )
     except Exception as metering_exc:
         logger.error("Failed to persist metering event: %s", metering_exc)
@@ -1351,7 +1355,10 @@ class MetricsStore:
     @staticmethod
     def _normalize_user_id(value: Optional[str]) -> Optional[str]:
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            redacted_value, _ = redact_sensitive_in_text(value.strip())
+            normalized = redacted_value.strip()
+            if normalized:
+                return normalized
         return None
 
     def record_request(
@@ -1595,7 +1602,10 @@ class UsageMeteringMetrics:
         if isinstance(value, str):
             normalized = value.strip()
             if normalized:
-                return normalized[:120]
+                redacted_value, _ = redact_sensitive_in_text(normalized)
+                safe_value = redacted_value.strip()
+                if safe_value:
+                    return safe_value[:120]
         return fallback
 
     def record_request(
@@ -2285,8 +2295,8 @@ def _extract_text_from_messages(messages: List[ChatMessage]) -> str:
 
 
 def _redact_value_for_audit(value: Any) -> Tuple[Any, int]:
-    """Redact secret-like values before logging/audit emission."""
-    return redact_secrets(value)
+    """Redact secret-like and PII-like values before audit/telemetry persistence."""
+    return redact_sensitive(value)
 
 
 def evaluate_safety_text(text: str, endpoint: str) -> SafetyVerdictResponse:
@@ -2593,12 +2603,14 @@ async def audit_request_middleware(request: Request, call_next):
                 logger.warning("Failed to record usage request metric: %s", metrics_exc)
         safe_request_payload, request_redactions = _redact_value_for_audit(request_payload)
         safe_audit_error, error_redactions = _redact_value_for_audit(audit_error or "")
+        safe_query_params, query_redactions = _redact_value_for_audit(dict(request.query_params))
         metadata = {
-            "query_params": dict(request.query_params),
+            "query_params": safe_query_params,
             "client_host": request.client.host if request.client else None,
             "error": safe_audit_error or None,
             "request_redactions": request_redactions,
             "error_redactions": error_redactions,
+            "query_redactions": query_redactions,
             "role": auth_role,
             "auth_method": auth_method,
         }

@@ -18,6 +18,13 @@ SECRET_PATTERNS = [
     ),
 ]
 
+PII_PATTERNS = [
+    re.compile(r"(?i)\b[A-Z0-9._%+\-]+@[A-Z0-9.\-]+\.[A-Z]{2,}\b"),
+    re.compile(r"\b\d{3}-\d{2}-\d{4}\b"),
+    re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}\b"),
+    re.compile(r"(?<!\d)(?:\+?\d{1,3}[-.\s]?)?(?:\(?\d{3}\)?[-.\s]?){2}\d{4}(?!\d)"),
+]
+
 UNTRUSTED_CONTEXT_INJECTION_PATTERNS = [
     re.compile(
         r"(?i)\b(ignore|disregard|forget)\b.{0,120}\b(previous|prior|above|system|developer|instructions?)\b"
@@ -30,17 +37,29 @@ UNTRUSTED_CONTEXT_INJECTION_PATTERNS = [
 ]
 
 
+def _redact_text_with_patterns(text: str, patterns: List[re.Pattern]) -> Tuple[str, int]:
+    """Apply redaction patterns to text and return redacted text + match count."""
+    redacted = text
+    redaction_count = 0
+    for pattern in patterns:
+        redacted, applied = pattern.subn(REDACTION_TOKEN, redacted)
+        redaction_count += applied
+    return redacted, redaction_count
+
+
 def redact_secrets_in_text(text: str) -> Tuple[str, int]:
     """Redact secret-like substrings from a string."""
     if not isinstance(text, str) or not text:
         return text, 0
 
-    redacted = text
-    redaction_count = 0
-    for pattern in SECRET_PATTERNS:
-        redacted, applied = pattern.subn(REDACTION_TOKEN, redacted)
-        redaction_count += applied
-    return redacted, redaction_count
+    return _redact_text_with_patterns(text, SECRET_PATTERNS)
+
+
+def redact_sensitive_in_text(text: str) -> Tuple[str, int]:
+    """Redact secret-like and PII-like substrings from a string."""
+    if not isinstance(text, str) or not text:
+        return text, 0
+    return _redact_text_with_patterns(text, [*SECRET_PATTERNS, *PII_PATTERNS])
 
 
 def redact_secrets(value: Any) -> Tuple[Any, int]:
@@ -71,6 +90,41 @@ def redact_secrets(value: Any) -> Tuple[Any, int]:
         sanitized_items: List[Any] = []
         for item in value:
             sanitized_item, count = redact_secrets(item)
+            sanitized_items.append(sanitized_item)
+            total += count
+        return tuple(sanitized_items), total
+
+    return value, 0
+
+
+def redact_sensitive(value: Any) -> Tuple[Any, int]:
+    """Recursively redact secret-like and PII-like values in nested objects."""
+    if isinstance(value, str):
+        return redact_sensitive_in_text(value)
+
+    if isinstance(value, dict):
+        total = 0
+        sanitized: Dict[Any, Any] = {}
+        for key, item in value.items():
+            sanitized_item, count = redact_sensitive(item)
+            sanitized[key] = sanitized_item
+            total += count
+        return sanitized, total
+
+    if isinstance(value, list):
+        total = 0
+        sanitized_list: List[Any] = []
+        for item in value:
+            sanitized_item, count = redact_sensitive(item)
+            sanitized_list.append(sanitized_item)
+            total += count
+        return sanitized_list, total
+
+    if isinstance(value, tuple):
+        total = 0
+        sanitized_items: List[Any] = []
+        for item in value:
+            sanitized_item, count = redact_sensitive(item)
             sanitized_items.append(sanitized_item)
             total += count
         return tuple(sanitized_items), total

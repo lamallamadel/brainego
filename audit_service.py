@@ -16,6 +16,8 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from safety_sanitizer import redact_sensitive
+
 logger = logging.getLogger(__name__)
 
 _SUPPORTED_EVENT_TYPES = {"request", "tool_call"}
@@ -130,6 +132,17 @@ class AuditService:
             return {}
         return value
 
+    @staticmethod
+    def _sanitize_text(value: Optional[Any]) -> Optional[str]:
+        if value is None:
+            return None
+        sanitized, _ = redact_sensitive(str(value))
+        if isinstance(sanitized, str):
+            normalized = sanitized.strip()
+            if normalized:
+                return normalized
+        return None
+
     def add_event(
         self,
         event_type: str,
@@ -163,9 +176,15 @@ class AuditService:
         resolved_event_id = event_id or str(uuid.uuid4())
         resolved_timestamp = timestamp or datetime.utcnow()
         resolved_workspace_id = self._normalize_workspace_id(workspace_id)
-        req_payload = self._coerce_json(request_payload)
-        resp_payload = self._coerce_json(response_payload)
-        meta_payload = self._coerce_json(metadata)
+        req_payload, _ = redact_sensitive(self._coerce_json(request_payload))
+        resp_payload, _ = redact_sensitive(self._coerce_json(response_payload))
+        meta_payload, _ = redact_sensitive(self._coerce_json(metadata))
+        safe_request_id = self._sanitize_text(request_id)
+        safe_user_id = self._sanitize_text(user_id)
+        safe_role = self._sanitize_text(role)
+        safe_tool_name = self._sanitize_text(tool_name)
+        safe_endpoint = self._sanitize_text(endpoint)
+        safe_method = self._sanitize_text(method)
 
         conn = self._get_connection()
         try:
@@ -187,13 +206,13 @@ class AuditService:
                         resolved_event_id,
                         event_type,
                         resolved_timestamp,
-                        request_id,
+                        safe_request_id,
                         resolved_workspace_id,
-                        user_id,
-                        role,
-                        tool_name,
-                        endpoint,
-                        method,
+                        safe_user_id,
+                        safe_role,
+                        safe_tool_name,
+                        safe_endpoint,
+                        safe_method,
                         status_code,
                         duration_ms,
                         json.dumps(req_payload),
