@@ -1,0 +1,48 @@
+version: 1
+categories:
+  secrets:
+    enabled: true
+    action: redact
+    rules:
+      - id: aws-access-key
+        description: Redact AWS access keys in prompts and completions.
+        pattern: "AKIA[0-9A-Z]{16}"
+        action: redact
+        target: both
+        replacement: "[REDACTED_AWS_KEY]"
+      - id: generic-api-key
+        description: Redact generic API key style prefixes.
+        pattern: "(sk-[a-zA-Z0-9]{10,})"
+        action: redact
+        target: both
+        replacement: "[REDACTED_API_KEY]"
+
+  content:
+    enabled: true
+    action: block
+    rules:
+      - id: self-harm-instructions
+        description: Block explicit self-harm instructions.
+        pattern: "(how to kill myself|best way to commit suicide|self-harm steps)"
+        action: block
+        target: request
+
+  code:
+    enabled: true
+    action: warn
+    rules:
+      - id: command-injection-patterns
+        description: Warn on dangerous shell command patterns.
+        pattern: "(;\\s*rm\\s+-rf\\s+/|curl\\s+[^\\s]+\\s*\\|\\s*sh)"
+        action: warn
+        target: both
+
+  tools:
+    enabled: true
+    action: block
+    rules:
+      - id: privileged-tooling
+        description: Block privileged escalation tooling prompts.
+        pattern: "(exploit kernel|privilege escalation exploit|ransomware builder)"
+        action: block
+        target: request
