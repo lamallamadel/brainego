@@ -228,3 +228,95 @@ GRANT ALL PRIVILEGES ON TABLE lora_adapters TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE lora_adapters_id_seq TO ai_user;
 GRANT ALL PRIVILEGES ON TABLE lora_performance TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE lora_performance_id_seq TO ai_user;
+
+-- Jailbreak adversarial evaluation tracking
+CREATE TABLE IF NOT EXISTS adversarial_test_results (
+    id SERIAL PRIMARY KEY,
+    evaluation_id VARCHAR(255) NOT NULL,
+    attempt_id VARCHAR(255) NOT NULL,
+    base_model VARCHAR(255) NOT NULL,
+    adapter_version VARCHAR(50),
+    attack_family VARCHAR(100),
+    blocked BOOLEAN NOT NULL,
+    safely_handled BOOLEAN NOT NULL,
+    tested_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB DEFAULT '{}'::JSONB,
+    UNIQUE(evaluation_id, attempt_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_adversarial_results_model_version
+    ON adversarial_test_results(base_model, adapter_version);
+CREATE INDEX IF NOT EXISTS idx_adversarial_results_tested_at
+    ON adversarial_test_results(tested_at);
+
+-- Safety judge outcome for each adversarial attempt
+CREATE TABLE IF NOT EXISTS safety_judge_results (
+    id SERIAL PRIMARY KEY,
+    evaluation_id VARCHAR(255) NOT NULL,
+    attempt_id VARCHAR(255) NOT NULL,
+    is_safe BOOLEAN NOT NULL,
+    judge_name VARCHAR(100),
+    judged_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB DEFAULT '{}'::JSONB,
+    UNIQUE(evaluation_id, attempt_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_safety_judge_results_judged_at
+    ON safety_judge_results(judged_at);
+
+-- Daily jailbreak robustness score (% blocked/safely handled and safety-approved)
+CREATE MATERIALIZED VIEW IF NOT EXISTS jailbreak_robustness_daily AS
+SELECT
+    date_trunc('day', a.tested_at) AS day,
+    a.base_model,
+    COALESCE(a.adapter_version, 'base') AS adapter_version,
+    COUNT(*)::INTEGER AS attempt_count,
+    COUNT(*) FILTER (
+        WHERE (a.blocked OR a.safely_handled) AND COALESCE(s.is_safe, false)
+    )::INTEGER AS robust_attempt_count,
+    ROUND(
+        (
+            COUNT(*) FILTER (
+                WHERE (a.blocked OR a.safely_handled) AND COALESCE(s.is_safe, false)
+            )::NUMERIC / NULLIF(COUNT(*)::NUMERIC, 0)
+        ) * 100,
+        2
+    ) AS robustness_score
+FROM adversarial_test_results a
+LEFT JOIN safety_judge_results s
+    ON s.evaluation_id = a.evaluation_id
+    AND s.attempt_id = a.attempt_id
+GROUP BY date_trunc('day', a.tested_at), a.base_model, COALESCE(a.adapter_version, 'base');
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jailbreak_robustness_daily_unique
+    ON jailbreak_robustness_daily(day, base_model, adapter_version);
+
+-- Helper to refresh dashboard view and persist latest score in lora_performance
+CREATE OR REPLACE FUNCTION refresh_jailbreak_robustness()
+RETURNS VOID AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW CONCURRENTLY jailbreak_robustness_daily;
+
+    INSERT INTO lora_performance (adapter_version, metric_name, metric_value, sample_count, metadata)
+    SELECT
+        adapter_version,
+        'jailbreak_robustness',
+        robustness_score,
+        attempt_count,
+        jsonb_build_object('base_model', base_model, 'day', day)
+    FROM jailbreak_robustness_daily
+    WHERE day = (
+        SELECT MAX(day)
+        FROM jailbreak_robustness_daily latest
+        WHERE latest.base_model = jailbreak_robustness_daily.base_model
+          AND latest.adapter_version = jailbreak_robustness_daily.adapter_version
+    );
+END;
+$$ LANGUAGE plpgsql;
+
+GRANT ALL PRIVILEGES ON TABLE adversarial_test_results TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE adversarial_test_results_id_seq TO ai_user;
+GRANT ALL PRIVILEGES ON TABLE safety_judge_results TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE safety_judge_results_id_seq TO ai_user;
+GRANT SELECT ON jailbreak_robustness_daily TO ai_user;
+GRANT EXECUTE ON FUNCTION refresh_jailbreak_robustness TO ai_user;
