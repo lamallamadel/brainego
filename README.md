@@ -216,6 +216,24 @@ python load_test.py \
 - **long**: Complex multi-turn conversation
 - **all**: Run all scenarios sequentially
 
+## Adversarial Safety Runner
+
+Use the AFR-77 adversarial harness to send a prompt suite through the safety gateway and generate a pass/fail report by category.
+
+```bash
+python scripts/adversarial_test_runner.py \
+  --suite tests/contract/fixtures/adversarial_prompt_suite.ndjson \
+  --gateway-url http://localhost:9100/v1/chat/completions \
+  --api-key sk-test-key-123 \
+  --output artifacts/adversarial_report.json
+```
+
+The report contains:
+
+- global totals (passed/failed/pass_rate)
+- per-category totals and observed outcomes (`blocked`, `warned`, `allowed`)
+- per-case observed verdict and reason
+
 ### Metrics Reported
 
 - **Throughput**: Requests per second
