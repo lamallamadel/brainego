@@ -101,22 +101,13 @@ class InternalMCPGatewayClient:
         if workspace_id:
             payload["workspace_id"] = workspace_id
 
-        if not self.is_tool_allowed(tool_name):
-            latency_ms = (time.perf_counter() - started_at) * 1000
-            error = f"Tool '{tool_name}' is not allowed for API-routed MCP calls"
-            logger.warning(
-                "mcp_tool_call tool=%s status=blocked latency_ms=%.2f error=%s context=%s",
+        # Authorization is enforced centrally by api_server/tool_policy_engine.
+        # Keep the legacy local allowlist as an optional observability signal only.
+        if self.allowed_tools and not self.is_tool_allowed(tool_name):
+            logger.info(
+                "mcp_tool_call tool=%s local_allowlist_miss=true context=%s (not enforced client-side)",
                 tool_name,
-                latency_ms,
-                error,
                 context,
-            )
-            return MCPToolResult(
-                ok=False,
-                tool_name=tool_name,
-                latency_ms=latency_ms,
-                status_code=403,
-                error=error,
             )
 
         effective_timeout_seconds = (

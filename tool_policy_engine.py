@@ -186,7 +186,13 @@ class ToolPolicyEngine:
             raise ValueError("workspace_id cannot be empty in tool policy config")
 
         allowed_mcp_servers = _as_string_set(config.get("allowed_mcp_servers"))
-        allowed_tool_actions = {action.lower() for action in _as_string_set(config.get("allowed_tool_actions"))}
+        allowed_tool_actions: Set[str] = set()
+        for raw_action in _as_string_set(config.get("allowed_tool_actions")):
+            lowered_action = raw_action.lower()
+            if lowered_action == "*":
+                allowed_tool_actions.add("*")
+                continue
+            allowed_tool_actions.add(_normalize_action(lowered_action))
         allowed_tool_names = _parse_allowed_tool_names(config.get("allowed_tool_names"))
         role_policies = _parse_role_policies(config.get("roles", {}))
         default_role = _normalize_supported_role(
@@ -260,7 +266,17 @@ class ToolPolicyEngine:
                 workspace_id=resolved_workspace,
             )
 
-        normalized_action = _normalize_action(action)
+        try:
+            normalized_action = _normalize_action(action)
+        except ValueError:
+            return ToolPolicyDecision(
+                allowed=False,
+                reason=(
+                    f"unsupported action '{action}'. Allowed actions: "
+                    f"{sorted(SUPPORTED_ACTIONS)}"
+                ),
+                workspace_id=resolved_workspace,
+            )
         normalized_role = _normalize_role(role or workspace_policy.default_role or self.default_role)
         normalized_scopes = _as_string_set(scopes or [])
 
@@ -590,10 +606,13 @@ def _parse_role_policies(raw_roles: Any) -> Dict[str, WorkspaceRolePolicy]:
                 f"unsupported role '{raw_role}'. Allowed roles: {sorted(SUPPORTED_ROLES)}"
             )
         role_config = raw_role_policy if isinstance(raw_role_policy, dict) else {}
-        allowed_tool_actions = {
-            action.lower()
-            for action in _as_string_set(role_config.get("allowed_tool_actions"))
-        }
+        allowed_tool_actions: Set[str] = set()
+        for raw_action in _as_string_set(role_config.get("allowed_tool_actions")):
+            lowered_action = raw_action.lower()
+            if lowered_action == "*":
+                allowed_tool_actions.add("*")
+                continue
+            allowed_tool_actions.add(_normalize_action(lowered_action))
 
         allowed_tool_names = _parse_allowed_tool_names(role_config.get("allowed_tool_names"))
         tool_scopes = _parse_allowed_tool_names(role_config.get("tool_scopes"))
@@ -675,7 +694,9 @@ def _normalize_action(action: str) -> str:
     normalized = (action or "").strip().lower()
     if normalized in SUPPORTED_ACTIONS:
         return normalized
-    return "read"
+    raise ValueError(
+        f"unsupported action '{action}'. Allowed actions: {sorted(SUPPORTED_ACTIONS)}"
+    )
 
 
 def _normalize_role(role: Any) -> str:
