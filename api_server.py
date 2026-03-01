@@ -1018,6 +1018,17 @@ class FeedbackRequest(BaseModel):
     model: str = Field(..., description="Model identifier")
     rating: int = Field(..., description="Feedback rating: 1 (thumbs-up) or -1 (thumbs-down)")
     reason: Optional[str] = Field(None, description="Optional reason for thumbs-up/down feedback")
+    category: Optional[str] = Field(
+        None,
+        description=(
+            "Optional feedback category for negative feedback. "
+            "Accepted values: hallucination, wrong_tool, missing_citation, policy_denial."
+        ),
+    )
+    expected_answer: Optional[str] = Field(
+        None,
+        description="Optional expected/correct answer provided by the user",
+    )
     memory_used: int = Field(0, description="Memory used in bytes")
     tools_called: Optional[List[str]] = Field(None, description="List of tools/functions called")
     user_id: Optional[str] = Field(None, description="User identifier")
@@ -1034,6 +1045,18 @@ class FeedbackResponse(BaseModel):
     model: str
 class FeedbackUpdateRequest(BaseModel):
     rating: Optional[int] = Field(None, description="Updated rating (1 or -1)")
+    reason: Optional[str] = Field(None, description="Updated reason for thumbs-up/down feedback")
+    category: Optional[str] = Field(
+        None,
+        description=(
+            "Updated feedback category. "
+            "Accepted values: hallucination, wrong_tool, missing_citation, policy_denial."
+        ),
+    )
+    expected_answer: Optional[str] = Field(
+        None,
+        description="Updated expected/correct answer",
+    )
     intent: Optional[str] = Field(None, description="Updated intent")
     project: Optional[str] = Field(None, description="Updated project")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata to merge")
@@ -1054,6 +1077,7 @@ class FeedbackStatsResponse(BaseModel):
     avg_memory_used: int
     unique_users: int
     unique_sessions: int
+    category_counts: Dict[str, int]
     days: int
     filters: Dict[str, Optional[str]]
 class FinetuningExportRequest(BaseModel):
@@ -5149,6 +5173,8 @@ async def add_feedback(request: FeedbackRequest):
         model: Model identifier (e.g., "llama-3.3-8b-instruct")
         rating: Feedback rating (1 or -1)
         reason: Optional textual reason for the rating
+        category: Optional taxonomy value (hallucination, wrong_tool, missing_citation, policy_denial)
+        expected_answer: Optional expected/correct answer to store for future training
         memory_used: Memory usage in bytes (optional)
         tools_called: List of tools/functions used (optional)
         user_id: User identifier (optional)
@@ -5169,6 +5195,8 @@ async def add_feedback(request: FeedbackRequest):
             model=request.model,
             rating=request.rating,
             reason=request.reason,
+            category=request.category,
+            expected_answer=request.expected_answer,
             memory_used=request.memory_used,
             tools_called=request.tools_called,
             user_id=request.user_id,
@@ -5177,7 +5205,10 @@ async def add_feedback(request: FeedbackRequest):
             project=request.project,
             metadata=ensure_workspace_metadata(request.metadata, workspace_id),
         )
-        logger.info(f"Feedback added: {result['feedback_id']} [rating={request.rating}]")
+        logger.info(
+            f"Feedback added: {result['feedback_id']} "
+            f"[rating={request.rating}, category={request.category}]"
+        )
         return FeedbackResponse(**result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -5217,6 +5248,9 @@ async def update_feedback(feedback_id: str, request: FeedbackUpdateRequest):
     Args:
         feedback_id: Feedback identifier
         rating: Updated rating (1 or -1)
+        reason: Updated textual reason
+        category: Updated taxonomy value for negative feedback
+        expected_answer: Updated expected/correct answer
         intent: Updated intent
         project: Updated project
         metadata: Additional metadata to merge
@@ -5230,6 +5264,9 @@ async def update_feedback(feedback_id: str, request: FeedbackUpdateRequest):
         result = service.update_feedback(
             feedback_id=feedback_id,
             rating=request.rating,
+            reason=request.reason,
+            category=request.category,
+            expected_answer=request.expected_answer,
             intent=request.intent,
             project=request.project,
             metadata=ensure_workspace_metadata(request.metadata, workspace_id)

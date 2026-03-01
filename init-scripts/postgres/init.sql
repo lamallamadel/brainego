@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS feedback (
     tools_called TEXT[] DEFAULT ARRAY[]::TEXT[],
     rating INTEGER NOT NULL CHECK (rating IN (-1, 1)),
     reason TEXT,
+    category VARCHAR(64),
+    expected_answer TEXT,
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     user_id VARCHAR(255),
     session_id VARCHAR(255),
@@ -28,8 +30,14 @@ CREATE INDEX IF NOT EXISTS idx_feedback_model ON feedback(model);
 CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(rating);
 CREATE INDEX IF NOT EXISTS idx_feedback_intent ON feedback(intent);
 CREATE INDEX IF NOT EXISTS idx_feedback_project ON feedback(project);
+CREATE INDEX IF NOT EXISTS idx_feedback_category ON feedback(category);
 CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON feedback(user_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_session_id ON feedback(session_id);
+
+-- Backward-compatible schema migration for existing databases
+ALTER TABLE feedback ADD COLUMN IF NOT EXISTS reason TEXT;
+ALTER TABLE feedback ADD COLUMN IF NOT EXISTS category VARCHAR(64);
+ALTER TABLE feedback ADD COLUMN IF NOT EXISTS expected_answer TEXT;
 
 -- Create accuracy tracking materialized view
 CREATE MATERIALIZED VIEW IF NOT EXISTS model_accuracy_by_intent AS
@@ -80,6 +88,8 @@ RETURNS TABLE (
     model VARCHAR,
     rating INTEGER,
     reason TEXT,
+    category VARCHAR,
+    expected_answer TEXT,
     weight NUMERIC,
     timestamp TIMESTAMP WITH TIME ZONE,
     intent VARCHAR,
@@ -93,6 +103,8 @@ BEGIN
         f.model,
         f.rating,
         f.reason,
+        f.category,
+        f.expected_answer,
         CASE 
             WHEN f.rating = 1 THEN 2.0
             WHEN f.rating = -1 THEN 0.5
