@@ -59,6 +59,7 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "ai_password")
 RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
 RAG_EMBEDDING_PROVIDER = os.getenv("RAG_EMBEDDING_PROVIDER", "local")
 RAG_EMBEDDING_SERVICE_URL = os.getenv("RAG_EMBEDDING_SERVICE_URL", "http://embedding-service:8003")
+RAG_DEFAULT_WORKSPACE_ID = os.getenv("RAG_DEFAULT_WORKSPACE_ID", "default").strip() or "default"
 MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://mcpjungle:9100")
 MCP_GATEWAY_API_KEY = os.getenv("MCP_GATEWAY_API_KEY", "")
 AUDIT_CAPTURE_BODY_LIMIT = int(os.getenv("AUDIT_CAPTURE_BODY_LIMIT", "32768"))
@@ -124,7 +125,13 @@ class ChatRAGOptions(BaseModel):
         description="Optional retrieval query override (defaults to latest user message)"
     )
     k: int = Field(5, ge=1, le=20, description="Number of chunks to retrieve")
-    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    filters: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Optional metadata filters. workspace_id is required for strict multi-workspace isolation "
+            "(falls back to default workspace when omitted)."
+        ),
+    )
     min_score: Optional[float] = Field(
         None,
         ge=0.0,
@@ -238,12 +245,19 @@ class HealthResponse(BaseModel):
     max_serve_status: str
 class RAGIngestRequest(BaseModel):
     text: str = Field(..., description="Text content to ingest")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Optional metadata for the document")
+    metadata: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Metadata for the document (metadata.workspace_id is required).",
+    )
 class RAGIngestBatchRequest(BaseModel):
-    documents: List[Dict[str, Any]] = Field(..., description="List of documents to ingest")
+    documents: List[Dict[str, Any]] = Field(
+        ...,
+        description="List of documents to ingest (each document.metadata.workspace_id is required).",
+    )
 class RAGIngestResponse(BaseModel):
     status: str
     document_id: str
+    workspace_id: str
     chunks_created: int
     points_stored: int
     point_ids: List[str]
@@ -268,7 +282,10 @@ class DocumentIngestResponse(BaseModel):
 class RAGSearchRequest(BaseModel):
     query: str = Field(..., description="Search query text")
     limit: int = Field(10, ge=1, le=100, description="Maximum number of results")
-    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    filters: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional metadata filters (must include workspace_id).",
+    )
 class RAGSearchResponse(BaseModel):
     results: List[Dict[str, Any]]
     query: str
@@ -276,7 +293,10 @@ class RAGSearchResponse(BaseModel):
 class RAGSemanticSearchRequest(BaseModel):
     query: str = Field(..., description="Search query text")
     top_k: int = Field(10, ge=1, le=100, description="Top-k nearest neighbors to return")
-    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    filters: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional metadata filters (must include workspace_id).",
+    )
     collection_name: Optional[str] = Field(None, description="Optional Qdrant collection override")
 class RAGSemanticSearchResponse(BaseModel):
     results: List[Dict[str, Any]]
@@ -289,7 +309,10 @@ class RAGQueryRequest(BaseModel):
     query: str = Field(..., description="Query text to search for relevant context")
     messages: Optional[List[ChatMessage]] = Field(None, description="Optional chat history messages")
     k: int = Field(5, ge=1, le=20, description="Number of top results to retrieve (top-k)")
-    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    filters: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional metadata filters (must include workspace_id).",
+    )
     temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
     top_p: Optional[float] = Field(0.9, ge=0.0, le=1.0, description="Nucleus sampling parameter")
     max_tokens: Optional[int] = Field(2048, ge=1, description="Maximum tokens to generate")
@@ -321,7 +344,10 @@ class RAGQueryResponse(BaseModel):
 class RAGGraphSearchRequest(BaseModel):
     query: str = Field(..., description="Search query text")
     limit: int = Field(10, ge=1, le=100, description="Maximum number of vector search results")
-    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    filters: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional metadata filters (must include workspace_id).",
+    )
     graph_depth: int = Field(1, ge=1, le=3, description="Maximum depth for graph traversal")
     graph_limit: int = Field(10, ge=1, le=50, description="Maximum number of graph neighbors per entity")
     include_entity_context: bool = Field(True, description="Include entity descriptions from graph")
@@ -335,7 +361,10 @@ class RAGGraphQueryRequest(BaseModel):
     query: str = Field(..., description="Query text to search for relevant context")
     messages: Optional[List[ChatMessage]] = Field(None, description="Optional chat history messages")
     k: int = Field(5, ge=1, le=20, description="Number of top results to retrieve (top-k)")
-    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    filters: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional metadata filters (must include workspace_id).",
+    )
     graph_depth: int = Field(1, ge=1, le=3, description="Maximum depth for graph traversal")
     graph_limit: int = Field(10, ge=1, le=50, description="Maximum number of graph neighbors per entity")
     temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
@@ -508,6 +537,81 @@ class MCPToolProxyResponse(BaseModel):
     status_code: int
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+
+
+def _normalize_workspace_id(value: Any, context: str) -> str:
+    """Normalize workspace_id and raise an HTTP 400 on invalid values."""
+    normalized = str(value).strip() if value is not None else ""
+    if not normalized:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{context} requires a non-empty workspace_id",
+        )
+    return normalized
+
+
+def _extract_workspace_id_from_filters(
+    filters: Optional[Dict[str, Any]],
+    context: str,
+    required: bool = True,
+) -> str:
+    """Extract a single workspace_id from metadata filters."""
+    if not filters or "workspace_id" not in filters:
+        if required:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{context} requires filters.workspace_id",
+            )
+        return RAG_DEFAULT_WORKSPACE_ID
+
+    raw_workspace = filters["workspace_id"]
+    if isinstance(raw_workspace, dict):
+        if "any" not in raw_workspace:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{context} workspace_id filter must be scalar or {{'any': [...]}}",
+            )
+        any_values = raw_workspace.get("any")
+        if not isinstance(any_values, list) or not any_values:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{context} workspace_id any-filter must include at least one value",
+            )
+        normalized_values = {
+            _normalize_workspace_id(value, context) for value in any_values
+        }
+        if len(normalized_values) != 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{context} workspace_id any-filter must resolve to a single workspace",
+            )
+        return next(iter(normalized_values))
+
+    return _normalize_workspace_id(raw_workspace, context)
+
+
+def _merge_workspace_into_metadata(
+    metadata: Optional[Dict[str, Any]],
+    workspace_id: str,
+    context: str,
+) -> Dict[str, Any]:
+    """Ensure metadata contains the required workspace_id consistently."""
+    normalized_workspace_id = _normalize_workspace_id(workspace_id, context)
+    normalized_metadata: Dict[str, Any] = dict(metadata or {})
+
+    existing_workspace = normalized_metadata.get("workspace_id")
+    if existing_workspace is not None:
+        existing_normalized = _normalize_workspace_id(existing_workspace, context)
+        if existing_normalized != normalized_workspace_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{context} metadata.workspace_id conflicts with requested workspace_id"
+                ),
+            )
+
+    normalized_metadata["workspace_id"] = normalized_workspace_id
+    return normalized_metadata
 # Metrics storage
 class MetricsStore:
     def __init__(self):
@@ -1730,11 +1834,22 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     status_code=400,
                     detail="RAG requires at least one user message or rag.query"
                 )
+            rag_workspace_id = _extract_workspace_id_from_filters(
+                request.rag.filters,
+                context="chat.rag",
+                required=False,
+            )
+            rag_filters = _merge_workspace_into_metadata(
+                metadata=request.rag.filters,
+                workspace_id=rag_workspace_id,
+                context="chat.rag",
+            )
             retrieval_start = time.time()
             rag_results = service.search_documents(
                 query=retrieval_query,
                 limit=request.rag.k,
-                filters=request.rag.filters
+                filters=rag_filters,
+                workspace_id=rag_workspace_id,
             )
             retrieval_time_ms = (time.time() - retrieval_start) * 1000
             if request.rag.min_score is not None:
@@ -1759,8 +1874,9 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             rag_metadata = {
                 "enabled": True,
                 "query": retrieval_query,
+                "workspace_id": rag_workspace_id,
                 "k": request.rag.k,
-                "filters": request.rag.filters,
+                "filters": rag_filters,
                 "min_score": request.rag.min_score,
                 "chunks_retrieved": len(rag_results),
                 "retrieval_time_ms": round(retrieval_time_ms, 2),
@@ -2081,13 +2197,28 @@ async def rag_ingest(request: RAGIngestRequest):
     4. Stored in Qdrant vector database
     """
     try:
+        metadata = dict(request.metadata or {})
+        workspace_id = metadata.get("workspace_id")
+        if workspace_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="/v1/rag/ingest requires metadata.workspace_id",
+            )
+        metadata = _merge_workspace_into_metadata(
+            metadata=metadata,
+            workspace_id=workspace_id,
+            context="/v1/rag/ingest",
+        )
         service = get_rag_service()
         result = service.ingest_document(
             text=request.text,
-            metadata=request.metadata
+            metadata=metadata,
+            workspace_id=workspace_id,
         )
         logger.info(f"Successfully ingested document: {result['document_id']}")
         return RAGIngestResponse(**result)
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -2103,10 +2234,38 @@ async def rag_ingest_batch(request: RAGIngestBatchRequest):
     - metadata: Optional metadata dictionary
     """
     try:
+        normalized_documents = []
+        for index, document in enumerate(request.documents):
+            if not isinstance(document, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"/v1/rag/ingest/batch document[{index}] must be an object",
+                )
+            metadata = dict(document.get("metadata") or {})
+            workspace_id = metadata.get("workspace_id")
+            if workspace_id is None:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "/v1/rag/ingest/batch requires metadata.workspace_id "
+                        f"for document[{index}]"
+                    ),
+                )
+            normalized_metadata = _merge_workspace_into_metadata(
+                metadata=metadata,
+                workspace_id=workspace_id,
+                context=f"/v1/rag/ingest/batch document[{index}]",
+            )
+            normalized_document = dict(document)
+            normalized_document["metadata"] = normalized_metadata
+            normalized_documents.append(normalized_document)
+
         service = get_rag_service()
-        result = service.ingest_documents_batch(documents=request.documents)
+        result = service.ingest_documents_batch(documents=normalized_documents)
         logger.info(f"Successfully ingested {result['documents_processed']} documents")
         return RAGIngestBatchResponse(**result)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in batch ingestion: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Batch ingestion error: {str(e)}")
@@ -2124,11 +2283,16 @@ async def rag_search(request: RAGSearchRequest):
         List of relevant document chunks with similarity scores
     """
     try:
+        workspace_id = _extract_workspace_id_from_filters(
+            request.filters,
+            context="/v1/rag/search",
+        )
         service = get_rag_service()
         results = service.search_documents(
             query=request.query,
             limit=request.limit,
-            filters=request.filters
+            filters=request.filters,
+            workspace_id=workspace_id,
         )
         logger.info(f"Search completed: {len(results)} results for query: {request.query[:50]}...")
         return RAGSearchResponse(
@@ -2136,6 +2300,8 @@ async def rag_search(request: RAGSearchRequest):
             query=request.query,
             limit=request.limit
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error searching documents: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
@@ -2152,12 +2318,17 @@ async def rag_semantic_search(request: RAGSemanticSearchRequest):
         Top-k semantic search results with scores and metadata
     """
     try:
+        workspace_id = _extract_workspace_id_from_filters(
+            request.filters,
+            context="/v1/rag/semantic-search",
+        )
         service = get_rag_service()
         results = service.semantic_search(
             query=request.query,
             top_k=request.top_k,
             filters=request.filters,
             collection_name=request.collection_name,
+            workspace_id=workspace_id,
         )
         logger.info(
             "Semantic search completed: %s results (top_k=%s, collection=%s) for query: %s...",
@@ -2172,6 +2343,8 @@ async def rag_semantic_search(request: RAGSemanticSearchRequest):
             top_k=request.top_k,
             collection_name=request.collection_name,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in semantic search: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Semantic search error: {str(e)}")
@@ -2250,6 +2423,10 @@ async def rag_query(request: RAGQueryRequest):
             ]).strip()
             safety_verdict = evaluate_safety_text(rag_payload_text, endpoint="/v1/rag/query")
             enforce_safety_gateway(safety_verdict)
+        workspace_id = _extract_workspace_id_from_filters(
+            request.filters,
+            context="/v1/rag/query",
+        )
         service = get_rag_service()
         logger.info(f"RAG query with k={request.k}: {request.query[:100]}...")
         
@@ -2257,7 +2434,8 @@ async def rag_query(request: RAGQueryRequest):
         results = service.search_documents(
             query=request.query,
             limit=request.k,
-            filters=request.filters
+            filters=request.filters,
+            workspace_id=workspace_id,
         )
         graph_context = None
         graph_context_formatted = ""
@@ -2274,6 +2452,7 @@ async def rag_query(request: RAGQueryRequest):
                     filters=request.filters,
                     graph_depth=1,
                     graph_limit=request.graph_limit,
+                    workspace_id=workspace_id,
                 )
                 if enriched_results.get("enriched"):
                     results = enriched_results.get("vector_results", results)
@@ -2433,6 +2612,10 @@ async def rag_graph_search(request: RAGGraphSearchRequest):
         Vector search results enriched with knowledge graph context
     """
     try:
+        workspace_id = _extract_workspace_id_from_filters(
+            request.filters,
+            context="/v1/rag/search/graph-enriched",
+        )
         service = get_rag_service()
         
         if not service.graph_service:
@@ -2449,7 +2632,8 @@ async def rag_graph_search(request: RAGGraphSearchRequest):
             filters=request.filters,
             graph_depth=request.graph_depth,
             graph_limit=request.graph_limit,
-            include_entity_context=request.include_entity_context
+            include_entity_context=request.include_entity_context,
+            workspace_id=workspace_id,
         )
         
         logger.info(
@@ -2495,6 +2679,10 @@ async def rag_graph_query(request: RAGGraphQueryRequest):
     start_time = time.time()
     
     try:
+        workspace_id = _extract_workspace_id_from_filters(
+            request.filters,
+            context="/v1/rag/query/graph-enriched",
+        )
         service = get_rag_service()
         
         if not service.graph_service:
@@ -2511,7 +2699,8 @@ async def rag_graph_query(request: RAGGraphQueryRequest):
             limit=request.k,
             filters=request.filters,
             graph_depth=request.graph_depth,
-            graph_limit=request.graph_limit
+            graph_limit=request.graph_limit,
+            workspace_id=workspace_id,
         )
         retrieval_time_ms = (time.time() - retrieval_start) * 1000
         

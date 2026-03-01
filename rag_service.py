@@ -24,6 +24,7 @@ from qdrant_client.models import (
 )
 
 logger = logging.getLogger(__name__)
+DEFAULT_WORKSPACE_ID = os.getenv("RAG_DEFAULT_WORKSPACE_ID", "default").strip() or "default"
 
 
 class DocumentChunker:
@@ -170,6 +171,44 @@ class QdrantStorage:
         self.client = QdrantClient(host=host, port=port)
         self.collection_name = collection_name
         logger.info(f"Connected to Qdrant at {host}:{port}")
+
+    @staticmethod
+    def _normalize_workspace_id(workspace_id: Any) -> str:
+        """Normalize and validate workspace IDs used for isolation."""
+        normalized = str(workspace_id).strip() if workspace_id is not None else ""
+        if not normalized:
+            raise ValueError("workspace_id must be a non-empty string")
+        return normalized
+
+    @staticmethod
+    def _extract_workspace_id_from_filter_value(filter_value: Any) -> str:
+        """
+        Resolve workspace_id from filter value.
+
+        Accepts either:
+        - scalar: "acme"
+        - any-clause: {"any": ["acme"]} (single unique value only)
+        """
+        if isinstance(filter_value, dict):
+            if "any" not in filter_value:
+                raise ValueError(
+                    "workspace_id filter must be a scalar or {'any': [...]} clause"
+                )
+
+            any_values = filter_value.get("any")
+            if not isinstance(any_values, list) or not any_values:
+                raise ValueError("workspace_id any filter must contain at least one value")
+
+            normalized_values = {
+                QdrantStorage._normalize_workspace_id(value) for value in any_values
+            }
+            if len(normalized_values) != 1:
+                raise ValueError(
+                    "workspace_id any filter must contain a single unique workspace_id"
+                )
+            return next(iter(normalized_values))
+
+        return QdrantStorage._normalize_workspace_id(filter_value)
     
     def create_collection(self, vector_size: int):
         """Create a new collection if it doesn't exist."""
@@ -197,7 +236,8 @@ class QdrantStorage:
         self,
         texts: List[str],
         embeddings: List[List[float]],
-        metadatas: List[Dict[str, Any]]
+        metadatas: List[Dict[str, Any]],
+        workspace_id: str,
     ) -> List[str]:
         """
         Insert or update points in the collection.
@@ -210,16 +250,28 @@ class QdrantStorage:
         Returns:
             List of point IDs
         """
+        normalized_workspace_id = self._normalize_workspace_id(workspace_id)
         points = []
         point_ids = []
         
         for text, embedding, metadata in zip(texts, embeddings, metadatas):
             point_id = str(uuid.uuid4())
             point_ids.append(point_id)
+
+            metadata_payload = metadata.copy() if metadata else {}
+            metadata_workspace_id = metadata_payload.get("workspace_id")
+            if metadata_workspace_id is not None:
+                normalized_metadata_workspace = self._normalize_workspace_id(metadata_workspace_id)
+                if normalized_metadata_workspace != normalized_workspace_id:
+                    raise ValueError(
+                        "metadata.workspace_id must match the workspace_id argument"
+                    )
+            metadata_payload["workspace_id"] = normalized_workspace_id
             
             payload = {
                 "text": text,
-                "metadata": metadata,
+                "workspace_id": normalized_workspace_id,
+                "metadata": metadata_payload,
                 "ingested_at": datetime.utcnow().isoformat()
             }
             
@@ -242,6 +294,7 @@ class QdrantStorage:
     def search(
         self,
         query_vector: List[float],
+        workspace_id: str,
         limit: int = 10,
         filter_conditions: Optional[Dict[str, Any]] = None,
         collection_name: Optional[str] = None,
@@ -258,10 +311,24 @@ class QdrantStorage:
         Returns:
             List of search results with text, metadata, and score
         """
-        query_filter = None
+        normalized_workspace_id = self._normalize_workspace_id(workspace_id)
+        conditions = [
+            FieldCondition(
+                key="workspace_id",
+                match=MatchValue(value=normalized_workspace_id),
+            )
+        ]
+
         if filter_conditions:
-            conditions = []
             for key, value in filter_conditions.items():
+                if key == "workspace_id":
+                    filter_workspace_id = self._extract_workspace_id_from_filter_value(value)
+                    if filter_workspace_id != normalized_workspace_id:
+                        raise ValueError(
+                            "workspace_id filter must match the workspace_id argument"
+                        )
+                    continue
+
                 match_expression = (
                     MatchAny(any=value["any"])
                     if isinstance(value, dict) and "any" in value
@@ -273,7 +340,7 @@ class QdrantStorage:
                         match=match_expression
                     )
                 )
-            query_filter = Filter(must=conditions)
+        query_filter = Filter(must=conditions)
 
         results = self.client.search(
             collection_name=collection_name or self.collection_name,
@@ -294,16 +361,28 @@ class QdrantStorage:
         
         return formatted_results
     
-    def delete_by_metadata(self, metadata_key: str, metadata_value: Any):
+    def delete_by_metadata(
+        self,
+        metadata_key: str,
+        metadata_value: Any,
+        workspace_id: Optional[str] = None,
+    ):
         """Delete points matching metadata criteria."""
-        filter_condition = Filter(
-            must=[
+        conditions = [
+            FieldCondition(
+                key=f"metadata.{metadata_key}",
+                match=MatchValue(value=metadata_value)
+            )
+        ]
+        if workspace_id is not None:
+            normalized_workspace_id = self._normalize_workspace_id(workspace_id)
+            conditions.append(
                 FieldCondition(
-                    key=f"metadata.{metadata_key}",
-                    match=MatchValue(value=metadata_value)
+                    key="workspace_id",
+                    match=MatchValue(value=normalized_workspace_id),
                 )
-            ]
-        )
+            )
+        filter_condition = Filter(must=conditions)
         
         self.client.delete(
             collection_name=self.collection_name,
@@ -340,6 +419,7 @@ class RAGIngestionService:
         embedding_model: str = "nomic-ai/nomic-embed-text-v1.5",
         embedding_provider: str = "local",
         embedding_service_url: str = "http://localhost:8003",
+        default_workspace_id: str = DEFAULT_WORKSPACE_ID,
         graph_service: Optional[Any] = None
     ):
         self.chunker = DocumentChunker(chunk_size=chunk_size, overlap=chunk_overlap)
@@ -358,15 +438,51 @@ class RAGIngestionService:
             port=qdrant_port,
             collection_name=collection_name
         )
+        self.default_workspace_id = QdrantStorage._normalize_workspace_id(default_workspace_id)
         self.graph_service = graph_service
         
         self.storage.create_collection(self.embedder.dimension)
         logger.info("RAG Ingestion Service initialized")
+
+    def _resolve_workspace_id(
+        self,
+        workspace_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Resolve a single workspace_id from args/metadata/filters/default."""
+        candidates: Dict[str, str] = {}
+
+        if workspace_id is not None:
+            candidates["argument"] = QdrantStorage._normalize_workspace_id(workspace_id)
+
+        if metadata and "workspace_id" in metadata:
+            candidates["metadata.workspace_id"] = QdrantStorage._normalize_workspace_id(
+                metadata["workspace_id"]
+            )
+
+        if filters and "workspace_id" in filters:
+            candidates["filters.workspace_id"] = (
+                QdrantStorage._extract_workspace_id_from_filter_value(filters["workspace_id"])
+            )
+
+        if not candidates:
+            return self.default_workspace_id
+
+        unique_values = set(candidates.values())
+        if len(unique_values) != 1:
+            raise ValueError(
+                "Conflicting workspace_id values provided "
+                f"(received: {candidates})"
+            )
+
+        return next(iter(unique_values))
     
     def ingest_document(
         self,
         text: str,
-        metadata: Optional[Dict[str, Any]] = None
+        metadata: Optional[Dict[str, Any]] = None,
+        workspace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Ingest a document: chunk, embed, and store.
@@ -383,6 +499,13 @@ class RAGIngestionService:
         
         if metadata is None:
             metadata = {}
+
+        metadata = metadata.copy()
+        resolved_workspace_id = self._resolve_workspace_id(
+            workspace_id=workspace_id,
+            metadata=metadata,
+        )
+        metadata["workspace_id"] = resolved_workspace_id
         
         metadata.setdefault("document_id", str(uuid.uuid4()))
         metadata.setdefault("ingestion_timestamp", datetime.utcnow().isoformat())
@@ -396,7 +519,12 @@ class RAGIngestionService:
         embeddings = self.embedder.embed_batch(chunk_texts)
         logger.info(f"Generated {len(embeddings)} embeddings")
         
-        point_ids = self.storage.upsert_points(chunk_texts, embeddings, chunk_metadatas)
+        point_ids = self.storage.upsert_points(
+            chunk_texts,
+            embeddings,
+            chunk_metadatas,
+            workspace_id=resolved_workspace_id,
+        )
         logger.info(f"Stored {len(point_ids)} points in Qdrant")
         
         return {
@@ -405,12 +533,14 @@ class RAGIngestionService:
             "chunks_created": len(chunks),
             "points_stored": len(point_ids),
             "point_ids": point_ids,
+            "workspace_id": resolved_workspace_id,
             "metadata": metadata
         }
     
     def ingest_documents_batch(
         self,
-        documents: List[Dict[str, Any]]
+        documents: List[Dict[str, Any]],
+        workspace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Ingest multiple documents.
@@ -430,7 +560,11 @@ class RAGIngestionService:
             metadata = doc.get("metadata", {})
             
             try:
-                result = self.ingest_document(text, metadata)
+                result = self.ingest_document(
+                    text,
+                    metadata,
+                    workspace_id=workspace_id,
+                )
                 results.append(result)
                 total_chunks += result["chunks_created"]
                 total_points += result["points_stored"]
@@ -456,6 +590,7 @@ class RAGIngestionService:
         limit: int = 10,
         filters: Optional[Dict[str, Any]] = None,
         collection_name: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Search for relevant documents.
@@ -469,9 +604,14 @@ class RAGIngestionService:
         Returns:
             List of search results
         """
+        resolved_workspace_id = self._resolve_workspace_id(
+            workspace_id=workspace_id,
+            filters=filters,
+        )
         query_embedding = self.embedder.embed_text(query)
         results = self.storage.search(
             query_embedding,
+            workspace_id=resolved_workspace_id,
             limit=limit,
             filter_conditions=filters,
             collection_name=collection_name,
@@ -484,6 +624,7 @@ class RAGIngestionService:
         top_k: int = 10,
         filters: Optional[Dict[str, Any]] = None,
         collection_name: Optional[str] = None,
+        workspace_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """
         Perform semantic similarity search over a Qdrant collection.
@@ -505,6 +646,7 @@ class RAGIngestionService:
             limit=top_k,
             filters=filters,
             collection_name=collection_name,
+            workspace_id=workspace_id,
         )
         return results
     
@@ -515,7 +657,8 @@ class RAGIngestionService:
         filters: Optional[Dict[str, Any]] = None,
         graph_depth: int = 1,
         graph_limit: int = 10,
-        include_entity_context: bool = True
+        include_entity_context: bool = True,
+        workspace_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Search for relevant documents with graph-based context enrichment.
@@ -541,15 +684,29 @@ class RAGIngestionService:
             logger.warning("Graph service not available, falling back to standard search")
             return {
                 "query": query,
-                "vector_results": self.search_documents(query, limit, filters),
+                "vector_results": self.search_documents(
+                    query,
+                    limit,
+                    filters,
+                    workspace_id=workspace_id,
+                ),
                 "graph_context": None,
                 "enriched": False
             }
         
         # Step 1: Perform vector similarity search
         logger.info(f"Performing vector search for query: {query}")
+        resolved_workspace_id = self._resolve_workspace_id(
+            workspace_id=workspace_id,
+            filters=filters,
+        )
         query_embedding = self.embedder.embed_text(query)
-        vector_results = self.storage.search(query_embedding, limit=limit, filter_conditions=filters)
+        vector_results = self.storage.search(
+            query_embedding,
+            workspace_id=resolved_workspace_id,
+            limit=limit,
+            filter_conditions=filters,
+        )
         
         # Step 2: Extract entities from query
         logger.info("Extracting entities from query")
@@ -707,9 +864,14 @@ class RAGIngestionService:
         
         return "\n".join(context_parts)
     
-    def delete_document(self, document_id: str):
+    def delete_document(self, document_id: str, workspace_id: Optional[str] = None):
         """Delete all chunks of a document by document_id."""
-        self.storage.delete_by_metadata("document_id", document_id)
+        resolved_workspace_id = self._resolve_workspace_id(workspace_id=workspace_id)
+        self.storage.delete_by_metadata(
+            "document_id",
+            document_id,
+            workspace_id=resolved_workspace_id,
+        )
         logger.info(f"Deleted document: {document_id}")
     
     def get_stats(self) -> Dict[str, Any]:

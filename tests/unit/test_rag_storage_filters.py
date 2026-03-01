@@ -4,6 +4,8 @@ import sys
 import types
 from pathlib import Path
 
+import pytest
+
 # Make repository root importable.
 sys.path.append(str(Path(__file__).resolve().parents[2]))
 
@@ -44,6 +46,11 @@ class MatchValue:
         self.value = value
 
 
+class MatchAny:
+    def __init__(self, any):
+        self.any = any
+
+
 class Distance:
     COSINE = "cosine"
 
@@ -69,6 +76,7 @@ class QdrantClient:
 qdrant_models_stub.Filter = Filter
 qdrant_models_stub.FieldCondition = FieldCondition
 qdrant_models_stub.MatchValue = MatchValue
+qdrant_models_stub.MatchAny = MatchAny
 qdrant_models_stub.Distance = Distance
 qdrant_models_stub.VectorParams = VectorParams
 qdrant_models_stub.PointStruct = PointStruct
@@ -93,13 +101,14 @@ class DummyClient:
 
 
 def test_search_builds_metadata_filter_keys():
-    """Ensure metadata filters are translated to `metadata.<key>` conditions."""
+    """Ensure workspace and metadata filters are translated to Qdrant conditions."""
     storage = QdrantStorage.__new__(QdrantStorage)
     storage.client = DummyClient()
     storage.collection_name = "documents"
 
     storage.search(
         query_vector=[0.1, 0.2, 0.3],
+        workspace_id="workspace-acme",
         limit=3,
         filter_conditions={"source": "user_upload", "tenant": "acme"},
     )
@@ -110,16 +119,40 @@ def test_search_builds_metadata_filter_keys():
     keys = sorted(condition.key for condition in must_conditions)
     values = sorted(condition.match.value for condition in must_conditions)
 
-    assert keys == ["metadata.source", "metadata.tenant"]
-    assert values == ["acme", "user_upload"]
+    assert keys == ["metadata.source", "metadata.tenant", "workspace_id"]
+    assert values == ["acme", "user_upload", "workspace-acme"]
 
 
-def test_search_without_filters_sends_none_query_filter():
-    """Ensure query_filter is omitted when no filter conditions are provided."""
+def test_search_without_filters_still_applies_workspace_filter():
+    """Ensure query_filter always contains workspace isolation condition."""
     storage = QdrantStorage.__new__(QdrantStorage)
     storage.client = DummyClient()
     storage.collection_name = "documents"
 
-    storage.search(query_vector=[0.1, 0.2, 0.3], limit=2, filter_conditions=None)
+    storage.search(
+        query_vector=[0.1, 0.2, 0.3],
+        workspace_id="workspace-alpha",
+        limit=2,
+        filter_conditions=None,
+    )
 
-    assert storage.client.last_kwargs["query_filter"] is None
+    query_filter = storage.client.last_kwargs["query_filter"]
+    assert query_filter is not None
+    assert len(query_filter.must) == 1
+    assert query_filter.must[0].key == "workspace_id"
+    assert query_filter.must[0].match.value == "workspace-alpha"
+
+
+def test_search_rejects_conflicting_workspace_filter():
+    """Ensure conflicting workspace IDs cannot bypass isolation."""
+    storage = QdrantStorage.__new__(QdrantStorage)
+    storage.client = DummyClient()
+    storage.collection_name = "documents"
+
+    with pytest.raises(ValueError, match="workspace_id filter must match"):
+        storage.search(
+            query_vector=[0.1, 0.2, 0.3],
+            workspace_id="workspace-alpha",
+            limit=2,
+            filter_conditions={"workspace_id": "workspace-beta"},
+        )
