@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 SUPPORTED_ACTIONS = {"read", "write", "delete"}
 SUPPORTED_ROLES = {"admin", "developer", "viewer"}
+SUPPORTED_POLICY_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -156,23 +157,57 @@ class ToolPolicyEngine:
             )
             return cls(workspace_policies={})
 
-        with config_file.open("r", encoding="utf-8") as handle:
-            payload = yaml.safe_load(handle) or {}
+        try:
+            with config_file.open("r", encoding="utf-8") as handle:
+                raw_payload = yaml.safe_load(handle)
+        except OSError as exc:
+            raise ValueError(f"unable to read tool policy config at '{config_path}': {exc}") from exc
+        except yaml.YAMLError as exc:
+            raise ValueError(f"invalid YAML in tool policy config '{config_path}': {exc}") from exc
 
-        workspaces_payload = payload.get("workspaces", {}) or {}
-        global_default_role = payload.get("default_role", "viewer")
+        payload = _ensure_mapping(raw_payload or {}, field_name="tool policy document")
+        _validate_policy_version(payload.get("version"))
+
+        workspaces_payload = _ensure_mapping(
+            payload.get("workspaces", {}),
+            field_name="workspaces",
+        )
+        global_default_role = _parse_supported_role(
+            payload.get("default_role"),
+            field_name="default_role",
+            fallback="viewer",
+        )
         workspace_policies: Dict[str, WorkspaceToolPolicy] = {}
         for workspace_id, workspace_config in workspaces_payload.items():
+            if not isinstance(workspace_id, str):
+                raise ValueError("workspaces keys must be strings")
+            normalized_workspace_id = workspace_id.strip()
+            if not normalized_workspace_id:
+                raise ValueError("workspaces keys must be non-empty strings")
             parsed = cls._parse_workspace_policy(
-                workspace_id=str(workspace_id).strip(),
-                config=workspace_config or {},
+                workspace_id=normalized_workspace_id,
+                config=_ensure_mapping(
+                    workspace_config,
+                    field_name=f"workspaces.{normalized_workspace_id}",
+                ),
                 fallback_default_role=global_default_role,
             )
             workspace_policies[parsed.workspace_id] = parsed
 
+        default_workspace_raw = payload.get("default_workspace")
+        default_workspace = None
+        if default_workspace_raw is not None:
+            if not isinstance(default_workspace_raw, str):
+                raise ValueError("default_workspace must be a string when provided")
+            default_workspace = default_workspace_raw.strip() or None
+            if default_workspace and default_workspace not in workspace_policies:
+                raise ValueError(
+                    f"default_workspace '{default_workspace}' is not declared in workspaces"
+                )
+
         return cls(
             workspace_policies=workspace_policies,
-            default_workspace_id=payload.get("default_workspace"),
+            default_workspace_id=default_workspace,
             default_role=global_default_role,
         )
 
@@ -185,34 +220,43 @@ class ToolPolicyEngine:
         if not workspace_id:
             raise ValueError("workspace_id cannot be empty in tool policy config")
 
-        allowed_mcp_servers = _as_string_set(config.get("allowed_mcp_servers"))
-        allowed_tool_actions: Set[str] = set()
-        for raw_action in _as_string_set(config.get("allowed_tool_actions")):
-            lowered_action = raw_action.lower()
-            if lowered_action == "*":
-                allowed_tool_actions.add("*")
-                continue
-            allowed_tool_actions.add(_normalize_action(lowered_action))
-        allowed_tool_names = _parse_allowed_tool_names(config.get("allowed_tool_names"))
-        role_policies = _parse_role_policies(config.get("roles", {}))
-        default_role = _normalize_supported_role(
-            config.get("default_role", fallback_default_role),
-            fallback="viewer",
+        allowed_mcp_servers = _parse_string_set(
+            config.get("allowed_mcp_servers"),
+            field_name=f"workspaces.{workspace_id}.allowed_mcp_servers",
+        )
+        allowed_tool_actions = _parse_action_set(
+            config.get("allowed_tool_actions"),
+            field_name=f"workspaces.{workspace_id}.allowed_tool_actions",
+        )
+        allowed_tool_names = _parse_allowed_tool_names(
+            config.get("allowed_tool_names"),
+            field_name=f"workspaces.{workspace_id}.allowed_tool_names",
+        )
+        role_policies = _parse_role_policies(
+            config.get("roles"),
+            field_name=f"workspaces.{workspace_id}.roles",
+        )
+        default_role = _parse_supported_role(
+            config.get("default_role"),
+            field_name=f"workspaces.{workspace_id}.default_role",
+            fallback=fallback_default_role,
         )
         if role_policies and default_role not in role_policies:
             raise ValueError(
                 f"default_role '{default_role}' is not declared in roles for workspace '{workspace_id}'"
             )
         allowlists_global, allowlists_servers, allowlists_tools = _parse_allowlists(
-            config.get("allowlists", {})
+            config.get("allowlists"),
+            field_name=f"workspaces.{workspace_id}.allowlists",
         )
 
-        max_tool_calls_per_request = int(config.get("max_tool_calls_per_request", 0) or 0)
-        per_call_timeout_seconds = config.get("per_call_timeout_seconds")
-        timeout_value = (
-            float(per_call_timeout_seconds)
-            if per_call_timeout_seconds is not None
-            else None
+        max_tool_calls_per_request = _parse_non_negative_int(
+            config.get("max_tool_calls_per_request", 0),
+            field_name=f"workspaces.{workspace_id}.max_tool_calls_per_request",
+        )
+        timeout_value = _parse_optional_timeout_seconds(
+            config.get("per_call_timeout_seconds"),
+            field_name=f"workspaces.{workspace_id}.per_call_timeout_seconds",
         )
 
         return WorkspaceToolPolicy(
@@ -543,7 +587,15 @@ class ToolPolicyEngine:
 def load_default_tool_policy_engine() -> ToolPolicyEngine:
     """Load tool policy engine from default path or MCP_TOOL_POLICY_CONFIG."""
     config_path = os.getenv("MCP_TOOL_POLICY_CONFIG", "configs/tool-policy.yaml")
-    return ToolPolicyEngine.from_yaml(config_path)
+    try:
+        return ToolPolicyEngine.from_yaml(config_path)
+    except ValueError as exc:
+        logger.error(
+            "Failed to load tool policy config at %s (%s). Deny-by-default policy active.",
+            config_path,
+            exc,
+        )
+        return ToolPolicyEngine(workspace_policies={})
 
 
 def _as_string_set(raw_values: Any) -> Set[str]:
@@ -558,64 +610,184 @@ def _as_string_set(raw_values: Any) -> Set[str]:
     return {str(value).strip() for value in values if str(value).strip()}
 
 
-def _parse_allowed_tool_names(raw_tool_names: Any) -> Dict[str, Set[str]]:
-    if not raw_tool_names:
+def _validate_policy_version(raw_version: Any) -> None:
+    if raw_version is None:
+        return
+    if isinstance(raw_version, bool) or not isinstance(raw_version, int):
+        raise ValueError("version must be an integer")
+    if raw_version != SUPPORTED_POLICY_VERSION:
+        raise ValueError(
+            f"unsupported tool policy version '{raw_version}'. "
+            f"Supported versions: [{SUPPORTED_POLICY_VERSION}]"
+        )
+
+
+def _ensure_mapping(raw_value: Any, *, field_name: str, allow_none: bool = True) -> Dict[str, Any]:
+    if raw_value is None and allow_none:
         return {}
+    if not isinstance(raw_value, dict):
+        raise ValueError(f"{field_name} must be a mapping")
+    return raw_value
 
-    if isinstance(raw_tool_names, list):
-        return {"*": _as_string_set(raw_tool_names)}
 
-    if not isinstance(raw_tool_names, dict):
-        return {}
+def _parse_string_set(raw_values: Any, *, field_name: str) -> Set[str]:
+    if raw_values is None:
+        return set()
+    if isinstance(raw_values, str):
+        normalized = raw_values.strip()
+        return {normalized} if normalized else set()
+    if not isinstance(raw_values, (list, tuple, set)):
+        raise ValueError(f"{field_name} must be a string or a list of strings")
 
-    parsed: Dict[str, Set[str]] = {}
-    for action, names in raw_tool_names.items():
-        raw_action = str(action).strip().lower()
-        normalized_action = "*" if raw_action == "*" else _normalize_action(raw_action)
-        parsed[normalized_action] = _as_string_set(names)
+    normalized_values: Set[str] = set()
+    for index, value in enumerate(raw_values):
+        if not isinstance(value, str):
+            raise ValueError(f"{field_name}[{index}] must be a string")
+        normalized = value.strip()
+        if normalized:
+            normalized_values.add(normalized)
+    return normalized_values
+
+
+def _parse_action_set(raw_actions: Any, *, field_name: str) -> Set[str]:
+    normalized_actions: Set[str] = set()
+    for raw_action in _parse_string_set(raw_actions, field_name=field_name):
+        lowered_action = raw_action.lower()
+        if lowered_action == "*":
+            normalized_actions.add("*")
+            continue
+        normalized_actions.add(_normalize_action(lowered_action))
+    return normalized_actions
+
+
+def _parse_supported_role(role: Any, *, field_name: str, fallback: str) -> str:
+    if role is None:
+        return fallback
+    normalized = _normalize_role(role)
+    if normalized in SUPPORTED_ROLES:
+        return normalized
+    raise ValueError(f"unsupported role '{role}' in {field_name}. Allowed roles: {sorted(SUPPORTED_ROLES)}")
+
+
+def _parse_non_negative_int(raw_value: Any, *, field_name: str) -> int:
+    if raw_value is None:
+        return 0
+    if isinstance(raw_value, bool):
+        raise ValueError(f"{field_name} must be a non-negative integer")
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a non-negative integer") from exc
+    if parsed < 0:
+        raise ValueError(f"{field_name} must be a non-negative integer")
     return parsed
 
 
-def _parse_required_scopes(raw_required_scopes: Any) -> Dict[str, Set[str]]:
+def _parse_optional_timeout_seconds(raw_value: Any, *, field_name: str) -> Optional[float]:
+    if raw_value is None:
+        return None
+    if isinstance(raw_value, bool):
+        raise ValueError(f"{field_name} must be a number")
+    try:
+        parsed = float(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a number") from exc
+    if parsed < 0:
+        raise ValueError(f"{field_name} must be greater than or equal to zero")
+    if parsed == 0:
+        return None
+    return parsed
+
+
+def _parse_allowed_tool_names(raw_tool_names: Any, *, field_name: str) -> Dict[str, Set[str]]:
+    if raw_tool_names is None:
+        return {}
+
+    if isinstance(raw_tool_names, (str, list, tuple, set)):
+        return {"*": _parse_string_set(raw_tool_names, field_name=field_name)}
+
+    if not isinstance(raw_tool_names, dict):
+        raise ValueError(
+            f"{field_name} must be a mapping of action->tool names or a list of tool names"
+        )
+
+    parsed: Dict[str, Set[str]] = {}
+    for action, names in raw_tool_names.items():
+        if not isinstance(action, str):
+            raise ValueError(f"{field_name} keys must be strings")
+        raw_action = action.strip().lower()
+        if not raw_action:
+            raise ValueError(f"{field_name} action keys must be non-empty")
+        normalized_action = "*" if raw_action == "*" else _normalize_action(raw_action)
+        parsed[normalized_action] = _parse_string_set(
+            names,
+            field_name=f"{field_name}.{raw_action}",
+        )
+    return parsed
+
+
+def _parse_required_scopes(raw_required_scopes: Any, *, field_name: str) -> Dict[str, Set[str]]:
     if not raw_required_scopes:
         return {}
 
     if isinstance(raw_required_scopes, (list, tuple, set, str)):
-        return {"*": _as_string_set(raw_required_scopes)}
+        return {"*": _parse_string_set(raw_required_scopes, field_name=field_name)}
 
     if not isinstance(raw_required_scopes, dict):
-        return {}
+        raise ValueError(
+            f"{field_name} must be a mapping of action->scope names or a list of scope names"
+        )
 
     parsed: Dict[str, Set[str]] = {}
     for raw_action, raw_scopes in raw_required_scopes.items():
-        action = str(raw_action).strip().lower()
+        if not isinstance(raw_action, str):
+            raise ValueError(f"{field_name} keys must be strings")
+        action = raw_action.strip().lower()
+        if not action:
+            raise ValueError(f"{field_name} action keys must be non-empty")
         normalized_action = "*" if action == "*" else _normalize_action(action)
-        parsed[normalized_action] = _as_string_set(raw_scopes)
+        parsed[normalized_action] = _parse_string_set(
+            raw_scopes,
+            field_name=f"{field_name}.{action}",
+        )
     return parsed
 
 
-def _parse_role_policies(raw_roles: Any) -> Dict[str, WorkspaceRolePolicy]:
-    if not isinstance(raw_roles, dict):
+def _parse_role_policies(raw_roles: Any, *, field_name: str) -> Dict[str, WorkspaceRolePolicy]:
+    if raw_roles is None:
         return {}
+    if not isinstance(raw_roles, dict):
+        raise ValueError(f"{field_name} must be a mapping")
 
     parsed: Dict[str, WorkspaceRolePolicy] = {}
     for raw_role, raw_role_policy in raw_roles.items():
+        if not isinstance(raw_role, str):
+            raise ValueError(f"{field_name} keys must be strings")
         role = _normalize_role(raw_role)
         if role not in SUPPORTED_ROLES:
             raise ValueError(
                 f"unsupported role '{raw_role}'. Allowed roles: {sorted(SUPPORTED_ROLES)}"
             )
-        role_config = raw_role_policy if isinstance(raw_role_policy, dict) else {}
-        allowed_tool_actions: Set[str] = set()
-        for raw_action in _as_string_set(role_config.get("allowed_tool_actions")):
-            lowered_action = raw_action.lower()
-            if lowered_action == "*":
-                allowed_tool_actions.add("*")
-                continue
-            allowed_tool_actions.add(_normalize_action(lowered_action))
+        if raw_role_policy is None:
+            role_config: Dict[str, Any] = {}
+        elif isinstance(raw_role_policy, dict):
+            role_config = raw_role_policy
+        else:
+            raise ValueError(f"{field_name}.{role} must be a mapping")
 
-        allowed_tool_names = _parse_allowed_tool_names(role_config.get("allowed_tool_names"))
-        tool_scopes = _parse_allowed_tool_names(role_config.get("tool_scopes"))
+        allowed_tool_actions = _parse_action_set(
+            role_config.get("allowed_tool_actions"),
+            field_name=f"{field_name}.{role}.allowed_tool_actions",
+        )
+
+        allowed_tool_names = _parse_allowed_tool_names(
+            role_config.get("allowed_tool_names"),
+            field_name=f"{field_name}.{role}.allowed_tool_names",
+        )
+        tool_scopes = _parse_allowed_tool_names(
+            role_config.get("tool_scopes"),
+            field_name=f"{field_name}.{role}.tool_scopes",
+        )
         for action, tool_names in tool_scopes.items():
             allowed_tool_names.setdefault(action, set()).update(tool_names)
 
@@ -626,55 +798,104 @@ def _parse_role_policies(raw_roles: Any) -> Dict[str, WorkspaceRolePolicy]:
             role=role,
             allowed_tool_actions=allowed_tool_actions,
             allowed_tool_names=allowed_tool_names,
-            required_scopes_by_action=_parse_required_scopes(role_config.get("required_scopes")),
+            required_scopes_by_action=_parse_required_scopes(
+                role_config.get("required_scopes"),
+                field_name=f"{field_name}.{role}.required_scopes",
+            ),
         )
 
     return parsed
 
 
-def _parse_allowlists(raw_allowlists: Any) -> Tuple[
+def _parse_allowlists(raw_allowlists: Any, *, field_name: str) -> Tuple[
     Dict[str, List[str]],
     Dict[str, Dict[str, List[str]]],
     Dict[str, Dict[str, List[str]]],
 ]:
-    if not isinstance(raw_allowlists, dict):
+    if raw_allowlists is None:
         return {}, {}, {}
+    if not isinstance(raw_allowlists, dict):
+        raise ValueError(f"{field_name} must be a mapping")
 
-    allowlists_global = _normalize_allowlist_map(raw_allowlists.get("global", {}))
+    allowlists_global = _normalize_allowlist_map(
+        raw_allowlists.get("global", {}),
+        field_name=f"{field_name}.global",
+    )
 
+    raw_server_allowlists = _ensure_mapping(
+        raw_allowlists.get("servers", {}),
+        field_name=f"{field_name}.servers",
+    )
     server_allowlists: Dict[str, Dict[str, List[str]]] = {}
-    for server_id, allowlist_map in (raw_allowlists.get("servers", {}) or {}).items():
-        server_allowlists[str(server_id)] = _normalize_allowlist_map(allowlist_map)
+    for server_id, allowlist_map in raw_server_allowlists.items():
+        if not isinstance(server_id, str):
+            raise ValueError(f"{field_name}.servers keys must be strings")
+        normalized_server_id = server_id.strip()
+        if not normalized_server_id:
+            raise ValueError(f"{field_name}.servers keys must be non-empty strings")
+        server_allowlists[normalized_server_id] = _normalize_allowlist_map(
+            allowlist_map,
+            field_name=f"{field_name}.servers.{normalized_server_id}",
+        )
 
+    raw_tool_allowlists = _ensure_mapping(
+        raw_allowlists.get("tools", {}),
+        field_name=f"{field_name}.tools",
+    )
     tool_allowlists: Dict[str, Dict[str, List[str]]] = {}
-    for tool_name, allowlist_map in (raw_allowlists.get("tools", {}) or {}).items():
-        tool_allowlists[str(tool_name)] = _normalize_allowlist_map(allowlist_map)
+    for tool_name, allowlist_map in raw_tool_allowlists.items():
+        if not isinstance(tool_name, str):
+            raise ValueError(f"{field_name}.tools keys must be strings")
+        normalized_tool_name = tool_name.strip()
+        if not normalized_tool_name:
+            raise ValueError(f"{field_name}.tools keys must be non-empty strings")
+        tool_allowlists[normalized_tool_name] = _normalize_allowlist_map(
+            allowlist_map,
+            field_name=f"{field_name}.tools.{normalized_tool_name}",
+        )
 
     return allowlists_global, server_allowlists, tool_allowlists
 
 
-def _normalize_allowlist_map(raw_map: Any) -> Dict[str, List[str]]:
-    if not isinstance(raw_map, dict):
+def _normalize_allowlist_map(raw_map: Any, *, field_name: str) -> Dict[str, List[str]]:
+    if raw_map is None:
         return {}
+    if not isinstance(raw_map, dict):
+        raise ValueError(f"{field_name} must be a mapping")
 
     normalized: Dict[str, List[str]] = {}
     for key, raw_patterns in raw_map.items():
-        patterns = _as_pattern_list(raw_patterns)
+        if not isinstance(key, str):
+            raise ValueError(f"{field_name} keys must be strings")
+        normalized_key = key.strip()
+        if not normalized_key:
+            raise ValueError(f"{field_name} keys must be non-empty strings")
+        patterns = _as_pattern_list(
+            raw_patterns,
+            field_name=f"{field_name}.{normalized_key}",
+        )
         if patterns:
-            normalized[str(key)] = patterns
+            normalized[normalized_key] = patterns
     return normalized
 
 
-def _as_pattern_list(raw_patterns: Any) -> List[str]:
+def _as_pattern_list(raw_patterns: Any, *, field_name: str) -> List[str]:
     if raw_patterns is None:
         return []
     if isinstance(raw_patterns, str):
         patterns = [raw_patterns]
-    elif isinstance(raw_patterns, list):
-        patterns = raw_patterns
+    elif isinstance(raw_patterns, (list, tuple, set)):
+        patterns = list(raw_patterns)
     else:
-        return []
-    return [str(pattern).strip() for pattern in patterns if str(pattern).strip()]
+        raise ValueError(f"{field_name} must be a string or a list of strings")
+    normalized_patterns: List[str] = []
+    for index, pattern in enumerate(patterns):
+        if not isinstance(pattern, str):
+            raise ValueError(f"{field_name}[{index}] must be a string")
+        normalized = pattern.strip()
+        if normalized:
+            normalized_patterns.append(normalized)
+    return normalized_patterns
 
 
 def _extract_argument_values(value: Any) -> List[str]:
