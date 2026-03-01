@@ -189,6 +189,57 @@ def test_policy_engine_enforces_max_tool_calls_per_request(tmp_path):
     assert "max tool calls per request exceeded" in (third.reason or "")
 
 
+@pytest.mark.unit
+def test_policy_engine_denies_unsupported_action_in_request(tmp_path):
+    config_path = _write_policy(
+        tmp_path,
+        {
+            "default_workspace": "ws-1",
+            "workspaces": {
+                "ws-1": {
+                    "allowed_mcp_servers": ["mcp-docs"],
+                    "allowed_tool_actions": ["read"],
+                    "allowed_tool_names": {"read": ["search_docs"]},
+                }
+            },
+        },
+    )
+    engine = ToolPolicyEngine.from_yaml(config_path)
+
+    decision = engine.evaluate_tool_call(
+        workspace_id="ws-1",
+        request_id="req-invalid-action",
+        server_id="mcp-docs",
+        tool_name="search_docs",
+        action="execute",
+        arguments={"query": "hello"},
+        default_timeout_seconds=3.0,
+    )
+
+    assert decision.allowed is False
+    assert "unsupported action 'execute'" in (decision.reason or "")
+
+
+@pytest.mark.unit
+def test_policy_engine_rejects_invalid_action_in_workspace_config(tmp_path):
+    config_path = _write_policy(
+        tmp_path,
+        {
+            "default_workspace": "ws-1",
+            "workspaces": {
+                "ws-1": {
+                    "allowed_mcp_servers": ["mcp-docs"],
+                    "allowed_tool_actions": ["execute"],
+                    "allowed_tool_names": {"read": ["search_docs"]},
+                }
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="unsupported action 'execute'"):
+        ToolPolicyEngine.from_yaml(config_path)
+
+
 def _rbac_payload() -> Dict[str, Any]:
     return {
         "default_workspace": "ws-1",
