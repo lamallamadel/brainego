@@ -266,6 +266,9 @@ data:
         rating INTEGER NOT NULL CHECK (rating IN (1, -1)),
         memory_used INTEGER DEFAULT 0,
         tools_called TEXT[],
+        reason TEXT,
+        category VARCHAR(64),
+        expected_answer TEXT,
         user_id VARCHAR(255),
         session_id VARCHAR(255),
         intent VARCHAR(100),
@@ -274,11 +277,16 @@ data:
         created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
     );
+
+    ALTER TABLE feedback ADD COLUMN IF NOT EXISTS reason TEXT;
+    ALTER TABLE feedback ADD COLUMN IF NOT EXISTS category VARCHAR(64);
+    ALTER TABLE feedback ADD COLUMN IF NOT EXISTS expected_answer TEXT;
     
     CREATE INDEX IF NOT EXISTS idx_feedback_model ON feedback(model);
     CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(rating);
     CREATE INDEX IF NOT EXISTS idx_feedback_intent ON feedback(intent);
     CREATE INDEX IF NOT EXISTS idx_feedback_project ON feedback(project);
+    CREATE INDEX IF NOT EXISTS idx_feedback_category ON feedback(category);
     CREATE INDEX IF NOT EXISTS idx_feedback_created_at ON feedback(created_at);
     
     -- Create model_accuracy table
