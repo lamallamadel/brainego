@@ -223,11 +223,12 @@ CREATE TRIGGER trigger_update_workspaces_timestamp
 GRANT ALL PRIVILEGES ON TABLE workspaces TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE workspaces_id_seq TO ai_user;
 
--- Workspace-scoped metering events
+-- Workspace/user-scoped metering events
 CREATE TABLE IF NOT EXISTS workspace_metering_events (
     id SERIAL PRIMARY KEY,
     event_id VARCHAR(255) UNIQUE NOT NULL,
     workspace_id VARCHAR(255) NOT NULL,
+    user_id VARCHAR(255),
     meter_key VARCHAR(128) NOT NULL,
     quantity DOUBLE PRECISION NOT NULL DEFAULT 1,
     request_id VARCHAR(255),
@@ -235,11 +236,17 @@ CREATE TABLE IF NOT EXISTS workspace_metering_events (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE workspace_metering_events
+    ADD COLUMN IF NOT EXISTS user_id VARCHAR(255);
+
 CREATE INDEX IF NOT EXISTS idx_metering_workspace_id ON workspace_metering_events(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_metering_user_id ON workspace_metering_events(user_id);
 CREATE INDEX IF NOT EXISTS idx_metering_meter_key ON workspace_metering_events(meter_key);
 CREATE INDEX IF NOT EXISTS idx_metering_created_at ON workspace_metering_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_metering_workspace_meter_key
     ON workspace_metering_events(workspace_id, meter_key);
+CREATE INDEX IF NOT EXISTS idx_metering_workspace_user_meter_key
+    ON workspace_metering_events(workspace_id, user_id, meter_key);
 
 GRANT ALL PRIVILEGES ON TABLE workspace_metering_events TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE workspace_metering_events_id_seq TO ai_user;

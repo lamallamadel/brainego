@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Workspace-scoped metering event persistence.
+Workspace/user-scoped metering event persistence.
 
-Tracks usage counters (RAG retrievals, MCP tool calls, etc.) with mandatory
-workspace_id to guarantee tenant-isolated metering.
+Tracks usage counters (tokens, requests, tool calls, errors, etc.) with
+mandatory workspace_id and optional user_id for tenant/user granularity.
 """
 
 from __future__ import annotations
@@ -84,6 +84,13 @@ class MeteringService:
             return value
         return {}
 
+    @staticmethod
+    def _normalize_optional_user_id(user_id: Any) -> Optional[str]:
+        if user_id is None:
+            return None
+        normalized = str(user_id).strip()
+        return normalized or None
+
     def _ensure_schema(self) -> None:
         """Ensure metering schema exists."""
         conn = self._get_connection()
@@ -95,6 +102,7 @@ class MeteringService:
                         id SERIAL PRIMARY KEY,
                         event_id VARCHAR(255) UNIQUE NOT NULL,
                         workspace_id VARCHAR(255) NOT NULL,
+                        user_id VARCHAR(255),
                         meter_key VARCHAR(128) NOT NULL,
                         quantity DOUBLE PRECISION NOT NULL DEFAULT 1,
                         request_id VARCHAR(255),
@@ -104,8 +112,16 @@ class MeteringService:
                     """
                 )
                 cur.execute(
+                    "ALTER TABLE workspace_metering_events "
+                    "ADD COLUMN IF NOT EXISTS user_id VARCHAR(255)"
+                )
+                cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_metering_workspace_id "
                     "ON workspace_metering_events(workspace_id)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_metering_user_id "
+                    "ON workspace_metering_events(user_id)"
                 )
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_metering_meter_key "
@@ -118,6 +134,10 @@ class MeteringService:
                 cur.execute(
                     "CREATE INDEX IF NOT EXISTS idx_metering_workspace_meter_key "
                     "ON workspace_metering_events(workspace_id, meter_key)"
+                )
+                cur.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_metering_workspace_user_meter_key "
+                    "ON workspace_metering_events(workspace_id, user_id, meter_key)"
                 )
                 conn.commit()
         except Exception:
@@ -132,6 +152,7 @@ class MeteringService:
         workspace_id: str,
         meter_key: str,
         quantity: float = 1.0,
+        user_id: Optional[str] = None,
         request_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
         event_id: Optional[str] = None,
@@ -140,6 +161,7 @@ class MeteringService:
         """Persist one metering event."""
         normalized_workspace_id = self._normalize_workspace_id(workspace_id)
         normalized_meter_key = self._normalize_meter_key(meter_key)
+        normalized_user_id = self._normalize_optional_user_id(user_id)
         quantity_value = float(quantity)
         if quantity_value < 0:
             raise ValueError("quantity must be >= 0")
@@ -156,18 +178,20 @@ class MeteringService:
                     INSERT INTO workspace_metering_events (
                         event_id,
                         workspace_id,
+                        user_id,
                         meter_key,
                         quantity,
                         request_id,
                         metadata,
                         created_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s::jsonb, %s)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, %s)
                     RETURNING event_id, created_at
                     """,
                     (
                         resolved_event_id,
                         normalized_workspace_id,
+                        normalized_user_id,
                         normalized_meter_key,
                         quantity_value,
                         request_id,
@@ -181,6 +205,7 @@ class MeteringService:
                     "status": "success",
                     "event_id": row[0],
                     "workspace_id": normalized_workspace_id,
+                    "user_id": normalized_user_id,
                     "meter_key": normalized_meter_key,
                     "quantity": quantity_value,
                     "created_at": row[1].isoformat() if row and row[1] else resolved_created_at.isoformat(),
@@ -194,6 +219,7 @@ class MeteringService:
     @staticmethod
     def _build_summary_filters(
         workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         meter_key: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
@@ -204,6 +230,9 @@ class MeteringService:
         if workspace_id:
             where_clauses.append("workspace_id = %s")
             params.append(workspace_id)
+        if user_id:
+            where_clauses.append("user_id = %s")
+            params.append(user_id)
         if meter_key:
             where_clauses.append("meter_key = %s")
             params.append(meter_key)
@@ -223,19 +252,22 @@ class MeteringService:
         self,
         *,
         workspace_id: Optional[str] = None,
+        user_id: Optional[str] = None,
         meter_key: Optional[str] = None,
         start_date: Optional[datetime] = None,
         end_date: Optional[datetime] = None,
     ) -> Dict[str, Any]:
-        """Aggregate metering events grouped by workspace and key."""
+        """Aggregate metering events grouped by workspace, user, and key."""
         normalized_workspace_id = (
             self._normalize_workspace_id(workspace_id) if workspace_id is not None else None
         )
+        normalized_user_id = self._normalize_optional_user_id(user_id)
         normalized_meter_key = (
             self._normalize_meter_key(meter_key) if meter_key is not None else None
         )
         where_sql, params = self._build_summary_filters(
             workspace_id=normalized_workspace_id,
+            user_id=normalized_user_id,
             meter_key=normalized_meter_key,
             start_date=start_date,
             end_date=end_date,
@@ -250,13 +282,14 @@ class MeteringService:
                     f"""
                     SELECT
                         workspace_id,
+                        user_id,
                         meter_key,
                         COUNT(*) AS events,
                         COALESCE(SUM(quantity), 0) AS total_quantity
                     FROM workspace_metering_events
                     {where_sql}
-                    GROUP BY workspace_id, meter_key
-                    ORDER BY workspace_id ASC, meter_key ASC
+                    GROUP BY workspace_id, user_id, meter_key
+                    ORDER BY workspace_id ASC, user_id ASC NULLS FIRST, meter_key ASC
                     """,
                     params,
                 )
@@ -264,6 +297,9 @@ class MeteringService:
                 records = [
                     {
                         "workspace_id": str(row["workspace_id"]),
+                        "user_id": (
+                            str(row["user_id"]) if row.get("user_id") is not None else None
+                        ),
                         "meter_key": str(row["meter_key"]),
                         "events": int(row["events"] or 0),
                         "total_quantity": float(row["total_quantity"] or 0),
@@ -273,6 +309,7 @@ class MeteringService:
                 return {
                     "status": "success",
                     "workspace_id": normalized_workspace_id,
+                    "user_id": normalized_user_id,
                     "meter_key": normalized_meter_key,
                     "start_date": start_date.isoformat() if start_date else None,
                     "end_date": end_date.isoformat() if end_date else None,
