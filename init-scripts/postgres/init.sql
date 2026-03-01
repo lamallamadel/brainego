@@ -131,6 +131,36 @@ GRANT SELECT ON model_accuracy_by_intent TO ai_user;
 GRANT EXECUTE ON FUNCTION get_weekly_finetuning_dataset TO ai_user;
 GRANT EXECUTE ON FUNCTION refresh_model_accuracy TO ai_user;
 
+-- Structured audit logs (requests + tool calls)
+CREATE TABLE IF NOT EXISTS audit_events (
+    id SERIAL PRIMARY KEY,
+    event_id VARCHAR(255) UNIQUE NOT NULL,
+    event_type VARCHAR(32) NOT NULL CHECK (event_type IN ('request', 'tool_call')),
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    request_id VARCHAR(255),
+    workspace_id VARCHAR(255),
+    user_id VARCHAR(255),
+    tool_name VARCHAR(255),
+    endpoint TEXT,
+    method VARCHAR(16),
+    status_code INTEGER,
+    duration_ms DOUBLE PRECISION,
+    request_payload JSONB DEFAULT '{}'::JSONB,
+    response_payload JSONB DEFAULT '{}'::JSONB,
+    metadata JSONB DEFAULT '{}'::JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_events_workspace_id ON audit_events(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_user_id ON audit_events(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_tool_name ON audit_events(tool_name);
+CREATE INDEX IF NOT EXISTS idx_audit_events_event_type ON audit_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_audit_events_request_id ON audit_events(request_id);
+
+GRANT ALL PRIVILEGES ON TABLE audit_events TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE audit_events_id_seq TO ai_user;
+
 -- Drift monitoring tables
 -- Create drift_metrics table for tracking drift detection results
 CREATE TABLE IF NOT EXISTS drift_metrics (
