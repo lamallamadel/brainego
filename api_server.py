@@ -30,6 +30,7 @@ from graph_service import GraphService
 from feedback_service import FeedbackService
 from circuit_breaker import get_all_circuit_breaker_stats
 from internal_mcp_client import InternalMCPGatewayClient
+from internal_mcp_tool_policy import evaluate_tool_policy
 from security_heuristics import detect_prompt_injection_patterns
 
 # Configure logging
@@ -841,6 +842,19 @@ def get_mcp_gateway_client() -> InternalMCPGatewayClient:
         mcp_gateway_client = InternalMCPGatewayClient.from_env()
         logger.info("Internal MCP gateway client initialized")
     return mcp_gateway_client
+
+
+def enforce_mcp_tool_policy(tool_name: str) -> None:
+    """Apply the MCP tool allow/deny policy uniformly at API entrypoints."""
+    decision = evaluate_tool_policy(
+        tool_name=tool_name,
+        allowed_tools_raw=os.getenv("MCP_ALLOWED_TOOLS", ""),
+    )
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=403 if decision.reason != "Missing required field: tool_name" else 400,
+            detail=decision.reason or "MCP tool call denied by policy",
+        )
 def format_chat_prompt(messages: List[ChatMessage]) -> str:
     """Format messages into Llama 3.3 chat format."""
     prompt_parts = []
@@ -1163,6 +1177,9 @@ async def health_check():
 @app.post("/v1/mcp")
 async def proxy_mcp_gateway(request: MCPGatewayRequest):
     """Proxy MCP calls through the MCPJungle gateway service."""
+    if request.action == "call_tool":
+        enforce_mcp_tool_policy(request.tool_name or "")
+
     headers = {"content-type": "application/json"}
     if MCP_GATEWAY_API_KEY:
         headers["authorization"] = f"Bearer {MCP_GATEWAY_API_KEY}"
@@ -1198,6 +1215,20 @@ async def get_circuit_breakers():
 @app.post("/internal/mcp/tools/call", response_model=MCPToolProxyResponse)
 async def internal_mcp_tool_call(request: MCPToolProxyRequest):
     """Route internal tool calls to MCP gateway /mcp endpoint with structured result."""
+    policy_started_at = time.perf_counter()
+    try:
+        enforce_mcp_tool_policy(request.tool_name)
+    except HTTPException as exc:
+        latency_ms = (time.perf_counter() - policy_started_at) * 1000
+        denied_payload = MCPToolProxyResponse(
+            ok=False,
+            tool_name=request.tool_name,
+            latency_ms=latency_ms,
+            status_code=exc.status_code,
+            error=str(exc.detail),
+        ).model_dump()
+        return JSONResponse(status_code=exc.status_code, content=denied_payload)
+
     client = get_mcp_gateway_client()
     result = await client.call_tool(
         server_id=request.server_id,
