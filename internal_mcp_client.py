@@ -10,6 +10,8 @@ from typing import Any, Dict, Optional, Set
 
 import httpx
 
+from safety_sanitizer import redact_secrets
+
 logger = logging.getLogger(__name__)
 
 
@@ -89,10 +91,12 @@ class InternalMCPGatewayClient:
         timeout_seconds: Optional[float] = None,
     ) -> MCPToolResult:
         started_at = time.perf_counter()
+        raw_arguments = arguments or {}
+        redacted_arguments, argument_redactions = redact_secrets(raw_arguments)
         payload = {
             "server_id": server_id,
             "tool_name": tool_name,
-            "arguments": arguments or {},
+            "arguments": raw_arguments,
         }
         if workspace_id:
             payload["workspace_id"] = workspace_id
@@ -132,14 +136,17 @@ class InternalMCPGatewayClient:
             latency_ms = (time.perf_counter() - started_at) * 1000
 
             if response.status_code >= 400:
-                error = response.text
+                error, error_redactions = redact_secrets(response.text)
                 logger.error(
-                    "mcp_tool_call tool=%s status=error http_status=%s latency_ms=%.2f error=%s context=%s",
+                    "mcp_tool_call tool=%s status=error http_status=%s latency_ms=%.2f error=%s context=%s arguments=%s argument_redactions=%s error_redactions=%s",
                     tool_name,
                     response.status_code,
                     latency_ms,
                     error,
                     context,
+                    redacted_arguments,
+                    argument_redactions,
+                    error_redactions,
                 )
                 return MCPToolResult(
                     ok=False,
@@ -150,32 +157,42 @@ class InternalMCPGatewayClient:
                 )
 
             data = response.json()
+            redacted_data, output_redactions = redact_secrets(data)
+            if not isinstance(redacted_data, dict):
+                redacted_data = {"result": redacted_data}
             logger.info(
-                "mcp_tool_call tool=%s status=ok http_status=%s latency_ms=%.2f context=%s",
+                "mcp_tool_call tool=%s status=ok http_status=%s latency_ms=%.2f context=%s arguments=%s argument_redactions=%s output_redactions=%s",
                 tool_name,
                 response.status_code,
                 latency_ms,
                 context,
+                redacted_arguments,
+                argument_redactions,
+                output_redactions,
             )
             return MCPToolResult(
                 ok=True,
                 tool_name=tool_name,
                 latency_ms=latency_ms,
                 status_code=response.status_code,
-                data=data,
+                data=redacted_data,
             )
         except Exception as exc:
             latency_ms = (time.perf_counter() - started_at) * 1000
+            redacted_error, error_redactions = redact_secrets(str(exc))
             logger.exception(
-                "mcp_tool_call tool=%s status=exception latency_ms=%.2f context=%s",
+                "mcp_tool_call tool=%s status=exception latency_ms=%.2f context=%s arguments=%s argument_redactions=%s error_redactions=%s",
                 tool_name,
                 latency_ms,
                 context,
+                redacted_arguments,
+                argument_redactions,
+                error_redactions,
             )
             return MCPToolResult(
                 ok=False,
                 tool_name=tool_name,
                 latency_ms=latency_ms,
                 status_code=502,
-                error=str(exc),
+                error=redacted_error,
             )
