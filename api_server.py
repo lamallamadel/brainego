@@ -50,6 +50,7 @@ from safety_sanitizer import (
     redact_secrets,
     redact_secrets_in_text,
     sanitize_retrieved_context_chunks,
+    sanitize_tool_output_payload,
     sanitize_untrusted_context_text,
 )
 
@@ -2289,6 +2290,16 @@ def _redact_value_for_audit(value: Any) -> Tuple[Any, int]:
     return redact_secrets(value)
 
 
+def _apply_tool_output_guard(value: Any) -> Tuple[Any, Dict[str, Any]]:
+    """
+    Apply outbound safety checks to tool outputs.
+
+    This guard is used before tool outputs are returned to users or reused in
+    internal model prompt construction paths.
+    """
+    return sanitize_tool_output_payload(value)
+
+
 def evaluate_safety_text(text: str, endpoint: str) -> SafetyVerdictResponse:
     """Evaluate payload text against block and warning term lists."""
     normalized_text = (text or "").lower()
@@ -2906,6 +2917,7 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
             response.raise_for_status()
             response_payload = response.json()
             safe_payload, output_redactions = _redact_value_for_audit(response_payload)
+            guarded_payload, output_safety = _apply_tool_output_guard(safe_payload)
             if output_redactions:
                 logger.warning(
                     "mcp_proxy_call_response_redacted action=%s server=%s tool=%s output_redactions=%s",
@@ -2913,6 +2925,16 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
                     request.server_id,
                     request.tool_name,
                     output_redactions,
+                )
+            if output_safety["policy_triggered"]:
+                logger.warning(
+                    "mcp_proxy_call_response_guarded action=%s server=%s tool=%s policy_hits=%s dropped_lines=%s secret_redactions=%s",
+                    request.action,
+                    request.server_id,
+                    request.tool_name,
+                    output_safety["strings_with_injection"],
+                    output_safety["dropped_injection_lines"],
+                    output_safety["secret_redactions"],
                 )
             if request.action == "call_tool":
                 _record_tool_call_audit(
@@ -2923,12 +2945,18 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
                     duration_ms=round((time.time() - started_at) * 1000, 2),
                     ok=True,
                     request_payload=safe_request_payload,
-                    response_payload=safe_payload,
+                    response_payload=guarded_payload,
                     context=request.context or "api.v1.mcp",
                 )
-            return safe_payload
+            return guarded_payload
     except httpx.HTTPStatusError as exc:
         safe_error, error_redactions = _redact_value_for_audit(exc.response.text)
+        guarded_error, error_safety = _apply_tool_output_guard(safe_error)
+        safe_error_text = (
+            guarded_error
+            if isinstance(guarded_error, str)
+            else json.dumps(guarded_error, ensure_ascii=False)
+        )
         if error_redactions:
             logger.warning(
                 "mcp_proxy_call_error_redacted action=%s server=%s tool=%s error_redactions=%s",
@@ -2936,6 +2964,16 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
                 request.server_id,
                 request.tool_name,
                 error_redactions,
+            )
+        if error_safety["policy_triggered"]:
+            logger.warning(
+                "mcp_proxy_call_error_guarded action=%s server=%s tool=%s policy_hits=%s dropped_lines=%s secret_redactions=%s",
+                request.action,
+                request.server_id,
+                request.tool_name,
+                error_safety["strings_with_injection"],
+                error_safety["dropped_injection_lines"],
+                error_safety["secret_redactions"],
             )
         if request.action == "call_tool":
             _record_tool_call_audit(
@@ -2946,13 +2984,19 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
                 duration_ms=round((time.time() - started_at) * 1000, 2),
                 ok=False,
                 request_payload=safe_request_payload,
-                response_payload={"error": safe_error},
+                response_payload={"error": safe_error_text},
                 context=request.context or "api.v1.mcp",
-                error=safe_error,
+                error=safe_error_text,
             )
-        raise HTTPException(status_code=exc.response.status_code, detail=safe_error)
+        raise HTTPException(status_code=exc.response.status_code, detail=safe_error_text)
     except Exception as exc:
         safe_error, _ = _redact_value_for_audit(str(exc))
+        guarded_error, _ = _apply_tool_output_guard(safe_error)
+        safe_error_text = (
+            guarded_error
+            if isinstance(guarded_error, str)
+            else json.dumps(guarded_error, ensure_ascii=False)
+        )
         if request.action == "call_tool":
             _record_tool_call_audit(
                 raw_request=raw_request,
@@ -2962,11 +3006,11 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
                 duration_ms=round((time.time() - started_at) * 1000, 2),
                 ok=False,
                 request_payload=safe_request_payload,
-                response_payload={"error": safe_error},
+                response_payload={"error": safe_error_text},
                 context=request.context or "api.v1.mcp",
-                error=safe_error,
+                error=safe_error_text,
             )
-        raise HTTPException(status_code=502, detail=f"MCP gateway unreachable: {safe_error}")
+        raise HTTPException(status_code=502, detail=f"MCP gateway unreachable: {safe_error_text}")
 @app.get("/metrics")
 async def get_metrics():
     """Prometheus metrics endpoint for scraping."""
@@ -3282,12 +3326,22 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
     )
     payload = result.to_dict()
     safe_payload, output_redactions = _redact_value_for_audit(payload)
+    guarded_payload, output_safety = _apply_tool_output_guard(safe_payload)
     if output_redactions:
         logger.warning(
             "internal_mcp_tool_call_response_redacted server=%s tool=%s output_redactions=%s",
             request.server_id,
             request.tool_name,
             output_redactions,
+        )
+    if output_safety["policy_triggered"]:
+        logger.warning(
+            "internal_mcp_tool_call_response_guarded server=%s tool=%s policy_hits=%s dropped_lines=%s secret_redactions=%s",
+            request.server_id,
+            request.tool_name,
+            output_safety["strings_with_injection"],
+            output_safety["dropped_injection_lines"],
+            output_safety["secret_redactions"],
         )
     safe_request_payload, _ = _redact_value_for_audit(request_payload)
     _record_tool_call_audit(
@@ -3298,13 +3352,13 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
         duration_ms=round((time.time() - started_at) * 1000, 2),
         ok=result.ok,
         request_payload=safe_request_payload,
-        response_payload=safe_payload,
+        response_payload=guarded_payload,
         context=request.context or "api.internal",
-        error=safe_payload.get("error") if not result.ok else None,
+        error=guarded_payload.get("error") if not result.ok else None,
     )
     if not result.ok:
-        return JSONResponse(status_code=result.status_code, content=safe_payload)
-    return safe_payload
+        return JSONResponse(status_code=result.status_code, content=guarded_payload)
+    return guarded_payload
 
 
 @app.get("/internal/mcp/policies/{workspace_id}")

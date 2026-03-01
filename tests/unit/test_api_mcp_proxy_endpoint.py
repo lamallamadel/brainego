@@ -111,6 +111,13 @@ def test_internal_proxy_applies_policy_timeout_to_transport_client() -> None:
     assert "timeout_seconds=effective_timeout_seconds" in content
 
 
+def test_tool_output_guard_is_applied_before_mcp_proxy_responses() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "def _apply_tool_output_guard(value: Any)" in content
+    assert "_apply_tool_output_guard(safe_payload)" in content
+    assert "_apply_tool_output_guard(safe_error)" in content
+
+
 def test_admin_policy_management_routes_exist() -> None:
     module = _parse()
     get_route = _find_route(module, "/internal/mcp/policies/{workspace_id}", "get")
