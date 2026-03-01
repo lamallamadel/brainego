@@ -365,23 +365,20 @@ class QdrantStorage:
         self,
         metadata_key: str,
         metadata_value: Any,
-        workspace_id: Optional[str] = None,
+        workspace_id: str,
     ):
         """Delete points matching metadata criteria."""
+        normalized_workspace_id = self._normalize_workspace_id(workspace_id)
         conditions = [
             FieldCondition(
                 key=f"metadata.{metadata_key}",
                 match=MatchValue(value=metadata_value)
-            )
+            ),
+            FieldCondition(
+                key="workspace_id",
+                match=MatchValue(value=normalized_workspace_id),
+            ),
         ]
-        if workspace_id is not None:
-            normalized_workspace_id = self._normalize_workspace_id(workspace_id)
-            conditions.append(
-                FieldCondition(
-                    key="workspace_id",
-                    match=MatchValue(value=normalized_workspace_id),
-                )
-            )
         filter_condition = Filter(must=conditions)
         
         self.client.delete(
