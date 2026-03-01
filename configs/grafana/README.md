@@ -242,6 +242,39 @@ Tracks safety policy enforcement volume, block rates, and jailbreak robustness t
 
 ---
 
+### 6. Usage Metering (`usage-metering.json`)
+
+**UID**: `usage-metering`  
+**Tags**: `usage`, `metering`, `workspace`, `user`  
+**Refresh**: 15s
+
+Tracks workspace/user consumption and reliability for API usage and tool execution.
+
+**Metrics Displayed**:
+- **Request Volume (req/s) by Workspace**
+  - Source: `api_usage_requests_total`
+  - Query: `sum(rate(api_usage_requests_total[5m])) by (workspace_id)`
+- **Token Usage Rate (Input/Output)**
+  - Source: `api_usage_tokens_total{direction="input|output"}`
+  - Query: `sum(rate(api_usage_tokens_total[5m])) by (workspace_id, direction)`
+- **Tool-Call Volume by Tool (success/error)**
+  - Source: `api_usage_tool_calls_total{status="success|error"}`
+  - Query: `sum(rate(api_usage_tool_calls_total[5m])) by (tool_name, status)`
+- **Error Rate by Workspace**
+  - Source: `api_usage_errors_total / api_usage_requests_total`
+  - Query: `sum(rate(api_usage_errors_total[5m])) by (workspace_id) / sum(rate(api_usage_requests_total[5m])) by (workspace_id)`
+- **Latency Percentiles (p50/p95/p99) by Workspace**
+  - Source: `api_usage_latency_seconds_bucket`
+  - Query: `histogram_quantile(0.50|0.95|0.99, sum(rate(api_usage_latency_seconds_bucket[5m])) by (le, workspace_id))`
+
+**Use Cases**:
+- Monitor tenant-level request and token consumption trends
+- Spot regressions in API reliability via workspace error rates
+- Identify slowdowns through p50/p95/p99 latency divergence
+- Track tool pressure and tool-specific failures over time
+
+---
+
 ## Datasources
 
 ### Prometheus
