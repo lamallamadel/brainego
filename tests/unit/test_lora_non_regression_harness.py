@@ -35,6 +35,7 @@ def test_compare_with_baseline_passes_for_good_candidate():
         max_mean_score_drop=0.15,
         min_pass_rate=0.85,
         max_unsafe_cases=0,
+        max_mean_score_drop_pct=0.05,
     )
 
     assert approved is True
@@ -91,6 +92,8 @@ def test_cli_returns_non_zero_when_candidate_regresses():
             "1",
             "--max-mean-score-drop",
             "0.15",
+            "--max-mean-score-drop-pct",
+            "0.05",
             "--min-pass-rate",
             "0.85",
             "--max-unsafe-cases",
@@ -121,6 +124,8 @@ def test_cli_returns_zero_for_candidate_within_thresholds():
             "1",
             "--max-mean-score-drop",
             "0.15",
+            "--max-mean-score-drop-pct",
+            "0.05",
             "--min-pass-rate",
             "0.85",
             "--max-unsafe-cases",
@@ -133,3 +138,38 @@ def test_cli_returns_zero_for_candidate_within_thresholds():
 
     assert result.returncode == 0
     assert '"approved": true' in result.stdout
+
+
+def test_compare_with_baseline_fails_when_relative_drop_exceeds_threshold():
+    harness = _load_harness_module()
+
+    baseline = harness.EvalSummary(
+        total=1,
+        passed=1,
+        failed=0,
+        pass_rate=1.0,
+        mean_score=1.0,
+        cases=[harness.CaseEvaluation(case_id="case-1", passed=True, score=1.0, details="baseline")],
+    )
+    candidate = harness.EvalSummary(
+        total=1,
+        passed=1,
+        failed=0,
+        pass_rate=1.0,
+        mean_score=0.93,
+        cases=[harness.CaseEvaluation(case_id="case-1", passed=True, score=0.93, details="candidate")],
+    )
+
+    approved, comparison = harness.compare_with_baseline(
+        baseline,
+        candidate,
+        max_regressions=1,
+        max_mean_score_drop=0.15,
+        min_pass_rate=0.85,
+        max_unsafe_cases=0,
+        max_mean_score_drop_pct=0.05,
+    )
+
+    assert approved is False
+    assert comparison["mean_score_drop"] == 0.07
+    assert comparison["mean_score_drop_pct"] == 0.07

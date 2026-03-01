@@ -116,7 +116,8 @@ jobs:
           python scripts/lora_non_regression.py \
             --suite tests/contract/fixtures/lora_regression_prompts.ndjson \
             --baseline-output tests/contract/fixtures/lora_baseline_outputs.ndjson \
-            --candidate-output artifacts/lora_candidate_outputs.json
+            --candidate-output artifacts/lora_candidate_outputs.json \
+            --max-mean-score-drop-pct 0.05
       
       # Upload test results
       - name: Upload test results

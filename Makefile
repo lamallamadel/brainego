@@ -381,7 +381,8 @@ test-lora-regression:
 	@python scripts/lora_non_regression.py \
 		--suite tests/contract/fixtures/lora_regression_prompts.ndjson \
 		--baseline-output tests/contract/fixtures/lora_baseline_outputs.ndjson \
-		--candidate-output tests/contract/fixtures/lora_candidate_outputs_good.ndjson
+		--candidate-output tests/contract/fixtures/lora_candidate_outputs_good.ndjson \
+		--max-mean-score-drop-pct 0.05
 
 test-all: test-unit test-integration test-lora-regression
 	@echo ""

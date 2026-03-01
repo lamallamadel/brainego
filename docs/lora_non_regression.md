@@ -28,8 +28,12 @@ python scripts/lora_non_regression.py \
   --candidate-output /path/to/candidate_outputs.json \
   --max-regressions 1 \
   --max-mean-score-drop 0.15 \
+  --max-mean-score-drop-pct 0.05 \
   --min-pass-rate 0.85
 ```
+
+`--max-mean-score-drop-pct` enforces the relative regression threshold against baseline
+mean score (for example `0.05` means "block if score drops by more than 5% vs baseline").
 
 ### Output contract
 
