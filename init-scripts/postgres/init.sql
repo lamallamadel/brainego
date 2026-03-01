@@ -283,11 +283,32 @@ CREATE TABLE IF NOT EXISTS finetuning_triggers (
 CREATE INDEX IF NOT EXISTS idx_finetuning_triggers_timestamp ON finetuning_triggers(trigger_timestamp);
 CREATE INDEX IF NOT EXISTS idx_finetuning_triggers_job_id ON finetuning_triggers(job_id);
 
+-- Create drift_incidents table for eval-drop incidents and retraining recommendations
+CREATE TABLE IF NOT EXISTS drift_incidents (
+    id SERIAL PRIMARY KEY,
+    incident_id VARCHAR(255) UNIQUE NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'open',
+    severity VARCHAR(20) NOT NULL,
+    scope_type VARCHAR(50),
+    scope_value VARCHAR(255),
+    summary TEXT NOT NULL,
+    recommendation TEXT NOT NULL,
+    payload JSONB DEFAULT '{}'::JSONB,
+    opened_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_drift_incidents_opened_at ON drift_incidents(opened_at);
+CREATE INDEX IF NOT EXISTS idx_drift_incidents_status ON drift_incidents(status);
+CREATE INDEX IF NOT EXISTS idx_drift_incidents_scope ON drift_incidents(scope_type, scope_value);
+
 -- Grant permissions to ai_user for drift monitoring tables
 GRANT ALL PRIVILEGES ON TABLE drift_metrics TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE drift_metrics_id_seq TO ai_user;
 GRANT ALL PRIVILEGES ON TABLE finetuning_triggers TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE finetuning_triggers_id_seq TO ai_user;
+GRANT ALL PRIVILEGES ON TABLE drift_incidents TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE drift_incidents_id_seq TO ai_user;
 
 -- LoRA adapter version tracking
 CREATE TABLE IF NOT EXISTS lora_adapters (
