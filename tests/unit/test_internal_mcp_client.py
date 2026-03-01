@@ -1,3 +1,4 @@
+# Needs: python-package:pytest>=9.0.2
 import pytest
 
 import pathlib
@@ -63,7 +64,14 @@ async def test_call_tool_success(monkeypatch):
 
 @pytest.mark.unit
 @pytest.mark.anyio
-async def test_call_tool_blocked_when_not_allowed():
+async def test_call_tool_does_not_enforce_local_policy(monkeypatch):
+    response = _FakeResponse(status_code=200, json_data={"status": "success"})
+
+    def _factory(**kwargs):
+        return _FakeAsyncClient(response=response)
+
+    monkeypatch.setattr("internal_mcp_client.httpx.AsyncClient", _factory)
+
     client = InternalMCPGatewayClient(
         gateway_base_url="http://gateway:9100",
         allowed_tools={"allowed_tool"},
@@ -72,9 +80,9 @@ async def test_call_tool_blocked_when_not_allowed():
 
     result = await client.call_tool("mcp-docs", "forbidden_tool", {"query": "hello"}, context="agent")
 
-    assert result.ok is False
-    assert result.status_code == 403
-    assert "not allowed" in (result.error or "")
+    assert result.ok is True
+    assert result.status_code == 200
+    assert result.error is None
 
 
 @pytest.mark.unit
@@ -98,3 +106,32 @@ async def test_call_tool_http_error(monkeypatch):
     assert result.ok is False
     assert result.status_code == 500
     assert result.error == "upstream error"
+
+@pytest.mark.unit
+@pytest.mark.anyio
+async def test_call_tool_supports_per_call_timeout_override(monkeypatch):
+    captured_timeout = {}
+    response = _FakeResponse(status_code=200, json_data={"status": "success"})
+
+    def _factory(**kwargs):
+        captured_timeout["value"] = kwargs.get("timeout")
+        return _FakeAsyncClient(response=response)
+
+    monkeypatch.setattr("internal_mcp_client.httpx.AsyncClient", _factory)
+
+    client = InternalMCPGatewayClient(
+        gateway_base_url="http://gateway:9100",
+        allowed_tools=set(),
+        timeout_seconds=2.0,
+    )
+
+    result = await client.call_tool(
+        "mcp-docs",
+        "search_docs",
+        {"query": "hello"},
+        timeout_seconds=0.4,
+    )
+
+    assert result.ok is True
+    assert result.status_code == 200
+    assert captured_timeout["value"] == 0.4

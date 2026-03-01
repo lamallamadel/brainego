@@ -87,6 +87,7 @@ def test_qdrant_storage_search_with_any_filter_and_collection_override():
 
     results = storage.search(
         query_vector=[0.1, 0.2],
+        workspace_id="workspace-alpha",
         limit=3,
         filter_conditions={"project": "alpha", "source": {"any": ["github", "notion"]}},
         collection_name="project-docs",
@@ -99,18 +100,25 @@ def test_qdrant_storage_search_with_any_filter_and_collection_override():
     assert kwargs["collection_name"] == "project-docs"
     assert kwargs["limit"] == 3
     assert kwargs["query_filter"] is not None
-    assert len(kwargs["query_filter"].must) == 2
+    assert len(kwargs["query_filter"].must) == 3
 
 
 def test_semantic_search_delegates_to_search_documents_with_top_k():
     service = RAGIngestionService.__new__(RAGIngestionService)
     captured = {}
 
-    def fake_search_documents(query, limit, filters=None, collection_name=None):
+    def fake_search_documents(
+        query,
+        limit,
+        filters=None,
+        collection_name=None,
+        workspace_id=None,
+    ):
         captured["query"] = query
         captured["limit"] = limit
         captured["filters"] = filters
         captured["collection_name"] = collection_name
+        captured["workspace_id"] = workspace_id
         return [{"id": "x"}]
 
     service.search_documents = fake_search_documents
@@ -120,6 +128,7 @@ def test_semantic_search_delegates_to_search_documents_with_top_k():
         top_k=4,
         filters={"project": "alpha"},
         collection_name="project-docs",
+        workspace_id="workspace-alpha",
     )
 
     assert results == [{"id": "x"}]
@@ -128,4 +137,5 @@ def test_semantic_search_delegates_to_search_documents_with_top_k():
         "limit": 4,
         "filters": {"project": "alpha"},
         "collection_name": "project-docs",
+        "workspace_id": "workspace-alpha",
     }

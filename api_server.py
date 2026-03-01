@@ -29,8 +29,10 @@ from memory_service import MemoryService
 from memory_scoring_config import load_memory_scoring_config
 from graph_service import GraphService
 from feedback_service import FeedbackService
+from audit_service import AuditService
 from circuit_breaker import get_all_circuit_breaker_stats
 from internal_mcp_client import InternalMCPGatewayClient
+from tool_policy_engine import ToolPolicyEngine, load_default_tool_policy_engine
 from security_heuristics import detect_prompt_injection_patterns
 from workspace_context import (
     ensure_workspace_filter,
@@ -64,9 +66,12 @@ POSTGRES_PASSWORD = os.getenv("POSTGRES_PASSWORD", "ai_password")
 RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
 RAG_EMBEDDING_PROVIDER = os.getenv("RAG_EMBEDDING_PROVIDER", "local")
 RAG_EMBEDDING_SERVICE_URL = os.getenv("RAG_EMBEDDING_SERVICE_URL", "http://embedding-service:8003")
+RAG_DEFAULT_WORKSPACE_ID = os.getenv("RAG_DEFAULT_WORKSPACE_ID", "default").strip() or "default"
 MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://mcpjungle:9100")
 MCP_GATEWAY_API_KEY = os.getenv("MCP_GATEWAY_API_KEY", "")
 WORKSPACE_ID_RESPONSE_HEADER = "X-Workspace-Id"
+AUDIT_CAPTURE_BODY_LIMIT = int(os.getenv("AUDIT_CAPTURE_BODY_LIMIT", "32768"))
+AUDIT_EXPORT_MAX_LIMIT = int(os.getenv("AUDIT_EXPORT_MAX_LIMIT", "10000"))
 
 BRAINEGO_SYSTEM_PROMPT = (
     "You are the brainego assistant running under platform contracts.\n"
@@ -202,7 +207,13 @@ class ChatRAGOptions(BaseModel):
         description="Optional retrieval query override (defaults to latest user message)"
     )
     k: int = Field(5, ge=1, le=20, description="Number of chunks to retrieve")
-    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    filters: Optional[Dict[str, Any]] = Field(
+        None,
+        description=(
+            "Optional metadata filters. workspace_id is required for strict multi-workspace isolation "
+            "(falls back to default workspace when omitted)."
+        ),
+    )
     min_score: Optional[float] = Field(
         None,
         ge=0.0,
@@ -294,6 +305,10 @@ class MCPGatewayRequest(BaseModel):
     tool_name: Optional[str] = Field(None, description="Required for call_tool")
     uri: Optional[str] = Field(None, description="Required for read_resource")
     arguments: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Optional tool arguments")
+    workspace_id: Optional[str] = Field(None, description="Workspace identifier for policy scope")
+    request_id: Optional[str] = Field(None, description="Request identifier for per-request quotas")
+    tool_action: Optional[str] = Field(None, description="Optional explicit action (read/write/delete)")
+    context: Optional[str] = Field(None, description="Optional caller context for audit logs")
 class ChatCompletionChoice(BaseModel):
     index: int
     message: ChatMessage
@@ -316,12 +331,19 @@ class HealthResponse(BaseModel):
     max_serve_status: str
 class RAGIngestRequest(BaseModel):
     text: str = Field(..., description="Text content to ingest")
-    metadata: Optional[Dict[str, Any]] = Field(None, description="Optional metadata for the document")
+    metadata: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Metadata for the document (metadata.workspace_id is required).",
+    )
 class RAGIngestBatchRequest(BaseModel):
-    documents: List[Dict[str, Any]] = Field(..., description="List of documents to ingest")
+    documents: List[Dict[str, Any]] = Field(
+        ...,
+        description="List of documents to ingest (each document.metadata.workspace_id is required).",
+    )
 class RAGIngestResponse(BaseModel):
     status: str
     document_id: str
+    workspace_id: str
     chunks_created: int
     points_stored: int
     point_ids: List[str]
@@ -346,7 +368,10 @@ class DocumentIngestResponse(BaseModel):
 class RAGSearchRequest(BaseModel):
     query: str = Field(..., description="Search query text")
     limit: int = Field(10, ge=1, le=100, description="Maximum number of results")
-    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    filters: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional metadata filters (must include workspace_id).",
+    )
 class RAGSearchResponse(BaseModel):
     results: List[Dict[str, Any]]
     query: str
@@ -354,7 +379,10 @@ class RAGSearchResponse(BaseModel):
 class RAGSemanticSearchRequest(BaseModel):
     query: str = Field(..., description="Search query text")
     top_k: int = Field(10, ge=1, le=100, description="Top-k nearest neighbors to return")
-    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    filters: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional metadata filters (must include workspace_id).",
+    )
     collection_name: Optional[str] = Field(None, description="Optional Qdrant collection override")
 class RAGSemanticSearchResponse(BaseModel):
     results: List[Dict[str, Any]]
@@ -367,7 +395,10 @@ class RAGQueryRequest(BaseModel):
     query: str = Field(..., description="Query text to search for relevant context")
     messages: Optional[List[ChatMessage]] = Field(None, description="Optional chat history messages")
     k: int = Field(5, ge=1, le=20, description="Number of top results to retrieve (top-k)")
-    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    filters: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional metadata filters (must include workspace_id).",
+    )
     temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
     top_p: Optional[float] = Field(0.9, ge=0.0, le=1.0, description="Nucleus sampling parameter")
     max_tokens: Optional[int] = Field(2048, ge=1, description="Maximum tokens to generate")
@@ -399,7 +430,10 @@ class RAGQueryResponse(BaseModel):
 class RAGGraphSearchRequest(BaseModel):
     query: str = Field(..., description="Search query text")
     limit: int = Field(10, ge=1, le=100, description="Maximum number of vector search results")
-    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    filters: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional metadata filters (must include workspace_id).",
+    )
     graph_depth: int = Field(1, ge=1, le=3, description="Maximum depth for graph traversal")
     graph_limit: int = Field(10, ge=1, le=50, description="Maximum number of graph neighbors per entity")
     include_entity_context: bool = Field(True, description="Include entity descriptions from graph")
@@ -413,7 +447,10 @@ class RAGGraphQueryRequest(BaseModel):
     query: str = Field(..., description="Query text to search for relevant context")
     messages: Optional[List[ChatMessage]] = Field(None, description="Optional chat history messages")
     k: int = Field(5, ge=1, le=20, description="Number of top results to retrieve (top-k)")
-    filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters")
+    filters: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Optional metadata filters (must include workspace_id).",
+    )
     graph_depth: int = Field(1, ge=1, le=3, description="Maximum depth for graph traversal")
     graph_limit: int = Field(10, ge=1, le=50, description="Maximum number of graph neighbors per entity")
     temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
@@ -560,6 +597,13 @@ class FinetuningExportResponse(BaseModel):
     filtered_out_samples: int
     start_date: Optional[str]
     end_date: Optional[str]
+class AuditExportResponse(BaseModel):
+    status: str
+    format: str
+    total_events: int
+    count: int
+    filters: Dict[str, Any]
+    events: Optional[List[Dict[str, Any]]] = None
 class SafetyVerdictResponse(BaseModel):
     verdict: str
     reason: str
@@ -572,6 +616,9 @@ class MCPToolProxyRequest(BaseModel):
     tool_name: str = Field(..., description="MCP tool name")
     arguments: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Tool call arguments")
     context: Optional[str] = Field(None, description="Optional caller context for logging")
+    workspace_id: Optional[str] = Field(None, description="Workspace policy scope")
+    request_id: Optional[str] = Field(None, description="Request ID for per-request tool budgets")
+    action: Optional[str] = Field(None, description="Optional explicit action (read/write/delete)")
 class MCPToolProxyResponse(BaseModel):
     ok: bool
     tool_name: str
@@ -579,6 +626,81 @@ class MCPToolProxyResponse(BaseModel):
     status_code: int
     data: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+
+
+def _normalize_workspace_id(value: Any, context: str) -> str:
+    """Normalize workspace_id and raise an HTTP 400 on invalid values."""
+    normalized = str(value).strip() if value is not None else ""
+    if not normalized:
+        raise HTTPException(
+            status_code=400,
+            detail=f"{context} requires a non-empty workspace_id",
+        )
+    return normalized
+
+
+def _extract_workspace_id_from_filters(
+    filters: Optional[Dict[str, Any]],
+    context: str,
+    required: bool = True,
+) -> str:
+    """Extract a single workspace_id from metadata filters."""
+    if not filters or "workspace_id" not in filters:
+        if required:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{context} requires filters.workspace_id",
+            )
+        return RAG_DEFAULT_WORKSPACE_ID
+
+    raw_workspace = filters["workspace_id"]
+    if isinstance(raw_workspace, dict):
+        if "any" not in raw_workspace:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{context} workspace_id filter must be scalar or {{'any': [...]}}",
+            )
+        any_values = raw_workspace.get("any")
+        if not isinstance(any_values, list) or not any_values:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{context} workspace_id any-filter must include at least one value",
+            )
+        normalized_values = {
+            _normalize_workspace_id(value, context) for value in any_values
+        }
+        if len(normalized_values) != 1:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{context} workspace_id any-filter must resolve to a single workspace",
+            )
+        return next(iter(normalized_values))
+
+    return _normalize_workspace_id(raw_workspace, context)
+
+
+def _merge_workspace_into_metadata(
+    metadata: Optional[Dict[str, Any]],
+    workspace_id: str,
+    context: str,
+) -> Dict[str, Any]:
+    """Ensure metadata contains the required workspace_id consistently."""
+    normalized_workspace_id = _normalize_workspace_id(workspace_id, context)
+    normalized_metadata: Dict[str, Any] = dict(metadata or {})
+
+    existing_workspace = normalized_metadata.get("workspace_id")
+    if existing_workspace is not None:
+        existing_normalized = _normalize_workspace_id(existing_workspace, context)
+        if existing_normalized != normalized_workspace_id:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{context} metadata.workspace_id conflicts with requested workspace_id"
+                ),
+            )
+
+    normalized_metadata["workspace_id"] = normalized_workspace_id
+    return normalized_metadata
 # Metrics storage
 class MetricsStore:
     def __init__(self):
@@ -764,8 +886,10 @@ rag_service = None
 memory_service = None
 graph_service = None
 feedback_service = None
+audit_service = None
 document_ingestion_service = None
 mcp_gateway_client = None
+tool_policy_engine = None
 # Graceful shutdown flag
 shutdown_in_progress = False
 
@@ -915,6 +1039,20 @@ def get_feedback_service() -> FeedbackService:
         )
         logger.info("Feedback Service initialized")
     return feedback_service
+def get_audit_service() -> AuditService:
+    """Get or initialize Audit service."""
+    global audit_service
+    if audit_service is None:
+        logger.info("Initializing Audit Service...")
+        audit_service = AuditService(
+            db_host=POSTGRES_HOST,
+            db_port=POSTGRES_PORT,
+            db_name=POSTGRES_DB,
+            db_user=POSTGRES_USER,
+            db_password=POSTGRES_PASSWORD
+        )
+        logger.info("Audit Service initialized")
+    return audit_service
 def get_mcp_gateway_client() -> InternalMCPGatewayClient:
     """Get or initialize internal MCP gateway client."""
     global mcp_gateway_client
@@ -923,6 +1061,162 @@ def get_mcp_gateway_client() -> InternalMCPGatewayClient:
         mcp_gateway_client = InternalMCPGatewayClient.from_env()
         logger.info("Internal MCP gateway client initialized")
     return mcp_gateway_client
+
+
+def get_tool_policy_engine() -> ToolPolicyEngine:
+    """Get or initialize deny-by-default tool policy engine."""
+    global tool_policy_engine
+    if tool_policy_engine is None:
+        logger.info("Initializing tool policy engine...")
+        tool_policy_engine = load_default_tool_policy_engine()
+        logger.info("Tool policy engine initialized")
+    return tool_policy_engine
+
+
+def _infer_tool_action(tool_name: str, explicit_action: Optional[str]) -> str:
+    """Infer read/write/delete action when caller did not provide one."""
+    normalized_action = (explicit_action or "").strip().lower()
+    if normalized_action in {"read", "write", "delete"}:
+        return normalized_action
+
+    lowered_tool_name = (tool_name or "").strip().lower()
+    if any(token in lowered_tool_name for token in ("delete", "remove", "destroy", "drop", "erase")):
+        return "delete"
+    if any(
+        token in lowered_tool_name
+        for token in ("create", "update", "write", "append", "modify", "post", "send", "upload", "add")
+    ):
+        return "write"
+    return "read"
+
+
+def _extract_workspace_id_from_tool_arguments(arguments: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Extract workspace ID from common tool argument conventions."""
+    if not isinstance(arguments, dict):
+        return None
+
+    for key in ("workspace_id", "workspace", "project", "project_id"):
+        value = arguments.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    metadata = arguments.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("workspace_id", "workspace", "project", "project_id"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _resolve_tool_policy_context(
+    *,
+    raw_request: Request,
+    explicit_workspace_id: Optional[str],
+    explicit_request_id: Optional[str],
+    arguments: Optional[Dict[str, Any]],
+) -> Tuple[Optional[str], str]:
+    """Resolve workspace/request identifiers from request body and headers."""
+    workspace_id_candidates = [
+        explicit_workspace_id,
+        raw_request.headers.get("x-workspace-id"),
+        raw_request.headers.get("x-project-id"),
+        _extract_workspace_id_from_tool_arguments(arguments),
+    ]
+    resolved_workspace_id = next(
+        (str(value).strip() for value in workspace_id_candidates if isinstance(value, str) and value.strip()),
+        None,
+    )
+    resolved_request_id = (
+        (explicit_request_id or "").strip()
+        or str(getattr(raw_request.state, "audit_request_id", "")).strip()
+        or (raw_request.headers.get("x-request-id") or "").strip()
+        or str(uuid.uuid4())
+    )
+    return resolved_workspace_id, resolved_request_id
+
+
+def _build_policy_denied_detail(
+    *,
+    reason: str,
+    workspace_id: Optional[str],
+    request_id: Optional[str],
+) -> Dict[str, Any]:
+    """Build stable PolicyDenied payload."""
+    detail: Dict[str, Any] = {
+        "ok": False,
+        "error": "PolicyDenied",
+        "code": "PolicyDenied",
+        "reason": reason,
+    }
+    if workspace_id:
+        detail["workspace_id"] = workspace_id
+    if request_id:
+        detail["request_id"] = request_id
+    return detail
+
+
+def enforce_mcp_tool_policy(
+    *,
+    raw_request: Request,
+    server_id: str,
+    tool_name: str,
+    arguments: Optional[Dict[str, Any]] = None,
+    workspace_id: Optional[str] = None,
+    request_id: Optional[str] = None,
+    action: Optional[str] = None,
+    default_timeout_seconds: float = 30.0,
+) -> Tuple[str, str, str, float]:
+    """Enforce deny-by-default policy at MCP tool execution point."""
+    normalized_tool_name = (tool_name or "").strip()
+    if not normalized_tool_name:
+        raise HTTPException(status_code=400, detail="Missing required field: tool_name")
+
+    resolved_workspace_id, resolved_request_id = _resolve_tool_policy_context(
+        raw_request=raw_request,
+        explicit_workspace_id=workspace_id,
+        explicit_request_id=request_id,
+        arguments=arguments,
+    )
+
+    if not resolved_workspace_id:
+        raise HTTPException(
+            status_code=403,
+            detail=_build_policy_denied_detail(
+                reason="workspace_id is required by tool policy",
+                workspace_id=None,
+                request_id=resolved_request_id,
+            ),
+        )
+
+    resolved_action = _infer_tool_action(normalized_tool_name, action)
+    policy_engine = get_tool_policy_engine()
+    decision = policy_engine.evaluate_tool_call(
+        workspace_id=resolved_workspace_id,
+        request_id=resolved_request_id,
+        server_id=server_id,
+        tool_name=normalized_tool_name,
+        action=resolved_action,
+        arguments=arguments or {},
+        default_timeout_seconds=default_timeout_seconds,
+    )
+    if not decision.allowed:
+        raise HTTPException(
+            status_code=403,
+            detail=_build_policy_denied_detail(
+                reason=decision.reason or "MCP tool call denied by policy",
+                workspace_id=decision.workspace_id or resolved_workspace_id,
+                request_id=resolved_request_id,
+            ),
+        )
+
+    effective_timeout_seconds = float(decision.timeout_seconds or default_timeout_seconds)
+    return (
+        decision.workspace_id or resolved_workspace_id,
+        resolved_request_id,
+        resolved_action,
+        effective_timeout_seconds,
+    )
 def format_chat_prompt(messages: List[ChatMessage]) -> str:
     """Format messages into Llama 3.3 chat format."""
     prompt_parts = []
@@ -1053,6 +1347,225 @@ def enforce_safety_gateway(verdict: SafetyVerdictResponse):
                 "safety": verdict.model_dump(),
             },
         )
+
+
+def _safe_iso_datetime(value: Optional[str], field_name: str) -> Optional[datetime]:
+    """Parse ISO datetime values from query parameters."""
+    if value is None:
+        return None
+    normalized = value.strip()
+    if not normalized:
+        return None
+    if normalized.endswith("Z"):
+        normalized = normalized[:-1] + "+00:00"
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid {field_name}: '{value}'") from exc
+
+
+async def _capture_request_payload(request: Request) -> Tuple[Request, Dict[str, Any]]:
+    """
+    Capture JSON payload for audit without breaking downstream body reading.
+
+    FastAPI request bodies can be consumed only once; when captured, we rebuild
+    the request with a custom receive() so route handlers can still access body.
+    """
+    content_type = (request.headers.get("content-type") or "").lower()
+    if "application/json" not in content_type:
+        return request, {}
+
+    body = await request.body()
+    if not body:
+        return request, {}
+
+    async def receive() -> Dict[str, Any]:
+        return {"type": "http.request", "body": body, "more_body": False}
+
+    request_with_body = Request(request.scope, receive)
+    if len(body) > AUDIT_CAPTURE_BODY_LIMIT:
+        return request_with_body, {
+            "_truncated": True,
+            "_raw_body_preview": body[:AUDIT_CAPTURE_BODY_LIMIT].decode("utf-8", errors="replace"),
+        }
+
+    try:
+        parsed = json.loads(body.decode("utf-8"))
+    except Exception:
+        return request_with_body, {
+            "_invalid_json": True,
+            "_raw_body_preview": body[:AUDIT_CAPTURE_BODY_LIMIT].decode("utf-8", errors="replace"),
+        }
+
+    if isinstance(parsed, dict):
+        return request_with_body, parsed
+    return request_with_body, {"_body": parsed}
+
+
+def _extract_workspace_id(payload: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Extract workspace identifier from payload conventions."""
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("workspace_id", "workspace", "project", "project_id"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("workspace_id", "workspace", "project", "project_id"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _extract_user_id(payload: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Extract user identifier from payload conventions."""
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("user_id", "user", "session_user"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("user_id", "user"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    return None
+
+
+def _extract_tool_name(payload: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Extract tool name for requests related to MCP or tool execution."""
+    if not isinstance(payload, dict):
+        return None
+
+    direct_tool = payload.get("tool_name")
+    if isinstance(direct_tool, str) and direct_tool.strip():
+        return direct_tool.strip()
+
+    tools_called = payload.get("tools_called")
+    if isinstance(tools_called, list) and tools_called:
+        first_tool = tools_called[0]
+        if isinstance(first_tool, str) and first_tool.strip():
+            return first_tool.strip()
+    return None
+
+
+def _record_tool_call_audit(
+    raw_request: Request,
+    server_id: Optional[str],
+    tool_name: Optional[str],
+    status_code: int,
+    duration_ms: float,
+    ok: bool,
+    request_payload: Optional[Dict[str, Any]] = None,
+    response_payload: Optional[Dict[str, Any]] = None,
+    context: Optional[str] = None,
+    error: Optional[str] = None,
+):
+    """Persist explicit tool call audit event."""
+    workspace_id = (
+        raw_request.headers.get("x-workspace-id")
+        or raw_request.headers.get("x-project-id")
+        or _extract_workspace_id(request_payload)
+    )
+    user_id = raw_request.headers.get("x-user-id") or _extract_user_id(request_payload)
+    request_id = getattr(raw_request.state, "audit_request_id", None) or raw_request.headers.get("x-request-id")
+
+    metadata = {
+        "server_id": server_id,
+        "context": context,
+        "ok": ok,
+        "error": error,
+    }
+
+    try:
+        get_audit_service().add_event(
+            event_type="tool_call",
+            request_id=request_id,
+            endpoint=raw_request.url.path,
+            method=raw_request.method,
+            status_code=status_code,
+            workspace_id=workspace_id,
+            user_id=user_id,
+            tool_name=tool_name,
+            duration_ms=duration_ms,
+            request_payload=request_payload or {},
+            response_payload=response_payload or {},
+            metadata=metadata,
+        )
+    except Exception as audit_exc:
+        logger.error("Failed to persist tool call audit event: %s", audit_exc)
+
+
+@app.middleware("http")
+async def audit_request_middleware(request: Request, call_next):
+    """Persist one structured audit event for every HTTP request."""
+    started_at = time.time()
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    request.state.audit_request_id = request_id
+
+    endpoint = request.url.path
+    method = request.method
+    status_code = 500
+    request_payload: Dict[str, Any] = {}
+    audit_error: Optional[str] = None
+
+    workspace_id = request.headers.get("x-workspace-id") or request.headers.get("x-project-id")
+    user_id = request.headers.get("x-user-id")
+    tool_name: Optional[str] = None
+
+    try:
+        request, request_payload = await _capture_request_payload(request)
+        request.state.audit_request_id = request_id
+        workspace_id = workspace_id or _extract_workspace_id(request_payload)
+        user_id = user_id or _extract_user_id(request_payload)
+        tool_name = _extract_tool_name(request_payload)
+    except Exception as payload_exc:
+        request_payload = {"_capture_error": str(payload_exc)}
+
+    workspace_id = workspace_id or request.query_params.get("workspace_id") or request.query_params.get("workspace")
+    user_id = user_id or request.query_params.get("user_id") or request.query_params.get("user")
+    tool_name = tool_name or request.query_params.get("tool_name") or request.query_params.get("tool")
+
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    except Exception as exc:
+        audit_error = str(exc)
+        raise
+    finally:
+        duration_ms = round((time.time() - started_at) * 1000, 2)
+        metadata = {
+            "query_params": dict(request.query_params),
+            "client_host": request.client.host if request.client else None,
+            "error": audit_error,
+        }
+        try:
+            get_audit_service().add_event(
+                event_type="request",
+                request_id=request_id,
+                endpoint=endpoint,
+                method=method,
+                status_code=status_code,
+                workspace_id=workspace_id,
+                user_id=user_id,
+                tool_name=tool_name,
+                duration_ms=duration_ms,
+                request_payload=request_payload,
+                metadata=metadata,
+            )
+        except Exception as audit_exc:
+            logger.error("Failed to persist request audit event: %s", audit_exc)
+
+
 async def stream_chat_completion_response(
     completion_id: str,
     created: int,
@@ -1175,6 +1688,7 @@ async def root():
             "feedback_accuracy": "GET /v1/feedback/accuracy",
             "feedback_stats": "GET /v1/feedback/stats",
             "feedback_export": "POST /v1/feedback/export/finetuning",
+            "audit_export": "GET /audit?format=json|csv",
             "mcp_tool_proxy": "POST /internal/mcp/tools/call"
         },
         "prometheus_metrics": "http://localhost:8001/metrics"
@@ -1243,27 +1757,110 @@ async def health_check():
     status_code = 200 if all_healthy and qdrant_status == "healthy" else 503
     return JSONResponse(content=payload, status_code=status_code)
 @app.post("/v1/mcp")
-async def proxy_mcp_gateway(request: MCPGatewayRequest):
+async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
     """Proxy MCP calls through the MCPJungle gateway service."""
     workspace_id = get_current_workspace_id()
+    started_at = time.time()
+    payload = request.model_dump(exclude_none=True)
+    payload.setdefault("workspace_id", workspace_id)
+    gateway_timeout_seconds = 30.0
+
+    if request.action == "call_tool":
+        try:
+            (
+                resolved_workspace_id,
+                resolved_request_id,
+                resolved_action,
+                gateway_timeout_seconds,
+            ) = enforce_mcp_tool_policy(
+                raw_request=raw_request,
+                server_id=request.server_id,
+                tool_name=request.tool_name or "",
+                arguments=request.arguments or {},
+                workspace_id=request.workspace_id or workspace_id,
+                request_id=request.request_id,
+                action=request.tool_action,
+                default_timeout_seconds=gateway_timeout_seconds,
+            )
+            payload["workspace_id"] = resolved_workspace_id
+            payload.setdefault("request_id", resolved_request_id)
+            payload.setdefault("tool_action", resolved_action)
+        except HTTPException as exc:
+            detail_payload = (
+                exc.detail
+                if isinstance(exc.detail, dict)
+                else {"error": "PolicyDenied", "reason": str(exc.detail), "code": "PolicyDenied"}
+            )
+            _record_tool_call_audit(
+                raw_request=raw_request,
+                server_id=request.server_id,
+                tool_name=request.tool_name,
+                status_code=exc.status_code,
+                duration_ms=round((time.time() - started_at) * 1000, 2),
+                ok=False,
+                request_payload=payload,
+                response_payload=detail_payload,
+                context=request.context or "api.v1.mcp",
+                error=str(detail_payload.get("reason") or detail_payload.get("error") or exc.detail),
+            )
+            raise HTTPException(status_code=exc.status_code, detail=detail_payload)
+
     headers = {"content-type": "application/json"}
     if MCP_GATEWAY_API_KEY:
         headers["authorization"] = f"Bearer {MCP_GATEWAY_API_KEY}"
-    headers[WORKSPACE_ID_RESPONSE_HEADER] = workspace_id
-    payload = request.model_dump(exclude_none=True)
-    payload["workspace_id"] = workspace_id
+    headers[WORKSPACE_ID_RESPONSE_HEADER] = payload.get("workspace_id", workspace_id)
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=gateway_timeout_seconds) as client:
             response = await client.post(
                 f"{MCP_GATEWAY_URL}/mcp",
                 headers=headers,
                 json=payload,
             )
+            status_code = response.status_code
             response.raise_for_status()
-            return response.json()
+            response_payload = response.json()
+            if request.action == "call_tool":
+                _record_tool_call_audit(
+                    raw_request=raw_request,
+                    server_id=request.server_id,
+                    tool_name=request.tool_name,
+                    status_code=status_code,
+                    duration_ms=round((time.time() - started_at) * 1000, 2),
+                    ok=True,
+                    request_payload=payload,
+                    response_payload=response_payload,
+                    context=request.context or "api.v1.mcp",
+                )
+            return response_payload
     except httpx.HTTPStatusError as exc:
+        if request.action == "call_tool":
+            _record_tool_call_audit(
+                raw_request=raw_request,
+                server_id=request.server_id,
+                tool_name=request.tool_name,
+                status_code=exc.response.status_code,
+                duration_ms=round((time.time() - started_at) * 1000, 2),
+                ok=False,
+                request_payload=payload,
+                response_payload={"error": exc.response.text},
+                context=request.context or "api.v1.mcp",
+                error=exc.response.text,
+            )
         raise HTTPException(status_code=exc.response.status_code, detail=exc.response.text)
     except Exception as exc:
+        if request.action == "call_tool":
+            _record_tool_call_audit(
+                raw_request=raw_request,
+                server_id=request.server_id,
+                tool_name=request.tool_name,
+                status_code=502,
+                duration_ms=round((time.time() - started_at) * 1000, 2),
+                ok=False,
+                request_payload=payload,
+                response_payload={"error": str(exc)},
+                context=request.context or "api.v1.mcp",
+                error=str(exc),
+            )
         raise HTTPException(status_code=502, detail=f"MCP gateway unreachable: {exc}")
 @app.get("/metrics")
 async def get_metrics():
@@ -1280,21 +1877,156 @@ async def get_circuit_breakers():
         "circuit_breakers": get_all_circuit_breaker_stats(),
         "timestamp": datetime.utcnow().isoformat()
     }
+
+
+@app.get("/audit", response_model=AuditExportResponse)
+async def export_audit_events(
+    raw_request: Request,
+    format: str = Query("json", pattern="^(json|csv)$", description="Export format"),
+    workspace_id: Optional[str] = Query(None, description="Filter by workspace identifier"),
+    user_id: Optional[str] = Query(None, description="Filter by user identifier"),
+    tool_name: Optional[str] = Query(None, description="Filter by tool name"),
+    event_type: Optional[str] = Query(None, pattern="^(request|tool_call)$", description="Filter by event type"),
+    start_date: Optional[str] = Query(None, description="Start date (ISO-8601)"),
+    end_date: Optional[str] = Query(None, description="End date (ISO-8601)"),
+    limit: int = Query(1000, ge=1, le=AUDIT_EXPORT_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    """
+    Export structured audit events as JSON or CSV.
+
+    Supported filters include workspace/user/date range/tool name.
+    """
+    query_params = raw_request.query_params
+    workspace_filter = workspace_id or query_params.get("workspace")
+    user_filter = user_id or query_params.get("user")
+    tool_filter = tool_name or query_params.get("tool")
+    event_filter = event_type or query_params.get("type")
+
+    if event_filter and event_filter not in {"request", "tool_call"}:
+        raise HTTPException(status_code=400, detail="event_type must be 'request' or 'tool_call'")
+
+    start_filter = _safe_iso_datetime(
+        start_date or query_params.get("from") or query_params.get("start"),
+        "start_date",
+    )
+    end_filter = _safe_iso_datetime(
+        end_date or query_params.get("to") or query_params.get("end"),
+        "end_date",
+    )
+    if start_filter and end_filter and end_filter < start_filter:
+        raise HTTPException(status_code=400, detail="end_date must be greater than or equal to start_date")
+
+    try:
+        service = get_audit_service()
+        result = service.export_events(
+            export_format=format,
+            workspace_id=workspace_filter,
+            user_id=user_filter,
+            tool_name=tool_filter,
+            event_type=event_filter,
+            start_date=start_filter,
+            end_date=end_filter,
+            limit=limit,
+            offset=offset,
+        )
+        if format == "csv":
+            filename = f"audit_export_{datetime.utcnow().strftime('%Y%m%dT%H%M%SZ')}.csv"
+            return Response(
+                content=result["csv_data"],
+                media_type="text/csv",
+                headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            )
+        return AuditExportResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("Error exporting audit events: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Audit export error: {exc}")
 @app.post("/internal/mcp/tools/call", response_model=MCPToolProxyResponse)
-async def internal_mcp_tool_call(request: MCPToolProxyRequest):
+async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Request):
     """Route internal tool calls to MCP gateway /mcp endpoint with structured result."""
     workspace_id = get_current_workspace_id()
+    started_at = time.time()
+    policy_started_at = time.perf_counter()
+    request_payload = request.model_dump(exclude_none=True)
+    request_payload.setdefault("workspace_id", workspace_id)
+    effective_timeout_seconds = float(os.getenv("MCP_GATEWAY_TIMEOUT_SECONDS", "10"))
     tool_arguments = dict(request.arguments or {})
     tool_arguments.setdefault("workspace_id", workspace_id)
+    try:
+        (
+            resolved_workspace_id,
+            resolved_request_id,
+            resolved_action,
+            effective_timeout_seconds,
+        ) = enforce_mcp_tool_policy(
+            raw_request=raw_request,
+            server_id=request.server_id,
+            tool_name=request.tool_name,
+            arguments=tool_arguments,
+            workspace_id=request.workspace_id or workspace_id,
+            request_id=request.request_id,
+            action=request.action,
+            default_timeout_seconds=effective_timeout_seconds,
+        )
+        request_payload["workspace_id"] = resolved_workspace_id
+        request_payload["request_id"] = resolved_request_id
+        request_payload["action"] = resolved_action
+        tool_arguments["workspace_id"] = resolved_workspace_id
+    except HTTPException as exc:
+        latency_ms = (time.perf_counter() - policy_started_at) * 1000
+        detail_payload = (
+            exc.detail
+            if isinstance(exc.detail, dict)
+            else {"error": "PolicyDenied", "reason": str(exc.detail), "code": "PolicyDenied"}
+        )
+        detail_data = {k: v for k, v in detail_payload.items() if k not in {"ok", "error"}}
+        denied_payload = MCPToolProxyResponse(
+            ok=False,
+            tool_name=request.tool_name,
+            latency_ms=latency_ms,
+            status_code=exc.status_code,
+            data=detail_data or None,
+            error=str(detail_payload.get("error") or "PolicyDenied"),
+        ).model_dump()
+        _record_tool_call_audit(
+            raw_request=raw_request,
+            server_id=request.server_id,
+            tool_name=request.tool_name,
+            status_code=exc.status_code,
+            duration_ms=round(latency_ms, 2),
+            ok=False,
+            request_payload=request_payload,
+            response_payload=denied_payload,
+            context=request.context or "api.internal",
+            error=str(detail_payload.get("reason") or detail_payload.get("error") or exc.detail),
+        )
+        return JSONResponse(status_code=exc.status_code, content=denied_payload)
     client = get_mcp_gateway_client()
     result = await client.call_tool(
         server_id=request.server_id,
         tool_name=request.tool_name,
         arguments=tool_arguments,
-        context=f"{request.context or 'api.internal'} workspace={workspace_id}",
-        workspace_id=workspace_id,
+        context=f"{request.context or 'api.internal'} workspace={request_payload.get('workspace_id', workspace_id)}",
+        workspace_id=request_payload.get("workspace_id", workspace_id),
+        timeout_seconds=effective_timeout_seconds,
     )
     payload = result.to_dict()
+    _record_tool_call_audit(
+        raw_request=raw_request,
+        server_id=request.server_id,
+        tool_name=request.tool_name,
+        status_code=result.status_code,
+        duration_ms=round((time.time() - started_at) * 1000, 2),
+        ok=result.ok,
+        request_payload=request_payload,
+        response_payload=payload,
+        context=request.context or "api.internal",
+        error=result.error,
+    )
     if not result.ok:
         return JSONResponse(status_code=result.status_code, content=payload)
     return payload
@@ -1421,7 +2153,8 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             rag_results = service.search_documents(
                 query=retrieval_query,
                 limit=request.rag.k,
-                filters=rag_filters
+                filters=rag_filters,
+                workspace_id=workspace_id,
             )
             retrieval_time_ms = (time.time() - retrieval_start) * 1000
             if request.rag.min_score is not None:
@@ -1776,13 +2509,17 @@ async def rag_ingest(request: RAGIngestRequest):
     """
     try:
         workspace_id = get_current_workspace_id()
+        metadata = ensure_workspace_metadata(request.metadata, workspace_id)
         service = get_rag_service()
         result = service.ingest_document(
             text=request.text,
-            metadata=ensure_workspace_metadata(request.metadata, workspace_id),
+            metadata=metadata,
+            workspace_id=workspace_id,
         )
         logger.info(f"Successfully ingested document: {result['document_id']}")
         return RAGIngestResponse(**result)
+    except HTTPException:
+        raise
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
@@ -1799,18 +2536,29 @@ async def rag_ingest_batch(request: RAGIngestBatchRequest):
     """
     try:
         workspace_id = get_current_workspace_id()
-        service = get_rag_service()
-        documents_with_workspace = []
-        for document in request.documents:
-            document_payload = dict(document or {})
-            document_payload["metadata"] = ensure_workspace_metadata(
-                document_payload.get("metadata"),
+        normalized_documents = []
+        for index, document in enumerate(request.documents):
+            if not isinstance(document, dict):
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"/v1/rag/ingest/batch document[{index}] must be an object",
+                )
+            normalized_document = dict(document)
+            normalized_document["metadata"] = ensure_workspace_metadata(
+                document.get("metadata"),
                 workspace_id,
             )
-            documents_with_workspace.append(document_payload)
-        result = service.ingest_documents_batch(documents=documents_with_workspace)
+            normalized_documents.append(normalized_document)
+
+        service = get_rag_service()
+        result = service.ingest_documents_batch(
+            documents=normalized_documents,
+            workspace_id=workspace_id,
+        )
         logger.info(f"Successfully ingested {result['documents_processed']} documents")
         return RAGIngestBatchResponse(**result)
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in batch ingestion: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Batch ingestion error: {str(e)}")
@@ -1835,6 +2583,7 @@ async def rag_search(request: RAGSearchRequest):
             query=request.query,
             limit=request.limit,
             filters=rag_filters,
+            workspace_id=workspace_id,
         )
         logger.info(f"Search completed: {len(results)} results for query: {request.query[:50]}...")
         return RAGSearchResponse(
@@ -1842,6 +2591,8 @@ async def rag_search(request: RAGSearchRequest):
             query=request.query,
             limit=request.limit
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error searching documents: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
@@ -1866,6 +2617,7 @@ async def rag_semantic_search(request: RAGSemanticSearchRequest):
             top_k=request.top_k,
             filters=rag_filters,
             collection_name=request.collection_name,
+            workspace_id=workspace_id,
         )
         logger.info(
             "Semantic search completed: %s results (top_k=%s, collection=%s) for query: %s...",
@@ -1880,6 +2632,8 @@ async def rag_semantic_search(request: RAGSemanticSearchRequest):
             top_k=request.top_k,
             collection_name=request.collection_name,
         )
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error in semantic search: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Semantic search error: {str(e)}")
@@ -1968,6 +2722,7 @@ async def rag_query(request: RAGQueryRequest):
             query=request.query,
             limit=request.k,
             filters=rag_filters,
+            workspace_id=workspace_id,
         )
         graph_context = None
         graph_context_formatted = ""
@@ -1984,6 +2739,7 @@ async def rag_query(request: RAGQueryRequest):
                     filters=rag_filters,
                     graph_depth=1,
                     graph_limit=request.graph_limit,
+                    workspace_id=workspace_id,
                 )
                 if enriched_results.get("enriched"):
                     results = enriched_results.get("vector_results", results)
@@ -2163,7 +2919,8 @@ async def rag_graph_search(request: RAGGraphSearchRequest):
             filters=rag_filters,
             graph_depth=request.graph_depth,
             graph_limit=request.graph_limit,
-            include_entity_context=request.include_entity_context
+            include_entity_context=request.include_entity_context,
+            workspace_id=workspace_id,
         )
         
         logger.info(
@@ -2227,7 +2984,8 @@ async def rag_graph_query(request: RAGGraphQueryRequest):
             limit=request.k,
             filters=rag_filters,
             graph_depth=request.graph_depth,
-            graph_limit=request.graph_limit
+            graph_limit=request.graph_limit,
+            workspace_id=workspace_id,
         )
         retrieval_time_ms = (time.time() - retrieval_start) * 1000
         
@@ -3085,6 +3843,10 @@ async def shutdown_event():
     if feedback_service:
         feedback_service.close()
         logger.info("Feedback Service closed")
+
+    if audit_service:
+        audit_service.close()
+        logger.info("Audit Service closed")
     
     logger.info("API server shutdown complete")
 def handle_sigterm(signum, frame):

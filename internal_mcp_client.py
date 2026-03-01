@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Needs: python-package:httpx>=0.28.1
 """Internal MCP gateway client for brainego API services."""
 
 import logging
@@ -40,12 +41,15 @@ class InternalMCPGatewayClient:
     def __init__(
         self,
         gateway_base_url: str,
-        allowed_tools: Set[str],
+        allowed_tools: Optional[Set[str]] = None,
         timeout_seconds: float = 10.0,
         api_key: Optional[str] = None,
     ):
         self.gateway_base_url = gateway_base_url.rstrip("/")
-        self.allowed_tools = {tool.strip() for tool in allowed_tools if tool.strip()}
+        # Backward compatibility only; authorization lives in api_server proxy.
+        self.allowed_tools = {
+            tool.strip() for tool in (allowed_tools or set()) if tool and tool.strip()
+        }
         self.timeout_seconds = timeout_seconds
         self.api_key = api_key
 
@@ -64,6 +68,7 @@ class InternalMCPGatewayClient:
     def _headers(self, workspace_id: Optional[str] = None) -> Dict[str, str]:
         headers = {"content-type": "application/json"}
         if self.api_key:
+            headers["authorization"] = f"Bearer {self.api_key}"
             headers["x-api-key"] = self.api_key
         if workspace_id:
             headers["x-workspace-id"] = workspace_id
@@ -81,6 +86,7 @@ class InternalMCPGatewayClient:
         arguments: Optional[Dict[str, Any]] = None,
         context: Optional[str] = None,
         workspace_id: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
     ) -> MCPToolResult:
         started_at = time.perf_counter()
         payload = {
@@ -109,8 +115,14 @@ class InternalMCPGatewayClient:
                 error=error,
             )
 
+        effective_timeout_seconds = (
+            float(timeout_seconds)
+            if timeout_seconds is not None and float(timeout_seconds) > 0
+            else self.timeout_seconds
+        )
+
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            async with httpx.AsyncClient(timeout=effective_timeout_seconds) as client:
                 response = await client.post(
                     f"{self.gateway_base_url}/mcp/tools/call",
                     json=payload,
