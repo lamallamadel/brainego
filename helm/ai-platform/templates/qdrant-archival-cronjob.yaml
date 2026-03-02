@@ -1,0 +1,66 @@
+{{- if .Values.qdrantArchival.enabled -}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: qdrant-archival
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: qdrant-archival
+    app.kubernetes.io/component: archival
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  schedule: {{ .Values.qdrantArchival.schedule | default "0 2 * * 0" | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.qdrantArchival.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .Values.qdrantArchival.failedJobsHistoryLimit | default 3 }}
+  jobTemplate:
+    spec:
+      backoffLimit: {{ .Values.qdrantArchival.backoffLimit | default 2 }}
+      ttlSecondsAfterFinished: {{ .Values.qdrantArchival.ttlSecondsAfterFinished | default 86400 }}
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: qdrant-archival
+            app.kubernetes.io/component: archival
+        spec:
+          restartPolicy: OnFailure
+          {{- if .Values.rbac.enabled }}
+          serviceAccountName: {{ .Values.rbac.serviceAccounts.qdrant.name | default "qdrant-sa" }}
+          {{- end }}
+          containers:
+            - name: qdrant-archival
+              image: "{{ .Values.qdrantArchival.image.repository }}:{{ .Values.qdrantArchival.image.tag }}"
+              imagePullPolicy: {{ .Values.qdrantArchival.image.pullPolicy }}
+              command:
+                - python
+                - /app/scripts/observability/qdrant_archival_service.py
+              env:
+                - name: QDRANT_HOST
+                  value: {{ .Values.qdrant.service.name | default "qdrant" }}
+                - name: QDRANT_PORT
+                  value: "{{ .Values.qdrant.service.port | default 6333 }}"
+                - name: MINIO_ENDPOINT
+                  value: {{ .Values.minio.service.name | default "minio" }}:{{ .Values.minio.service.apiPort | default 9000 }}
+                - name: MINIO_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: minio-credentials
+                      key: accessKey
+                - name: MINIO_SECRET_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: minio-credentials
+                      key: secretKey
+                - name: MINIO_ARCHIVE_BUCKET
+                  value: {{ .Values.qdrantArchival.minioBucket | default "qdrant-archive" }}
+                - name: ARCHIVAL_AGE_DAYS
+                  value: "{{ .Values.qdrantArchival.archivalAgeDays | default 90 }}"
+                - name: BATCH_SIZE
+                  value: "{{ .Values.qdrantArchival.batchSize | default 1000 }}"
+                - name: COLLECTION_NAME
+                  value: {{ .Values.qdrantArchival.collectionName | default "documents" }}
+                - name: DRY_RUN
+                  value: "{{ .Values.qdrantArchival.dryRun | default false }}"
+              resources:
+                {{- toYaml .Values.qdrantArchival.resources | nindent 16 }}
+{{- end }}

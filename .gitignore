@@ -98,6 +98,11 @@ maml_*.pt
 # Grafana
 grafana-data/
 
+# Cost optimization reports
+cost-optimization-reports/
+resource_recommendations.json
+helm-values-patch*.yaml
+
 # Observability Stack
 loki-data/
 alertmanager-data/

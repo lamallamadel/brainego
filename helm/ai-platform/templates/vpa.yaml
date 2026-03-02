@@ -1,0 +1,147 @@
+{{- if .Values.vpa.enabled -}}
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: gateway-vpa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: gateway
+    app.kubernetes.io/component: vpa
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: gateway
+  updatePolicy:
+    updateMode: {{ .Values.vpa.updateMode | default "Auto" }}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: gateway
+        minAllowed:
+          cpu: {{ .Values.vpa.gateway.minAllowed.cpu | default "100m" }}
+          memory: {{ .Values.vpa.gateway.minAllowed.memory | default "256Mi" }}
+        maxAllowed:
+          cpu: {{ .Values.vpa.gateway.maxAllowed.cpu | default "2" }}
+          memory: {{ .Values.vpa.gateway.maxAllowed.memory | default "4Gi" }}
+        controlledResources:
+          - cpu
+          - memory
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: mcpjungle-vpa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: mcpjungle
+    app.kubernetes.io/component: vpa
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mcpjungle
+  updatePolicy:
+    updateMode: {{ .Values.vpa.updateMode | default "Auto" }}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: mcpjungle
+        minAllowed:
+          cpu: {{ .Values.vpa.mcpjungle.minAllowed.cpu | default "200m" }}
+          memory: {{ .Values.vpa.mcpjungle.minAllowed.memory | default "512Mi" }}
+        maxAllowed:
+          cpu: {{ .Values.vpa.mcpjungle.maxAllowed.cpu | default "4" }}
+          memory: {{ .Values.vpa.mcpjungle.maxAllowed.memory | default "8Gi" }}
+        controlledResources:
+          - cpu
+          - memory
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: mem0-vpa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: mem0
+    app.kubernetes.io/component: vpa
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: mem0
+  updatePolicy:
+    updateMode: {{ .Values.vpa.updateMode | default "Auto" }}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: mem0
+        minAllowed:
+          cpu: {{ .Values.vpa.mem0.minAllowed.cpu | default "100m" }}
+          memory: {{ .Values.vpa.mem0.minAllowed.memory | default "256Mi" }}
+        maxAllowed:
+          cpu: {{ .Values.vpa.mem0.maxAllowed.cpu | default "2" }}
+          memory: {{ .Values.vpa.mem0.maxAllowed.memory | default "4Gi" }}
+        controlledResources:
+          - cpu
+          - memory
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: grafana-vpa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: grafana
+    app.kubernetes.io/component: vpa
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: grafana
+  updatePolicy:
+    updateMode: {{ .Values.vpa.updateMode | default "Auto" }}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: grafana
+        minAllowed:
+          cpu: {{ .Values.vpa.grafana.minAllowed.cpu | default "100m" }}
+          memory: {{ .Values.vpa.grafana.minAllowed.memory | default "256Mi" }}
+        maxAllowed:
+          cpu: {{ .Values.vpa.grafana.maxAllowed.cpu | default "2" }}
+          memory: {{ .Values.vpa.grafana.maxAllowed.memory | default "4Gi" }}
+        controlledResources:
+          - cpu
+          - memory
+---
+apiVersion: autoscaling.k8s.io/v1
+kind: VerticalPodAutoscaler
+metadata:
+  name: jaeger-vpa
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: jaeger
+    app.kubernetes.io/component: vpa
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: jaeger
+  updatePolicy:
+    updateMode: {{ .Values.vpa.updateMode | default "Auto" }}
+  resourcePolicy:
+    containerPolicies:
+      - containerName: jaeger
+        minAllowed:
+          cpu: {{ .Values.vpa.jaeger.minAllowed.cpu | default "100m" }}
+          memory: {{ .Values.vpa.jaeger.minAllowed.memory | default "256Mi" }}
+        maxAllowed:
+          cpu: {{ .Values.vpa.jaeger.maxAllowed.cpu | default "2" }}
+          memory: {{ .Values.vpa.jaeger.maxAllowed.memory | default "4Gi" }}
+        controlledResources:
+          - cpu
+          - memory
+{{- end }}

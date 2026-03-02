@@ -1677,3 +1677,117 @@ blueGreen:
                   values:
                     - agent-router
             topologyKey: kubernetes.io/hostname
+
+# Vertical Pod Autoscaler (VPA) Configuration
+vpa:
+  enabled: false
+  updateMode: Auto  # Options: Off, Initial, Recreate, Auto
+  
+  # Gateway VPA limits
+  gateway:
+    minAllowed:
+      cpu: 100m
+      memory: 256Mi
+    maxAllowed:
+      cpu: 2
+      memory: 4Gi
+  
+  # MCPJungle VPA limits
+  mcpjungle:
+    minAllowed:
+      cpu: 200m
+      memory: 512Mi
+    maxAllowed:
+      cpu: 4
+      memory: 8Gi
+  
+  # Mem0 VPA limits
+  mem0:
+    minAllowed:
+      cpu: 100m
+      memory: 256Mi
+    maxAllowed:
+      cpu: 2
+      memory: 4Gi
+  
+  # Grafana VPA limits
+  grafana:
+    minAllowed:
+      cpu: 100m
+      memory: 256Mi
+    maxAllowed:
+      cpu: 2
+      memory: 4Gi
+  
+  # Jaeger VPA limits
+  jaeger:
+    minAllowed:
+      cpu: 100m
+      memory: 256Mi
+    maxAllowed:
+      cpu: 2
+      memory: 4Gi
+
+# API Server configuration (for resource right-sizing)
+apiServer:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: ai-platform/api-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    limits:
+      memory: 2Gi
+      cpu: 1
+    requests:
+      memory: 1Gi
+      cpu: 500m
+  livenessProbe:
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  readinessProbe:
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+  startupProbe:
+    initialDelaySeconds: 10
+    periodSeconds: 5
+    timeoutSeconds: 5
+    failureThreshold: 20
+
+# Graceful shutdown configuration
+gracefulShutdown:
+  terminationGracePeriodSeconds: 30
+  preStopDelaySeconds: 5
+
+# Qdrant Archival CronJob Configuration
+qdrantArchival:
+  enabled: false
+  schedule: "0 2 * * 0"  # Weekly on Sunday at 2 AM
+  image:
+    repository: ai-platform/api-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  collectionName: documents
+  archivalAgeDays: 90
+  batchSize: 1000
+  dryRun: false
+  minioBucket: qdrant-archive
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400
+  resources:
+    limits:
+      memory: 2Gi
+      cpu: 1
+    requests:
+      memory: 512Mi
+      cpu: 250m

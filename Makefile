@@ -1,4 +1,4 @@
-.PHONY: help install install-modular download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-init-schema graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status grafana grafana-start grafana-stop grafana-ui drift drift-start drift-stop drift-logs drift-check drift-metrics test-unit test-integration test-all codex-help pilot-preflight pilot-demo-rbac pilot-demo-index pilot-demo-incident pilot-demo
+.PHONY: help install install-modular download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-init-schema graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status grafana grafana-start grafana-stop grafana-ui drift drift-start drift-stop drift-logs drift-check drift-metrics test-unit test-integration test-all codex-help pilot-preflight pilot-demo-rbac pilot-demo-index pilot-demo-incident pilot-demo cost-analyze cost-summary cost-patch cost-workflow cost-archival cost-archival-dryrun cost-dashboard
 
 help:
 	@echo "MAX Serve + Llama 3.3 8B Infrastructure"
@@ -76,6 +76,15 @@ help:
 	@echo "  make drift-logs       - View drift monitor logs"
 	@echo "  make drift-check      - Trigger manual drift check"
 	@echo "  make drift-metrics    - View drift metrics"
+	@echo ""
+	@echo "Cost Optimization commands:"
+	@echo "  make cost-analyze     - Analyze resource usage and generate recommendations"
+	@echo "  make cost-summary     - Show recommendation summary"
+	@echo "  make cost-patch       - Generate Helm values patch"
+	@echo "  make cost-workflow    - Run full cost optimization workflow"
+	@echo "  make cost-archival    - Run Qdrant archival to cold storage"
+	@echo "  make cost-archival-dryrun - Run archival in dry-run mode"
+	@echo "  make cost-dashboard   - Open cost optimization dashboard"
 
 install:
 	pip install -r requirements.txt
@@ -446,4 +455,34 @@ pilot-demo-incident:
 
 pilot-demo:
 	@bash scripts/pilot/run_pilot_demo.sh
+
+# Cost Optimization commands
+cost-analyze:
+	@echo "Analyzing resource usage..."
+	@python3 scripts/observability/analyze_resource_usage.py
+
+cost-summary:
+	@echo "Generating recommendation summary..."
+	@python3 scripts/observability/apply_recommendations.py resource_recommendations.json --summary
+
+cost-patch:
+	@echo "Generating Helm values patch..."
+	@python3 scripts/observability/apply_recommendations.py resource_recommendations.json -o helm-values-patch.yaml
+
+cost-workflow:
+	@echo "Running cost optimization workflow..."
+	@bash scripts/observability/cost_optimization_workflow.sh
+
+cost-archival:
+	@echo "Running Qdrant archival..."
+	@python3 scripts/observability/qdrant_archival_service.py
+
+cost-archival-dryrun:
+	@echo "Running Qdrant archival (dry run)..."
+	@DRY_RUN=true python3 scripts/observability/qdrant_archival_service.py
+
+cost-dashboard:
+	@echo "Opening cost optimization dashboard..."
+	@echo "Dashboard URL: http://localhost:3000/d/cost-optimization/cost-optimization-finops"
+	@xdg-open "http://localhost:3000/d/cost-optimization/cost-optimization-finops" 2>/dev/null || open "http://localhost:3000/d/cost-optimization/cost-optimization-finops" 2>/dev/null || echo "Please open: http://localhost:3000/d/cost-optimization/cost-optimization-finops"
 
