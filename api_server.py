@@ -2577,6 +2577,13 @@ def _redact_value_for_audit(value: Any) -> Tuple[Any, int]:
     return redact_secrets(value)
 
 
+def _redacted_log_preview(value: Any, limit: int = 100) -> str:
+    """Return a bounded, secret-redacted preview suitable for logs."""
+    text = "" if value is None else str(value)
+    redacted_text, _ = redact_secrets_in_text(text)
+    if len(redacted_text) <= limit:
+        return redacted_text
+    return f"{redacted_text[:limit]}..."
 def _normalize_audit_event_type(value: Optional[str]) -> Optional[str]:
     """Normalize event type aliases to canonical audit schema names."""
     if value is None:
@@ -2996,6 +3003,7 @@ async def audit_request_middleware(request: Request, call_next):
                 logger.warning("Failed to record usage request metric: %s", metrics_exc)
         safe_request_payload, request_redactions = _redact_value_for_audit(request_payload)
         safe_audit_error, error_redactions = _redact_value_for_audit(audit_error or "")
+        safe_query_params, query_param_redactions = _redact_value_for_audit(dict(request.query_params))
         request_model = _extract_model_name(safe_request_payload)
         tool_calls = _extract_tool_calls(safe_request_payload, fallback_tool_name=tool_name)
         redacted_arguments = _extract_redacted_arguments(safe_request_payload)
@@ -3006,10 +3014,11 @@ async def audit_request_middleware(request: Request, call_next):
         else:
             request_status = "error"
         metadata = {
-            "query_params": dict(request.query_params),
+            "query_params": safe_query_params,
             "client_host": request.client.host if request.client else None,
             "error": safe_audit_error or None,
             "request_redactions": request_redactions,
+            "query_params_redactions": query_param_redactions,
             "error_redactions": error_redactions,
             "redacted_arguments": redacted_arguments,
             "event_schema": "request_event.v1",
@@ -4591,7 +4600,11 @@ async def rag_search(request: RAGSearchRequest):
                 context_sanitization["dropped_injection_lines"],
                 context_sanitization["secret_redactions"],
             )
-        logger.info(f"Search completed: {len(results)} results for query: {request.query[:50]}...")
+        logger.info(
+            "Search completed: %s results for query=%s",
+            len(results),
+            _redacted_log_preview(request.query, limit=50),
+        )
         return RAGSearchResponse(
             results=results,
             query=request.query,
@@ -4651,7 +4664,7 @@ async def rag_semantic_search(request: RAGSemanticSearchRequest):
             len(results),
             request.top_k,
             request.collection_name or DEFAULT_COLLECTION,
-            request.query[:50],
+            _redacted_log_preview(request.query, limit=50),
         )
         return RAGSemanticSearchResponse(
             results=results,
@@ -4773,7 +4786,11 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
             safety_verdict = evaluate_safety_text(rag_payload_text, endpoint="/v1/rag/query")
             enforce_safety_gateway(safety_verdict)
         service = get_rag_service()
-        logger.info(f"RAG query with k={request.k}: {request.query[:100]}...")
+        logger.info(
+            "RAG query with k=%s: %s",
+            request.k,
+            _redacted_log_preview(request.query, limit=100),
+        )
         
         retrieval_start = time.time()
         results = service.search_documents(
@@ -5057,7 +5074,11 @@ async def rag_graph_search(request: RAGGraphSearchRequest):
                 detail="Graph service not available. Graph-enriched search requires Neo4j."
             )
         
-        logger.info(f"Graph-enriched search with depth={request.graph_depth}: {request.query[:100]}...")
+        logger.info(
+            "Graph-enriched search with depth=%s: %s",
+            request.graph_depth,
+            _redacted_log_preview(request.query, limit=100),
+        )
         
         enriched_results = service.search_with_graph_enrichment(
             query=request.query,
@@ -5169,7 +5190,11 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
                 detail="Graph service not available. Graph-enriched query requires Neo4j."
             )
         
-        logger.info(f"Graph-enriched RAG query with k={request.k}: {request.query[:100]}...")
+        logger.info(
+            "Graph-enriched RAG query with k=%s: %s",
+            request.k,
+            _redacted_log_preview(request.query, limit=100),
+        )
         
         retrieval_start = time.time()
         enriched_results = service.search_with_graph_enrichment(
@@ -5464,7 +5489,11 @@ async def memory_search(request: MemorySearchRequest):
             filters=workspace_filters,
             use_temporal_decay=request.use_temporal_decay
         )
-        logger.info(f"Memory search: {len(results)} results for query: {request.query[:50]}...")
+        logger.info(
+            "Memory search: %s results for query=%s",
+            len(results),
+            _redacted_log_preview(request.query, limit=50),
+        )
         return MemorySearchResponse(
             query=request.query,
             results=results,

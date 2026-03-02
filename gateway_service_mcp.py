@@ -37,6 +37,7 @@ from memory_scoring_config import load_memory_scoring_config
 from mcp_client import MCPClientService
 from mcp_acl import MCPACLManager
 from mcp_write_confirmation import PendingWritePlanStore, requires_write_confirmation
+from safety_sanitizer import redact_secrets
 from workspace_context import get_valid_workspace_ids, resolve_workspace_id
 from telemetry import init_telemetry, get_tracer, shutdown_telemetry
 from opentelemetry import trace
@@ -217,7 +218,8 @@ async def verify_api_key(
     api_key = authorization.credentials
     
     if api_key not in API_KEYS:
-        logger.warning(f"Invalid API key attempted: {api_key[:10]}...")
+        safe_api_key_payload, _ = redact_secrets({"api_key": api_key})
+        logger.warning("Invalid API key attempted: %s", safe_api_key_payload.get("api_key"))
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key"
@@ -924,6 +926,17 @@ async def call_mcp_tool(
         
         start_time = time.time()
         role = auth.get("role", "readonly")
+        identifier = f"{role}:{auth.get('api_key', '')[:10]}"
+        safe_arguments_payload, argument_redactions = redact_secrets({"arguments": request.arguments or {}})
+        safe_arguments = safe_arguments_payload.get("arguments", {})
+        logger.info(
+            "call_mcp_tool server=%s tool=%s role=%s argument_redactions=%s arguments=%s",
+            request.server_id,
+            request.tool_name,
+            role,
+            argument_redactions,
+            safe_arguments,
+        )
         identifier = f"{workspace_id}:{role}:{auth.get('api_key', '')[:10]}"
         
         try:
@@ -971,6 +984,14 @@ async def call_mcp_tool(
                         tool_name=request.tool_name,
                         arguments=tool_arguments,
                     )
+                    safe_pending_plan, pending_plan_redactions = redact_secrets(pending_plan.to_public_dict())
+                    if pending_plan_redactions:
+                        logger.warning(
+                            "call_mcp_tool_pending_confirmation_redacted server=%s tool=%s redactions=%s",
+                            request.server_id,
+                            request.tool_name,
+                            pending_plan_redactions,
+                        )
                     latency_ms = (time.time() - start_time) * 1000
                     metrics.record_request(latency_ms, is_mcp=True)
                     return {
@@ -984,7 +1005,8 @@ async def call_mcp_tool(
                             "Re-send the exact same call with confirm=true and confirmation_id."
                         ),
                         "confirmation_id": pending_plan.confirmation_id,
-                        "planned_call": pending_plan.to_public_dict(),
+                        "planned_call": safe_pending_plan,
+                        "planned_call_redactions": pending_plan_redactions,
                     }
             
             # Call tool
@@ -993,6 +1015,14 @@ async def call_mcp_tool(
                 request.tool_name,
                 tool_arguments
             )
+            safe_result, result_redactions = redact_secrets(result)
+            if result_redactions:
+                logger.warning(
+                    "call_mcp_tool_result_redacted server=%s tool=%s redactions=%s",
+                    request.server_id,
+                    request.tool_name,
+                    result_redactions,
+                )
             
             latency_ms = (time.time() - start_time) * 1000
             metrics.record_request(latency_ms, is_mcp=True)
@@ -1001,15 +1031,24 @@ async def call_mcp_tool(
                 "server_id": request.server_id,
                 "workspace_id": workspace_id,
                 "tool_name": request.tool_name,
-                "result": result
+                "result": safe_result,
+                "result_redactions": result_redactions,
             }
         except HTTPException:
             metrics.record_request((time.time() - start_time) * 1000, error=True, is_mcp=True)
             raise
         except Exception as e:
-            logger.error(f"Error calling tool: {e}")
+            safe_error, error_redactions = redact_secrets(str(e))
+            logger.error(
+                "Error calling tool server=%s tool=%s error=%s argument_redactions=%s error_redactions=%s",
+                request.server_id,
+                request.tool_name,
+                safe_error,
+                argument_redactions,
+                error_redactions,
+            )
             metrics.record_request((time.time() - start_time) * 1000, error=True, is_mcp=True)
-            raise HTTPException(status_code=500, detail=str(e))
+            raise HTTPException(status_code=500, detail=safe_error)
 
 
 @app.get("/mcp/acl/role")

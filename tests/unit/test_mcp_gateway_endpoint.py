@@ -90,6 +90,14 @@ def test_unified_mcp_passes_confirm_fields_to_call_tool_request() -> None:
     assert 'confirmation_id=request.get("confirmation_id")' in source_text
 
 
+def test_mcp_gateway_redacts_api_keys_tool_arguments_and_results() -> None:
+    source_text = SOURCE.read_text(encoding="utf-8")
+    assert "from safety_sanitizer import redact_secrets" in source_text
+    assert 'safe_api_key_payload, _ = redact_secrets({"api_key": api_key})' in source_text
+    assert 'safe_arguments_payload, argument_redactions = redact_secrets({"arguments": request.arguments or {}})' in source_text
+    assert "safe_result, result_redactions = redact_secrets(result)" in source_text
+    assert '"planned_call_redactions": pending_plan_redactions' in source_text
+    assert '"result_redactions": result_redactions' in source_text
 def test_unified_mcp_resolves_workspace_and_passes_request_context() -> None:
     source_text = SOURCE.read_text(encoding="utf-8")
     assert "workspace_id = _resolve_workspace_for_request(" in source_text
