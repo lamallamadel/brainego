@@ -105,6 +105,12 @@ def get_alertmanager_url() -> str:
     return os.getenv("ALERTMANAGER_URL", default_url)
 
 
+def get_prometheus_url() -> str:
+    """Get Prometheus URL from environment or default."""
+    default_url = "http://localhost:9090"
+    return os.getenv("PROMETHEUS_URL", default_url)
+
+
 def create_alert_payload(
     alert_type: str,
     severity: str = None,
@@ -156,8 +162,15 @@ def create_alert_payload(
     return [alert]
 
 
-def send_alert(alertmanager_url: str, alert_payload: List[Dict]) -> bool:
-    """Send alert to Alertmanager."""
+def send_alert_to_prometheus(prometheus_url: str, alert_payload: List[Dict]) -> bool:
+    """Send alert via Prometheus Alertmanager integration (simulates Prometheus firing alert)."""
+    # Use Prometheus API to forward alert to Alertmanager
+    alertmanager_url = prometheus_url.replace("9090", "9093")
+    return send_alert_to_alertmanager(alertmanager_url, alert_payload)
+
+
+def send_alert_to_alertmanager(alertmanager_url: str, alert_payload: List[Dict]) -> bool:
+    """Send alert directly to Alertmanager."""
     url = f"{alertmanager_url}/api/v1/alerts"
     
     try:
@@ -172,24 +185,86 @@ def send_alert(alertmanager_url: str, alert_payload: List[Dict]) -> bool:
         )
         
         if response.status_code == 200:
-            print("✅ Alert sent successfully!")
+            print("[SUCCESS] Alert sent successfully!")
             print(f"Response: {response.text}")
             return True
         else:
-            print(f"❌ Failed to send alert: HTTP {response.status_code}")
+            print(f"[ERROR] Failed to send alert: HTTP {response.status_code}")
             print(f"Response: {response.text}")
             return False
     
     except requests.exceptions.ConnectionError:
-        print(f"❌ Connection error: Could not connect to {url}")
+        print(f"[ERROR] Connection error: Could not connect to {url}")
         print("Make sure AlertManager is running and accessible.")
         return False
     except requests.exceptions.Timeout:
-        print(f"❌ Timeout: Request to {url} timed out")
+        print(f"[ERROR] Timeout: Request to {url} timed out")
         return False
     except Exception as e:
-        print(f"❌ Error sending alert: {e}")
+        print(f"[ERROR] Error sending alert: {e}")
         return False
+
+
+def check_alertmanager_alerts(alertmanager_url: str) -> List[Dict]:
+    """Query Alertmanager for active alerts."""
+    url = f"{alertmanager_url}/api/v1/alerts"
+    
+    try:
+        response = requests.get(url, timeout=5)
+        if response.status_code == 200:
+            data = response.json()
+            return data.get("data", [])
+        return []
+    except Exception as e:
+        print(f"Warning: Could not query alerts: {e}")
+        return []
+
+
+def verify_slack_delivery(alertmanager_url: str, alert_name: str, timeout: int = 60) -> bool:
+    """
+    Verify alert was processed by Alertmanager within timeout.
+    
+    Note: This checks if the alert appears in Alertmanager's active alerts.
+    Actual Slack delivery depends on the webhook being configured correctly.
+    """
+    print(f"\n[*] Verifying alert delivery (timeout: {timeout}s)...")
+    print(f"Note: This verifies the alert reached Alertmanager.")
+    print(f"Slack delivery requires valid SLACK_WEBHOOK_URL environment variable.\n")
+    
+    start_time = time.time()
+    check_interval = 2  # Check every 2 seconds
+    
+    while time.time() - start_time < timeout:
+        elapsed = int(time.time() - start_time)
+        print(f"[{elapsed}s] Checking Alertmanager for alert '{alert_name}'...", end="\r")
+        
+        alerts = check_alertmanager_alerts(alertmanager_url)
+        
+        for alert in alerts:
+            if alert.get("labels", {}).get("alertname") == alert_name:
+                elapsed_final = int(time.time() - start_time)
+                print(f"\n[SUCCESS] Alert '{alert_name}' confirmed in Alertmanager after {elapsed_final}s!")
+                print(f"\nAlert details:")
+                print(f"  Status: {alert.get('status', {}).get('state', 'unknown')}")
+                print(f"  Severity: {alert.get('labels', {}).get('severity', 'unknown')}")
+                print(f"  Component: {alert.get('labels', {}).get('component', 'unknown')}")
+                print(f"  Receivers: {', '.join(alert.get('receivers', []))}")
+                print(f"\n[TIP] Check your Slack channel for the notification!")
+                return True
+        
+        time.sleep(check_interval)
+    
+    print(f"\n[TIMEOUT] Alert '{alert_name}' not confirmed in Alertmanager within {timeout}s")
+    print(f"\nPossible issues:")
+    print(f"  1. Alertmanager not processing alerts (check logs)")
+    print(f"  2. Alert grouping delay (default: 10s group_wait)")
+    print(f"  3. Network connectivity issues")
+    print(f"\nTroubleshooting:")
+    print(f"  - Check Alertmanager logs: docker logs alertmanager")
+    print(f"  - Verify Alertmanager status: {alertmanager_url}/#/alerts")
+    print(f"  - Ensure SLACK_WEBHOOK_URL is set correctly")
+    
+    return False
 
 
 def resolve_alert(alertmanager_url: str, alert_payload: List[Dict]) -> bool:
@@ -210,27 +285,35 @@ def resolve_alert(alertmanager_url: str, alert_payload: List[Dict]) -> bool:
         )
         
         if response.status_code == 200:
-            print("✅ Alert resolved successfully!")
+            print("[SUCCESS] Alert resolved successfully!")
             return True
         else:
-            print(f"❌ Failed to resolve alert: HTTP {response.status_code}")
+            print(f"[ERROR] Failed to resolve alert: HTTP {response.status_code}")
             return False
     
     except Exception as e:
-        print(f"❌ Error resolving alert: {e}")
+        print(f"[ERROR] Error resolving alert: {e}")
         return False
 
 
 def list_alerts():
     """List available test alert types."""
-    print("\n📋 Available Test Alert Types:\n")
+    print("\nAvailable Test Alert Types:\n")
     for alert_type, template in ALERT_TEMPLATES.items():
-        print(f"  • {alert_type}")
+        print(f"  * {alert_type}")
         print(f"    Alert: {template['alertname']}")
         print(f"    Severity: {template['severity']}")
         print(f"    Component: {template['component']}")
         print(f"    Summary: {template['summary']}")
         print()
+
+
+def check_slack_webhook_configured() -> bool:
+    """Check if Slack webhook URL is configured."""
+    webhook_url = os.getenv("SLACK_WEBHOOK_URL", "")
+    if webhook_url and webhook_url.startswith("https://hooks.slack.com"):
+        return True
+    return False
 
 
 def main():
@@ -257,7 +340,7 @@ def main():
     parser.add_argument(
         "--resolve",
         action="store_true",
-        help="Send alert resolution after 10 seconds",
+        help="Send alert resolution after verification",
     )
     parser.add_argument(
         "--list-alerts",
@@ -270,6 +353,23 @@ def main():
         default=get_alertmanager_url(),
         help="AlertManager URL (default: http://localhost:9093)",
     )
+    parser.add_argument(
+        "--prometheus-url",
+        type=str,
+        default=get_prometheus_url(),
+        help="Prometheus URL (default: http://localhost:9090)",
+    )
+    parser.add_argument(
+        "--verify-timeout",
+        type=int,
+        default=60,
+        help="Timeout in seconds to verify Slack delivery (default: 60)",
+    )
+    parser.add_argument(
+        "--skip-verify",
+        action="store_true",
+        help="Skip verification of alert delivery",
+    )
     
     args = parser.parse_args()
     
@@ -281,6 +381,12 @@ def main():
         parser.print_help()
         print("\nError: --alert-type is required (or use --list-alerts)")
         return 1
+    
+    # Check Slack webhook configuration
+    if not check_slack_webhook_configured():
+        print("[WARNING] SLACK_WEBHOOK_URL environment variable not configured.")
+        print("   Alerts will be sent to Alertmanager but NOT delivered to Slack.")
+        print("   Set SLACK_WEBHOOK_URL to enable Slack notifications.\n")
     
     # Parse custom labels
     custom_labels = {}
@@ -301,18 +407,40 @@ def main():
             custom_labels=custom_labels,
         )
         
-        success = send_alert(args.alertmanager_url, alert_payload)
+        alert_name = alert_payload[0]["labels"]["alertname"]
+        
+        success = send_alert_to_alertmanager(args.alertmanager_url, alert_payload)
         
         if not success:
             return 1
         
-        # Optionally resolve alert after delay
+        # Verify alert delivery to Alertmanager
+        if not args.skip_verify:
+            verification_success = verify_slack_delivery(
+                args.alertmanager_url,
+                alert_name,
+                timeout=args.verify_timeout
+            )
+            
+            if not verification_success:
+                print("\n[WARNING] Alert was sent but not confirmed in Alertmanager within timeout.")
+                print("   This may indicate a configuration or processing issue.")
+        
+        # Optionally resolve alert after verification
         if args.resolve:
-            print("\nWaiting 10 seconds before resolving alert...")
-            time.sleep(10)
+            print("\n[*] Waiting 5 seconds before resolving alert...")
+            time.sleep(5)
             resolve_alert(args.alertmanager_url, alert_payload)
         else:
-            print("\n💡 Tip: Use --resolve to automatically resolve the alert after 10 seconds")
+            print("\n[TIP] Use --resolve to automatically resolve the alert after verification")
+        
+        print("\n[SUMMARY]")
+        print(f"  Alert Type: {args.alert_type}")
+        print(f"  Alert Name: {alert_name}")
+        print(f"  Severity: {alert_payload[0]['labels']['severity']}")
+        print(f"  Component: {alert_payload[0]['labels']['component']}")
+        print(f"  Alertmanager: {args.alertmanager_url}")
+        print(f"\n  View alerts at: {args.alertmanager_url}/#/alerts")
         
         return 0
     

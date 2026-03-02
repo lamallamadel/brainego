@@ -53,7 +53,7 @@ services:
       - /var/lib/docker/:/var/lib/docker:ro
     privileged: true
     networks:
-      - brainego
+      - ai-platform-net
 
   # Node Exporter - Host metrics
   node-exporter:
@@ -72,8 +72,33 @@ services:
       - /sys:/host/sys:ro
       - /:/rootfs:ro
     networks:
-      - brainego
+      - ai-platform-net
+
+  # AlertManager - Alert routing and notifications
+  alertmanager:
+    volumes:
+      - ./configs/alertmanager:/etc/alertmanager:ro
+      - alertmanager-data:/alertmanager
+    environment:
+      - SLACK_WEBHOOK_URL=${SLACK_WEBHOOK_URL:-}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - ONCALL_EMAIL_PRIMARY=${ONCALL_EMAIL_PRIMARY:-oncall@example.com}
+      - ONCALL_EMAIL_SECONDARY=${ONCALL_EMAIL_SECONDARY:-oncall-backup@example.com}
+      - MANAGEMENT_EMAIL_LIST=${MANAGEMENT_EMAIL_LIST:-management@example.com}
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9093/-/healthy"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
 
 networks:
-  brainego:
+  ai-platform-net:
     external: true
+
+volumes:
+  alertmanager-data:
+    driver: local
