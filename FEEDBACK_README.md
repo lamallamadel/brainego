@@ -1,11 +1,13 @@
 # Feedback Collection System
 
-Comprehensive feedback collection system with thumbs-up/down ratings, PostgreSQL storage, per-model accuracy tracking, and automated fine-tuning dataset export.
+Comprehensive feedback collection system with thumbs-up/down ratings, feedback taxonomy categories, optional expected answers, PostgreSQL storage, per-model accuracy tracking, and automated fine-tuning dataset export.
 
 ## Features
 
 ### 1. Feedback Collection (POST /v1/feedback)
 - **Thumbs-up/down ratings**: Simple +1/-1 rating system
+- **Feedback taxonomy**: `hallucination`, `wrong_tool`, `missing_citation`, `policy_denial`
+- **Expected answer capture**: Optional corrected answer for negative feedback
 - **Full context tracking**: Query, response, model, memory usage, tools called
 - **Rich metadata**: User ID, session ID, intent, project, custom metadata
 - **PostgreSQL storage**: Reliable, queryable storage with ACID guarantees
@@ -44,6 +46,9 @@ CREATE TABLE feedback (
     memory_used INTEGER DEFAULT 0,
     tools_called TEXT[] DEFAULT ARRAY[]::TEXT[],
     rating INTEGER NOT NULL CHECK (rating IN (-1, 1)),
+    reason TEXT,
+    category VARCHAR(64),
+    expected_answer TEXT,
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     user_id VARCHAR(255),
     session_id VARCHAR(255),
@@ -85,6 +90,9 @@ Content-Type: application/json
   "response": "def reverse_string(s):\n    return s[::-1]",
   "model": "qwen-2.5-coder-7b",
   "rating": 1,
+  "category": "hallucination",
+  "reason": "The model fabricated a production metric",
+  "expected_answer": "I don't have access to that production metric in this context.",
   "memory_used": 1024000,
   "tools_called": ["code_generator", "syntax_validator"],
   "user_id": "user-123",
@@ -209,8 +217,8 @@ Content-Type: application/json
 
 **Output Format (JSONL):**
 ```json
-{"instruction": "Respond to the user input accurately and helpfully.", "input": "...", "output": "...", "weight": 2.0, "metadata": {"model": "qwen-2.5-coder-7b", "rating": 1, "timestamp": "2025-01-15T10:30:00Z", "intent": "code", "project": "my-project"}}
-{"instruction": "Respond to the user input accurately and helpfully.", "input": "...", "output": "...", "weight": 0.5, "metadata": {"model": "llama-3.3-8b-instruct", "rating": -1, "timestamp": "2025-01-15T11:30:00Z", "intent": "general", "project": "my-project"}}
+{"instruction": "Respond to the user input accurately and helpfully.", "input": "...", "output": "...", "weight": 2.0, "metadata": {"model": "qwen-2.5-coder-7b", "rating": 1, "timestamp": "2025-01-15T10:30:00Z", "intent": "code", "project": "my-project", "category": null, "reason": null, "expected_answer": null}}
+{"instruction": "Respond to the user input accurately and helpfully.", "input": "...", "output": "...", "weight": 0.5, "metadata": {"model": "llama-3.3-8b-instruct", "rating": -1, "timestamp": "2025-01-15T11:30:00Z", "intent": "general", "project": "my-project", "category": "missing_citation", "reason": "No source cited", "expected_answer": "Add the source and quote it."}}
 ```
 
 ## Weighting Strategy
@@ -298,10 +306,13 @@ curl -X POST http://localhost:8000/v1/feedback/export/finetuning \
   -H "Content-Type: application/json" \
   -d "{
     \"output_path\": \"${OUTPUT_FILE}\",
-    \"format\": \"jsonl\"
+    \"format\": \"jsonl\",
+    \"upload_to_minio\": true,
+    \"minio_bucket\": \"finetuning-datasets\",
+    \"minio_prefix\": \"weekly\"
   }"
 
-echo "Dataset exported to ${OUTPUT_FILE}"
+echo "Dataset exported to ${OUTPUT_FILE} and uploaded to MinIO"
 ```
 
 Schedule with cron (every Sunday at 2 AM):

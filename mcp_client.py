@@ -18,6 +18,7 @@ import subprocess
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
+from safety_sanitizer import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -155,9 +156,19 @@ class MCPServerConnection:
         if not self.connected or not self.session:
             await self.connect()
         
+        safe_arguments_payload, argument_redactions = redact_secrets({"arguments": arguments or {}})
+        safe_arguments = safe_arguments_payload.get("arguments", {})
+
         try:
+            logger.info(
+                "Calling tool on %s: tool=%s argument_redactions=%s arguments=%s",
+                self.server_id,
+                tool_name,
+                argument_redactions,
+                safe_arguments,
+            )
             result = await self.session.call_tool(tool_name, arguments)
-            return {
+            payload = {
                 "content": [
                     {
                         "type": c.type,
@@ -168,8 +179,25 @@ class MCPServerConnection:
                 ],
                 "isError": result.isError if hasattr(result, "isError") else False
             }
+            _, output_redactions = redact_secrets(payload)
+            if output_redactions:
+                logger.warning(
+                    "Tool result redacted in logs for %s.%s output_redactions=%s",
+                    self.server_id,
+                    tool_name,
+                    output_redactions,
+                )
+            return payload
         except Exception as e:
-            logger.error(f"Error calling tool {tool_name} on {self.server_id}: {e}")
+            safe_error, error_redactions = redact_secrets(str(e))
+            logger.error(
+                "Error calling tool %s on %s: error=%s argument_redactions=%s error_redactions=%s",
+                tool_name,
+                self.server_id,
+                safe_error,
+                argument_redactions,
+                error_redactions,
+            )
             raise
     
     async def list_prompts(self) -> List[Dict[str, Any]]:
