@@ -172,11 +172,13 @@ class ToolPolicyEngine:
         default_workspace_id: Optional[str] = None,
         default_role: str = "viewer",
         request_counter_ttl_seconds: int = 3600,
+        workspace_service: Optional[Any] = None,
     ):
         self.workspace_policies = workspace_policies
         self.default_workspace_id = (default_workspace_id or "").strip() or None
         self.default_role = _normalize_supported_role(default_role, fallback="viewer")
         self.request_counter_ttl_seconds = request_counter_ttl_seconds
+        self.workspace_service = workspace_service
         self._request_call_counts: Dict[Tuple[str, str], Tuple[int, float]] = {}
         self._workspace_quota_windows: Dict[str, List[float]] = {}
         self._lock = threading.Lock()
@@ -308,6 +310,7 @@ class ToolPolicyEngine:
         block_private_ip_ranges = _parse_bool(
             config.get("block_private_ip_ranges", True),
             field_name=f"workspaces.{workspace_id}.block_private_ip_ranges",
+        )
         redaction_rules = _parse_redaction_rules(
             config.get("redaction_rules"),
             field_name=f"workspaces.{workspace_id}.redaction_rules",
@@ -339,6 +342,42 @@ class ToolPolicyEngine:
             return normalized
         return self.default_workspace_id
 
+    def _load_workspace_policy_from_db(self, workspace_id: str) -> Optional[WorkspaceToolPolicy]:
+        """Load workspace-specific policy override from database on cache miss."""
+        if not self.workspace_service:
+            return None
+        
+        try:
+            policy_data = self.workspace_service.get_workspace_policy(workspace_id)
+            tool_policy_override = policy_data.get("tool_policy_override")
+            
+            if not tool_policy_override or not isinstance(tool_policy_override, dict):
+                return None
+            
+            # Parse the tool_policy_override into a WorkspaceToolPolicy
+            parsed = self._parse_workspace_policy(
+                workspace_id=workspace_id,
+                config=tool_policy_override,
+                fallback_default_role=self.default_role,
+            )
+            
+            # Cache the parsed policy
+            with self._lock:
+                self.workspace_policies[workspace_id] = parsed
+            
+            logger.info(
+                "Loaded workspace policy override from DB for workspace_id=%s",
+                workspace_id,
+            )
+            return parsed
+        except Exception as exc:
+            logger.warning(
+                "Failed to load workspace policy from DB for workspace_id=%s: %s",
+                workspace_id,
+                exc,
+            )
+            return None
+
     def evaluate_tool_call(
         self,
         *,
@@ -362,6 +401,10 @@ class ToolPolicyEngine:
             )
 
         workspace_policy = self.workspace_policies.get(resolved_workspace)
+        if not workspace_policy:
+            # Try loading from database on cache miss
+            workspace_policy = self._load_workspace_policy_from_db(resolved_workspace)
+        
         if not workspace_policy:
             return ToolPolicyDecision(
                 allowed=False,
@@ -532,7 +575,6 @@ class ToolPolicyEngine:
                 workspace_id=resolved_workspace,
             )
 
-        quota_allowed, quota_reason = self._validate_request_quota(
         quota_allowed, quota_reason = self._validate_quotas(
             workspace_policy=workspace_policy,
             workspace_id=resolved_workspace,
@@ -645,7 +687,6 @@ class ToolPolicyEngine:
 
         return True, None
 
-    def _validate_request_quota(
     def _validate_quotas(
         self,
         *,

@@ -1262,6 +1262,32 @@ class WorkspaceResponse(BaseModel):
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     disabled_at: Optional[str] = None
+
+
+class WorkspacePolicyResponse(BaseModel):
+    tool_policy_override: Optional[Dict[str, Any]] = None
+    quota_limits: Optional[Dict[str, Any]] = None
+    allowed_models: Optional[List[str]] = None
+    allowed_mcp_servers: Optional[List[str]] = None
+
+
+class WorkspacePolicyUpdateRequest(BaseModel):
+    tool_policy_override: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Workspace-scoped MCP tool policy override",
+    )
+    quota_limits: Optional[Dict[str, Any]] = Field(
+        None,
+        description="Workspace quota configuration",
+    )
+    allowed_models: Optional[List[str]] = Field(
+        None,
+        description="Permitted model identifiers",
+    )
+    allowed_mcp_servers: Optional[List[str]] = Field(
+        None,
+        description="Permitted MCP server identifiers",
+    )
 class WorkspaceListResponse(BaseModel):
     status: str
     total: int
@@ -1545,11 +1571,9 @@ def _record_metering_event(
             workspace_id=workspace_id,
             meter_key=meter_key,
             quantity=quantity,
-            request_id=safe_request_id or None,
-            metadata=safe_metadata,
-            user_id=user_id,
             request_id=request_id,
             metadata=metadata,
+            user_id=user_id,
         )
     except Exception as metering_exc:
         logger.error("Failed to persist metering event: %s", metering_exc)
@@ -1637,11 +1661,11 @@ class MetricsStore:
     @staticmethod
     def _rate(errors: int, total: int) -> float:
         return round((errors / total) * 100, 2) if total else 0.0
+    
     @staticmethod
     def _tokens_per_second(tokens: int, total_latency_ms: float) -> float:
         return round(tokens / (total_latency_ms / 1000), 2) if total_latency_ms > 0 else 0.0
-    def record_safety_verdict(self, verdict: str, blocked_categories: Optional[List[str]] = None):
-        """Track safety verdict distribution for chat endpoints."""
+    
     def record_safety_verdict(self, verdict: str, reason_codes: Optional[List[str]] = None):
         """Track safety verdict distribution and reason-code telemetry."""
         normalized = (verdict or "safe").lower()
@@ -1650,13 +1674,6 @@ class MetricsStore:
         self.safety_verdict_counts[normalized] += 1
         if normalized != "block":
             return
-        for category in sorted({str(item).strip().lower() for item in (blocked_categories or []) if str(item).strip()}):
-            self.safety_blocked_category_counts[category] = (
-                self.safety_blocked_category_counts.get(category, 0) + 1
-            )
-        if not blocked_categories:
-            self.safety_blocked_category_counts["unspecified"] = (
-                self.safety_blocked_category_counts.get("unspecified", 0) + 1
         for reason_code in reason_codes or []:
             normalized_reason = str(reason_code).strip().lower()
             if not normalized_reason:
@@ -2257,7 +2274,10 @@ def get_tool_policy_engine() -> ToolPolicyEngine:
     global tool_policy_engine
     if tool_policy_engine is None:
         logger.info("Initializing tool policy engine...")
-        tool_policy_engine = load_default_tool_policy_engine()
+        policy_engine_instance = load_default_tool_policy_engine()
+        # Wire workspace service for DB-backed policy overrides
+        policy_engine_instance.workspace_service = get_workspace_service()
+        tool_policy_engine = policy_engine_instance
         logger.info("Tool policy engine initialized")
     return tool_policy_engine
 
@@ -2527,11 +2547,43 @@ def enforce_mcp_tool_policy(
             ),
         ) from exc
 
+    # Get authenticated role from AUTH_ROLE_CONTEXT (set by auth middleware)
+    authenticated_role = AUTH_ROLE_CONTEXT.get()
+    authenticated_role_normalized = _normalize_mcp_policy_role(authenticated_role)
+    
+    # Reject if client-provided role/scopes attempt privilege escalation
+    if role is not None and authenticated_role:
+        requested_role_normalized = _normalize_mcp_policy_role(role)
+        if _role_priority(requested_role_normalized) > _role_priority(authenticated_role_normalized):
+            raise HTTPException(
+                status_code=403,
+                detail=_build_policy_denied_detail(
+                    reason=f"role escalation denied: authenticated as '{authenticated_role_normalized}', requested '{requested_role_normalized}'",
+                    workspace_id=resolved_workspace_id,
+                    request_id=resolved_request_id,
+                    role=authenticated_role_normalized,
+                ),
+            )
+    
     resolved_role, resolved_scopes = _resolve_tool_policy_identity(
         raw_request=raw_request,
         explicit_role=role,
         explicit_scopes=scopes,
     )
+    
+    # Enforce that resolved scopes match authenticated context (no client-controlled scopes)
+    if authenticated_role and scopes:
+        # When authenticated, scopes must come from auth context, not request body
+        raise HTTPException(
+            status_code=403,
+            detail=_build_policy_denied_detail(
+                reason="scopes cannot be provided in request body when authenticated (use auth token scopes)",
+                workspace_id=resolved_workspace_id,
+                request_id=resolved_request_id,
+                role=resolved_role,
+            ),
+        )
+    
     resolved_action = _infer_tool_action(normalized_tool_name, action)
     policy_engine = get_tool_policy_engine()
     decision = policy_engine.evaluate_tool_call(
@@ -2919,14 +2971,15 @@ def evaluate_safety_text(text: str, endpoint: str) -> SafetyVerdictResponse:
     elif SAFETY_REASON_WARNING_TERMS in reason_codes:
         verdict = "warn"
         reason = "Detected warning-level safety patterns"
+        reason_code = SAFETY_REASON_WARNING_TERMS
+    else:
+        reason_codes = [SAFETY_REASON_SAFE]
+    
     blocked_categories = _derive_blocked_categories(
         verdict=verdict,
         reason=reason,
         matched_block_terms=matched_block_terms,
     )
-        reason_code = SAFETY_REASON_WARNING_TERMS
-    else:
-        reason_codes = [SAFETY_REASON_SAFE]
 
     if reason_code not in reason_codes:
         reason_codes = [reason_code, *reason_codes]
@@ -2945,10 +2998,7 @@ def evaluate_safety_text(text: str, endpoint: str) -> SafetyVerdictResponse:
     )
 def enforce_safety_gateway(verdict: SafetyVerdictResponse):
     """Apply verdict to request handling and persist telemetry/logs."""
-    metrics.record_safety_verdict(
-        verdict.verdict,
-        blocked_categories=verdict.blocked_categories,
-    )
+    metrics.record_safety_verdict(verdict.verdict, verdict.reason_codes)
     workspace_id = WORKSPACE_CONTEXT.get() or RAG_DEFAULT_WORKSPACE_ID
     usage_metering.record_safety_verdict(
         workspace_id=workspace_id,
@@ -2957,17 +3007,12 @@ def enforce_safety_gateway(verdict: SafetyVerdictResponse):
         blocked_categories=verdict.blocked_categories,
     )
     logger.info(
-        "Safety gateway verdict endpoint=%s workspace=%s verdict=%s blocked=%s categories=%s warnings=%s reason=%s",
-    metrics.record_safety_verdict(verdict.verdict, verdict.reason_codes)
-    logger.info(
         "Safety gateway verdict endpoint=%s verdict=%s reason_code=%s reason_codes=%s blocked=%s warnings=%s reason=%s",
         verdict.endpoint,
-        workspace_id,
         verdict.verdict,
         verdict.reason_code,
         verdict.reason_codes,
         verdict.blocked_terms,
-        verdict.blocked_categories,
         verdict.warning_terms,
         verdict.reason,
     )
@@ -3806,7 +3851,6 @@ async def export_audit_events(
     tool_name: Optional[str] = Query(None, description="Filter by tool name"),
     event_type: Optional[str] = Query(
         None,
-        pattern="^(request|tool_event|tool_call)$",
         pattern=AUDIT_EVENT_TYPE_QUERY_PATTERN,
         description="Filter by event type",
     ),
@@ -4001,6 +4045,64 @@ async def admin_list_workspaces(
     except Exception as exc:
         logger.error("Failed to list workspaces: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Workspace list error: {exc}")
+
+
+@app.get("/admin/workspaces/{workspace_id}/policy", response_model=WorkspacePolicyResponse)
+async def admin_get_workspace_policy(workspace_id: str, raw_request: Request):
+    """Get workspace policy configuration (tool_policy_override, quotas, allowed models/servers)."""
+    _require_admin(raw_request)
+    try:
+        policy = get_workspace_service().get_workspace_policy(workspace_id)
+        return WorkspacePolicyResponse(**policy)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("Failed to get workspace policy: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Workspace policy get error: {exc}")
+
+
+@app.put("/admin/workspaces/{workspace_id}/policy", response_model=WorkspacePolicyResponse)
+async def admin_update_workspace_policy(
+    workspace_id: str,
+    request: WorkspacePolicyUpdateRequest,
+    raw_request: Request,
+):
+    """Update workspace policy configuration (tool_policy_override, quotas, allowed models/servers)."""
+    _require_admin(raw_request)
+    try:
+        # Build policy payload from request
+        policy_payload = {}
+        if request.tool_policy_override is not None:
+            policy_payload["tool_policy_override"] = request.tool_policy_override
+        if request.quota_limits is not None:
+            policy_payload["quota_limits"] = request.quota_limits
+        if request.allowed_models is not None:
+            policy_payload["allowed_models"] = request.allowed_models
+        if request.allowed_mcp_servers is not None:
+            policy_payload["allowed_mcp_servers"] = request.allowed_mcp_servers
+        
+        updated_policy = get_workspace_service().update_workspace_policy(
+            workspace_id=workspace_id,
+            policy=policy_payload,
+        )
+        
+        # Invalidate cached policy in tool policy engine
+        policy_engine = get_tool_policy_engine()
+        with policy_engine._lock:
+            policy_engine.workspace_policies.pop(workspace_id, None)
+        
+        logger.info(
+            "Admin updated workspace policy workspace_id=%s fields=%s",
+            workspace_id,
+            list(policy_payload.keys()),
+        )
+        
+        return WorkspacePolicyResponse(**updated_policy)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail=str(exc))
+    except Exception as exc:
+        logger.error("Failed to update workspace policy: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Workspace policy update error: {exc}")
 
 
 @app.get("/metering", response_model=MeteringSummaryResponse)
@@ -4441,8 +4543,6 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                         "When you rely on retrieved context, include a final "
                         "'Sources (path + commit):' section and list each source as "
                         "'- path: <path> | commit: <commit>'.\n\n"
-                        "Context:\n" + "\n\n".join(context_chunks)
-                        "the best available answer.\n\n"
                         + context_text
                     )
                 )

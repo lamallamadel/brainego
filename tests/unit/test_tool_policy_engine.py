@@ -89,6 +89,73 @@ def test_policy_engine_enforces_allowlist_and_timeout(tmp_path):
 
 
 @pytest.mark.unit
+def test_policy_engine_loads_workspace_policy_from_db_on_cache_miss():
+    """Policy engine loads workspace-specific policy from DB when not in cache."""
+    from unittest.mock import MagicMock
+    
+    # Create mock workspace service
+    workspace_service = MagicMock()
+    workspace_service.get_workspace_policy = MagicMock(return_value={
+        "tool_policy_override": {
+            "allowed_mcp_servers": ["mcp-db"],
+            "allowed_tool_actions": ["read", "write"],
+            "allowed_tool_names": {"read": ["*"], "write": ["update_record"]},
+        },
+        "quota_limits": None,
+        "allowed_models": None,
+        "allowed_mcp_servers": None,
+    })
+    
+    # Create engine with no initial policies but with workspace service
+    engine = ToolPolicyEngine(
+        workspace_policies={},
+        workspace_service=workspace_service,
+    )
+    
+    # Evaluate tool call for workspace not in cache
+    decision = engine.evaluate_tool_call(
+        workspace_id="ws-db-loaded",
+        request_id="req-1",
+        server_id="mcp-db",
+        tool_name="update_record",
+        action="write",
+        arguments={"id": "123"},
+        default_timeout_seconds=5.0,
+    )
+    
+    assert decision.allowed is True
+    assert decision.workspace_id == "ws-db-loaded"
+    workspace_service.get_workspace_policy.assert_called_once_with("ws-db-loaded")
+
+
+@pytest.mark.unit
+def test_policy_engine_db_load_failure_denies_by_default():
+    """Policy engine denies access when DB load fails on cache miss."""
+    from unittest.mock import MagicMock
+    
+    workspace_service = MagicMock()
+    workspace_service.get_workspace_policy = MagicMock(side_effect=Exception("DB error"))
+    
+    engine = ToolPolicyEngine(
+        workspace_policies={},
+        workspace_service=workspace_service,
+    )
+    
+    decision = engine.evaluate_tool_call(
+        workspace_id="ws-db-error",
+        request_id="req-2",
+        server_id="mcp-test",
+        tool_name="read_file",
+        action="read",
+        arguments={},
+        default_timeout_seconds=5.0,
+    )
+    
+    assert decision.allowed is False
+    assert "no tool policy configured" in (decision.reason or "")
+
+
+@pytest.mark.unit
 def test_policy_engine_allowlist_boundary_rejects_workspace_lookalike_prefix(tmp_path):
     config_path = _write_policy(
         tmp_path,

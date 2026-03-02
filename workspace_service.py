@@ -355,6 +355,90 @@ class WorkspaceService:
             normalized["metadata"] = {}
         return normalized
 
+    def get_workspace_policy(self, workspace_id: str) -> Dict[str, Any]:
+        """
+        Fetch workspace policy configuration from metadata JSONB column.
+
+        Returns a dict containing:
+        - tool_policy_override: workspace-scoped MCP tool policy
+        - quota_limits: workspace quota configuration
+        - allowed_models: permitted model identifiers
+        - allowed_mcp_servers: permitted MCP server identifiers
+        """
+        normalized_workspace_id = self._normalize_workspace_id(workspace_id)
+        workspace = self.get_workspace(normalized_workspace_id)
+        if workspace is None:
+            raise ValueError(f"workspace '{normalized_workspace_id}' does not exist")
+
+        metadata = workspace.get("metadata") or {}
+        return {
+            "tool_policy_override": metadata.get("tool_policy_override"),
+            "quota_limits": metadata.get("quota_limits"),
+            "allowed_models": metadata.get("allowed_models"),
+            "allowed_mcp_servers": metadata.get("allowed_mcp_servers"),
+        }
+
+    def update_workspace_policy(
+        self,
+        workspace_id: str,
+        policy: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """
+        Update workspace policy configuration in metadata JSONB column.
+
+        Policy fields:
+        - tool_policy_override: workspace-scoped MCP tool policy
+        - quota_limits: workspace quota configuration
+        - allowed_models: permitted model identifiers
+        - allowed_mcp_servers: permitted MCP server identifiers
+        """
+        normalized_workspace_id = self._normalize_workspace_id(workspace_id)
+        policy_payload = self._coerce_json(policy)
+
+        conn = self._get_connection()
+        try:
+            from psycopg2.extras import RealDictCursor
+
+            with conn.cursor(cursor_factory=RealDictCursor) as cur:
+                # Merge policy fields into metadata
+                cur.execute(
+                    """
+                    UPDATE workspaces
+                    SET
+                        metadata = COALESCE(metadata, '{}'::jsonb) || %s::jsonb,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE workspace_id = %s
+                    RETURNING
+                        workspace_id,
+                        display_name,
+                        status,
+                        metadata,
+                        created_at,
+                        updated_at,
+                        disabled_at
+                    """,
+                    (json.dumps(policy_payload), normalized_workspace_id),
+                )
+                row = cur.fetchone()
+                if row is None:
+                    raise ValueError(f"workspace '{normalized_workspace_id}' does not exist")
+                conn.commit()
+                workspace = self._normalize_row(dict(row))
+                
+                # Return the policy subset
+                metadata = workspace.get("metadata") or {}
+                return {
+                    "tool_policy_override": metadata.get("tool_policy_override"),
+                    "quota_limits": metadata.get("quota_limits"),
+                    "allowed_models": metadata.get("allowed_models"),
+                    "allowed_mcp_servers": metadata.get("allowed_mcp_servers"),
+                }
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            self._return_connection(conn)
+
     def close(self) -> None:
         if hasattr(self, "pool"):
             self.pool.closeall()
