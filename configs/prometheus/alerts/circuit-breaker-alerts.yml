@@ -1,0 +1,84 @@
+groups:
+  - name: circuit_breaker_alerts
+    interval: 30s
+    rules:
+      # Circuit breaker open (already exists in main alerts.yml but enhanced here)
+      - alert: CircuitBreakerOpen
+        expr: circuit_breaker_state{state="open"} == 1
+        for: 2m
+        labels:
+          severity: warning
+          component: circuit-breaker
+        annotations:
+          summary: "Circuit breaker is open"
+          description: "Circuit breaker '{{ $labels.name }}' is in OPEN state for service {{ $labels.service }} - requests are being rejected"
+          runbook_url: "https://docs.ai-platform.local/runbooks/circuit-breaker-open"
+      
+      # Circuit breaker open for extended period (critical)
+      - alert: CircuitBreakerOpenExtended
+        expr: circuit_breaker_state{state="open"} == 1
+        for: 10m
+        labels:
+          severity: critical
+          component: circuit-breaker
+        annotations:
+          summary: "Circuit breaker open for extended period"
+          description: "Circuit breaker '{{ $labels.name }}' has been OPEN for over 10 minutes for service {{ $labels.service }} - manual intervention required"
+          runbook_url: "https://docs.ai-platform.local/runbooks/circuit-breaker-extended"
+      
+      # Circuit breaker half-open stuck
+      - alert: CircuitBreakerHalfOpenStuck
+        expr: circuit_breaker_state{state="half_open"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          component: circuit-breaker
+        annotations:
+          summary: "Circuit breaker stuck in half-open state"
+          description: "Circuit breaker '{{ $labels.name }}' has been in HALF_OPEN state for over 5 minutes for service {{ $labels.service }} - recovery may be failing"
+          runbook_url: "https://docs.ai-platform.local/runbooks/circuit-breaker-half-open"
+      
+      # High circuit breaker rejection rate
+      - alert: CircuitBreakerHighRejectionRate
+        expr: |
+          (
+            rate(circuit_breaker_rejections_total[5m]) /
+            rate(circuit_breaker_requests_total[5m])
+          ) * 100 > 50
+        for: 3m
+        labels:
+          severity: warning
+          component: circuit-breaker
+        annotations:
+          summary: "High circuit breaker rejection rate"
+          description: "Circuit breaker '{{ $labels.name }}' is rejecting {{ $value }}% of requests for service {{ $labels.service }} (threshold: 50%)"
+          runbook_url: "https://docs.ai-platform.local/runbooks/circuit-breaker-rejections"
+      
+      # Circuit breaker trip rate spike
+      - alert: CircuitBreakerTripRateSpike
+        expr: |
+          rate(circuit_breaker_trips_total[5m]) > 0.1
+        for: 2m
+        labels:
+          severity: warning
+          component: circuit-breaker
+        annotations:
+          summary: "Circuit breaker tripping frequently"
+          description: "Circuit breaker '{{ $labels.name }}' for service {{ $labels.service }} is tripping at {{ $value }} trips/sec - underlying service may be unstable"
+          runbook_url: "https://docs.ai-platform.local/runbooks/circuit-breaker-trips"
+      
+      # Circuit breaker failure threshold reached
+      - alert: CircuitBreakerFailureThresholdReached
+        expr: |
+          (
+            rate(circuit_breaker_failures_total[1m]) /
+            rate(circuit_breaker_requests_total[1m])
+          ) * 100 > 80
+        for: 1m
+        labels:
+          severity: critical
+          component: circuit-breaker
+        annotations:
+          summary: "Circuit breaker failure threshold reached"
+          description: "Circuit breaker '{{ $labels.name }}' for service {{ $labels.service }} has {{ $value }}% failure rate - about to trip"
+          runbook_url: "https://docs.ai-platform.local/runbooks/circuit-breaker-threshold"

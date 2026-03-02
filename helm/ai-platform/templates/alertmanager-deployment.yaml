@@ -1,0 +1,157 @@
+{{- if .Values.alertmanager.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: alertmanager
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: alerting
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: {{ .Values.alertmanager.service.type }}
+  ports:
+    - port: {{ .Values.alertmanager.service.port }}
+      targetPort: {{ .Values.alertmanager.service.port }}
+      protocol: TCP
+      name: http
+    - port: 9094
+      targetPort: 9094
+      protocol: TCP
+      name: cluster
+  selector:
+    app.kubernetes.io/name: alertmanager
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alertmanager
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: alertmanager
+    app.kubernetes.io/component: alerting
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.alertmanager.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alertmanager
+        app.kubernetes.io/component: alerting
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmaps.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ .Values.rbac.serviceAccounts.alertmanager.create | ternary "alertmanager-sa" "default" }}
+      containers:
+        - name: alertmanager
+          image: "{{ .Values.alertmanager.image.repository }}:{{ .Values.alertmanager.image.tag }}"
+          imagePullPolicy: {{ .Values.alertmanager.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.alertmanager.service.port }}
+              protocol: TCP
+            - name: cluster
+              containerPort: 9094
+              protocol: TCP
+          args:
+            - --config.file=/etc/alertmanager/alertmanager.yml
+            - --storage.path=/alertmanager
+            - --data.retention={{ .Values.alertmanager.retention }}
+            - --cluster.listen-address=0.0.0.0:9094
+            {{- if .Values.alertmanager.externalUrl }}
+            - --web.external-url={{ .Values.alertmanager.externalUrl }}
+            {{- end }}
+            {{- range .Values.alertmanager.extraArgs }}
+            - {{ . }}
+            {{- end }}
+          env:
+            - name: SLACK_WEBHOOK_URL
+              valueFrom:
+                secretKeyRef:
+                  name: alertmanager-secrets
+                  key: slack-webhook-url
+            {{- if .Values.alertmanager.email.enabled }}
+            - name: SMTP_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: alertmanager-secrets
+                  key: smtp-username
+                  optional: true
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: alertmanager-secrets
+                  key: smtp-password
+                  optional: true
+            {{- end }}
+            {{- with .Values.alertmanager.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- if .Values.alertmanager.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.alertmanager.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.alertmanager.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.alertmanager.readinessProbe | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.alertmanager.resources | nindent 12 }}
+          volumeMounts:
+            - name: alertmanager-config
+              mountPath: /etc/alertmanager
+            {{- if .Values.alertmanager.persistence.enabled }}
+            - name: alertmanager-data
+              mountPath: /alertmanager
+            {{- end }}
+            {{- if .Values.alertmanager.templates.enabled }}
+            - name: alertmanager-templates
+              mountPath: /etc/alertmanager/templates
+            {{- end }}
+      volumes:
+        - name: alertmanager-config
+          configMap:
+            name: alertmanager-config
+        {{- if .Values.alertmanager.persistence.enabled }}
+        - name: alertmanager-data
+          persistentVolumeClaim:
+            claimName: alertmanager-data
+        {{- end }}
+        {{- if .Values.alertmanager.templates.enabled }}
+        - name: alertmanager-templates
+          configMap:
+            name: alertmanager-templates
+        {{- end }}
+      {{- with .Values.alertmanager.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.alertmanager.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+{{- if .Values.alertmanager.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: alertmanager-data
+  namespace: {{ .Values.namespace.name }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  {{- if .Values.alertmanager.persistence.storageClass }}
+  storageClassName: {{ .Values.alertmanager.persistence.storageClass }}
+  {{- end }}
+  resources:
+    requests:
+      storage: {{ .Values.alertmanager.persistence.size }}
+{{- end }}
+{{- end }}

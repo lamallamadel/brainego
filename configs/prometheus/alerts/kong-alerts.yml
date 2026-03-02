@@ -1,0 +1,97 @@
+groups:
+  - name: kong_gateway_alerts
+    interval: 30s
+    rules:
+      # Kong rate limit exceeded
+      - alert: KongRateLimitExceeded
+        expr: |
+          sum by (route, consumer) (rate(kong_http_requests_total{code="429"}[5m])) > 10
+        for: 2m
+        labels:
+          severity: warning
+          component: kong
+        annotations:
+          summary: "Kong rate limit exceeded"
+          description: "Kong route {{ $labels.route }} is experiencing rate limit rejections (HTTP 429) for consumer {{ $labels.consumer }} at {{ $value }} requests/sec"
+          runbook_url: "https://docs.ai-platform.local/runbooks/kong-rate-limit"
+      
+      # Kong rate limit critical (high volume)
+      - alert: KongRateLimitExceededCritical
+        expr: |
+          sum by (route, consumer) (rate(kong_http_requests_total{code="429"}[5m])) > 50
+        for: 1m
+        labels:
+          severity: critical
+          component: kong
+        annotations:
+          summary: "Kong rate limit critically exceeded"
+          description: "Kong route {{ $labels.route }} is experiencing high rate limit rejections (HTTP 429) for consumer {{ $labels.consumer }} at {{ $value }} requests/sec - possible DoS or misconfiguration"
+          runbook_url: "https://docs.ai-platform.local/runbooks/kong-rate-limit"
+      
+      # Kong high error rate
+      - alert: KongHighErrorRate
+        expr: |
+          (
+            sum by (route) (rate(kong_http_requests_total{code=~"5.."}[5m])) /
+            sum by (route) (rate(kong_http_requests_total[5m]))
+          ) * 100 > 5
+        for: 3m
+        labels:
+          severity: critical
+          component: kong
+        annotations:
+          summary: "Kong gateway high error rate"
+          description: "Kong route {{ $labels.route }} has error rate of {{ $value }}% (threshold: 5%)"
+          runbook_url: "https://docs.ai-platform.local/runbooks/kong-errors"
+      
+      # Kong high latency (P95)
+      - alert: KongHighLatency
+        expr: |
+          histogram_quantile(0.95, sum by (route, le) (rate(kong_latency_bucket[5m]))) > 2000
+        for: 5m
+        labels:
+          severity: warning
+          component: kong
+        annotations:
+          summary: "Kong gateway high latency"
+          description: "Kong route {{ $labels.route }} P95 latency is {{ $value }}ms (threshold: 2000ms)"
+          runbook_url: "https://docs.ai-platform.local/runbooks/kong-latency"
+      
+      # Kong upstream connection failures
+      - alert: KongUpstreamConnectionFailures
+        expr: |
+          sum by (upstream) (rate(kong_upstream_target_health{state="unhealthy"}[5m])) > 0.1
+        for: 2m
+        labels:
+          severity: critical
+          component: kong
+        annotations:
+          summary: "Kong upstream connection failures"
+          description: "Kong upstream {{ $labels.upstream }} has unhealthy targets at {{ $value }} failures/sec"
+          runbook_url: "https://docs.ai-platform.local/runbooks/kong-upstream-health"
+      
+      # Kong service unavailable (all upstreams down)
+      - alert: KongServiceUnavailable
+        expr: |
+          sum by (service) (kong_upstream_target_health{state="healthy"}) == 0
+        for: 1m
+        labels:
+          severity: critical
+          component: kong
+        annotations:
+          summary: "Kong service completely unavailable"
+          description: "Kong service {{ $labels.service }} has no healthy upstream targets - all instances down"
+          runbook_url: "https://docs.ai-platform.local/runbooks/kong-service-down"
+      
+      # Kong token budget exhausted
+      - alert: KongTokenBudgetExhausted
+        expr: |
+          kong_token_budget_remaining / kong_token_budget_limit < 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: kong
+        annotations:
+          summary: "Kong token budget nearly exhausted"
+          description: "Consumer {{ $labels.consumer }} has less than 10% of daily token budget remaining ({{ $value | humanizePercentage }})"
+          runbook_url: "https://docs.ai-platform.local/runbooks/kong-token-budget"

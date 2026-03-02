@@ -94,6 +94,10 @@ rbac:
       create: true
       automountServiceAccountToken: false
       annotations: {}
+    alertmanager:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
 
 # MAX Serve - Llama 3.3 8B (General Purpose)
 maxServeLlama:
@@ -1269,6 +1273,55 @@ prometheus:
     periodSeconds: 10
     timeoutSeconds: 5
 
+# AlertManager - Alert Routing and Notification
+alertmanager:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: prom/alertmanager
+    tag: v0.27.0
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 9093
+  resources:
+    limits:
+      memory: 1Gi
+      cpu: 500m
+    requests:
+      memory: 512Mi
+      cpu: 250m
+  retention: 120h
+  externalUrl: ""
+  extraArgs: []
+  extraEnv: []
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 10Gi
+  templates:
+    enabled: false
+  email:
+    enabled: true
+    smtp_host: "smtp.example.com"
+    smtp_port: "587"
+  livenessProbe:
+    httpGet:
+      path: /-/healthy
+      port: 9093
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /-/ready
+      port: 9093
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+  affinity: {}
+  tolerations: []
+
 # Grafana Dashboards
 grafana:
   enabled: true
@@ -1423,6 +1476,15 @@ secrets:
     postgresUsername: a29uZw==  # kong
     postgresPassword: a29uZ19wYXNzd29yZA==  # kong_password (CHANGE IN PRODUCTION)
     postgresDatabase: a29uZw==  # kong
+  
+  # AlertManager credentials and configuration
+  alertmanager:
+    slackWebhookUrl: ""  # Base64 encoded Slack webhook URL (REQUIRED)
+    smtpUsername: ""  # Base64 encoded SMTP username (optional)
+    smtpPassword: ""  # Base64 encoded SMTP password (optional)
+    oncallEmailPrimary: ""  # Base64 encoded primary on-call email
+    oncallEmailSecondary: ""  # Base64 encoded secondary on-call email
+    managementEmailList: ""  # Base64 encoded comma-separated management emails
 
 # TLS Configuration
 tls:

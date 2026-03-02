@@ -244,6 +244,21 @@ data:
     }
 {{- end }}
 ---
+{{- if .Values.alertmanager.enabled -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alertmanager-config
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: alertmanager-config
+    app.kubernetes.io/component: alerting
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+data:
+  alertmanager.yml: |
+{{ .Files.Get "../../configs/alertmanager/alertmanager.yml" | indent 4 }}
+{{- end }}
+---
 {{- if .Values.postgres.initScripts.enabled -}}
 apiVersion: v1
 kind: ConfigMap

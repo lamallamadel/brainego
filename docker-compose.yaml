@@ -719,6 +719,28 @@ services:
       retries: 3
       start_period: 10s
 
+  pushgateway:
+    image: prom/pushgateway:v1.6.2
+    container_name: pushgateway
+    restart: unless-stopped
+    networks:
+      - ai-platform-net
+    ports:
+      - "9091:9091"
+    command:
+      - '--web.listen-address=:9091'
+      - '--web.telemetry-path=/metrics'
+      - '--persistence.file=/data/pushgateway.data'
+      - '--persistence.interval=5m'
+    volumes:
+      - pushgateway-data:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:9091/-/healthy"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
   grafana:
     image: grafana/grafana:10.2.2
     container_name: grafana
@@ -967,6 +989,8 @@ volumes:
   neo4j-plugins:
     driver: local
   prometheus-data:
+    driver: local
+  pushgateway-data:
     driver: local
   grafana-data:
     driver: local

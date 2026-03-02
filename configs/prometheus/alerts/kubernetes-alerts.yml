@@ -1,0 +1,152 @@
+groups:
+  - name: kubernetes_pod_alerts
+    interval: 30s
+    rules:
+      # Pod restart rate high (already exists but enhanced)
+      - alert: PodRestartRateHigh
+        expr: rate(kube_pod_container_status_restarts_total[15m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: kubernetes
+        annotations:
+          summary: "High pod restart rate detected"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} (container: {{ $labels.container }}) has restart rate of {{ $value }} restarts/sec over 15m"
+          runbook_url: "https://docs.ai-platform.local/runbooks/pod-restarts"
+      
+      # Pod restart rate critical
+      - alert: PodRestartRateCritical
+        expr: rate(kube_pod_container_status_restarts_total[15m]) > 0.3
+        for: 2m
+        labels:
+          severity: critical
+          component: kubernetes
+        annotations:
+          summary: "Critical pod restart rate detected"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} (container: {{ $labels.container }}) has critical restart rate of {{ $value }} restarts/sec - investigate immediately"
+          runbook_url: "https://docs.ai-platform.local/runbooks/pod-restarts-critical"
+      
+      # Multiple pod restarts in short time
+      - alert: PodRestartSpike
+        expr: increase(kube_pod_container_status_restarts_total[10m]) > 3
+        for: 1m
+        labels:
+          severity: critical
+          component: kubernetes
+        annotations:
+          summary: "Pod restart spike detected"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} (container: {{ $labels.container }}) has restarted {{ $value }} times in the last 10 minutes"
+          runbook_url: "https://docs.ai-platform.local/runbooks/pod-restart-spike"
+      
+      # CrashLoopBackOff detected
+      - alert: PodCrashLoopBackOff
+        expr: kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} == 1
+        for: 5m
+        labels:
+          severity: critical
+          component: kubernetes
+        annotations:
+          summary: "Pod in CrashLoopBackOff"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} (container: {{ $labels.container }}) is in CrashLoopBackOff state"
+          runbook_url: "https://docs.ai-platform.local/runbooks/crash-loop-backoff"
+      
+      # Memory pressure detected (enhanced)
+      - alert: MemoryPressureDetected
+        expr: |
+          (container_memory_working_set_bytes{container!=""} / container_spec_memory_limit_bytes{container!=""}) > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          component: kubernetes
+        annotations:
+          summary: "Memory pressure detected"
+          description: "Container {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }} is using {{ $value | humanizePercentage }} of memory limit ({{ container_memory_working_set_bytes }} / {{ container_spec_memory_limit_bytes }})"
+          runbook_url: "https://docs.ai-platform.local/runbooks/memory-pressure"
+      
+      # Memory pressure critical (OOMKill imminent)
+      - alert: MemoryPressureCritical
+        expr: |
+          (container_memory_working_set_bytes{container!=""} / container_spec_memory_limit_bytes{container!=""}) > 0.95
+        for: 2m
+        labels:
+          severity: critical
+          component: kubernetes
+        annotations:
+          summary: "Critical memory pressure - OOMKill imminent"
+          description: "Container {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }} is using {{ $value | humanizePercentage }} of memory limit - OOMKill imminent"
+          runbook_url: "https://docs.ai-platform.local/runbooks/memory-pressure-critical"
+      
+      # OOMKilled container
+      - alert: PodOOMKilled
+        expr: kube_pod_container_status_terminated_reason{reason="OOMKilled"} == 1
+        for: 1m
+        labels:
+          severity: critical
+          component: kubernetes
+        annotations:
+          summary: "Pod was OOM killed"
+          description: "Container {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }} was killed due to out of memory"
+          runbook_url: "https://docs.ai-platform.local/runbooks/oom-killed"
+      
+      # CPU throttling high
+      - alert: ContainerCPUThrottlingHigh
+        expr: |
+          rate(container_cpu_cfs_throttled_seconds_total{container!=""}[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: kubernetes
+        annotations:
+          summary: "High CPU throttling detected"
+          description: "Container {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }} is being CPU throttled {{ $value }}s/sec (50% of the time)"
+          runbook_url: "https://docs.ai-platform.local/runbooks/cpu-throttling"
+      
+      # Pod not ready
+      - alert: PodNotReady
+        expr: kube_pod_status_ready{condition="false"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          component: kubernetes
+        annotations:
+          summary: "Pod not ready"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been not ready for over 5 minutes"
+          runbook_url: "https://docs.ai-platform.local/runbooks/pod-not-ready"
+      
+      # StatefulSet pod down
+      - alert: StatefulSetPodDown
+        expr: kube_statefulset_status_replicas_ready < kube_statefulset_replicas
+        for: 5m
+        labels:
+          severity: critical
+          component: kubernetes
+        annotations:
+          summary: "StatefulSet pod down"
+          description: "StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} has {{ $value }} pods not ready (expected: {{ kube_statefulset_replicas }})"
+          runbook_url: "https://docs.ai-platform.local/runbooks/statefulset-down"
+      
+      # Deployment replica mismatch
+      - alert: DeploymentReplicaMismatch
+        expr: |
+          kube_deployment_status_replicas_available < kube_deployment_spec_replicas
+        for: 10m
+        labels:
+          severity: warning
+          component: kubernetes
+        annotations:
+          summary: "Deployment replica mismatch"
+          description: "Deployment {{ $labels.namespace }}/{{ $labels.deployment }} has only {{ kube_deployment_status_replicas_available }} available replicas out of {{ kube_deployment_spec_replicas }} desired"
+          runbook_url: "https://docs.ai-platform.local/runbooks/deployment-replica-mismatch"
+      
+      # PVC almost full
+      - alert: PersistentVolumeClaimAlmostFull
+        expr: |
+          (kubelet_volume_stats_used_bytes / kubelet_volume_stats_capacity_bytes) > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          component: kubernetes
+        annotations:
+          summary: "PVC almost full"
+          description: "PVC {{ $labels.namespace }}/{{ $labels.persistentvolumeclaim }} is {{ $value | humanizePercentage }} full"
+          runbook_url: "https://docs.ai-platform.local/runbooks/pvc-full"
