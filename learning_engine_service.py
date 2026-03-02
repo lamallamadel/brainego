@@ -73,6 +73,22 @@ class LearningEngineConfig(BaseModel):
     num_train_epochs: int = Field(default=3)
     max_seq_length: int = Field(default=2048)
     warmup_steps: int = Field(default=10)
+
+    # Golden-set validation configuration
+    golden_validation_enabled: bool = Field(default=True)
+    golden_validation_required: bool = Field(default=False)
+    golden_suite_path: str = Field(
+        default="tests/contract/fixtures/lora_regression_prompts.ndjson"
+    )
+    golden_baseline_output_path: str = Field(
+        default="tests/contract/fixtures/lora_baseline_outputs.ndjson"
+    )
+    golden_candidate_output_dir: str = Field(default="./lora_validation")
+    golden_validation_max_new_tokens: int = Field(default=192)
+    golden_max_regressions: int = Field(default=1)
+    golden_max_mean_score_drop: float = Field(default=0.15)
+    golden_min_pass_rate: float = Field(default=0.85)
+    golden_max_unsafe_cases: int = Field(default=0)
     
     # Storage configuration
     minio_endpoint: str = Field(default="minio:9000")
@@ -118,6 +134,29 @@ def load_config() -> LearningEngineConfig:
         batch_size=int(os.getenv("BATCH_SIZE", "4")),
         learning_rate=float(os.getenv("LEARNING_RATE", "2e-4")),
         num_train_epochs=int(os.getenv("NUM_TRAIN_EPOCHS", "3")),
+        golden_validation_enabled=os.getenv("GOLDEN_VALIDATION_ENABLED", "true").lower() == "true",
+        golden_validation_required=os.getenv("GOLDEN_VALIDATION_REQUIRED", "false").lower() == "true",
+        golden_suite_path=os.getenv(
+            "GOLDEN_SUITE_PATH",
+            "tests/contract/fixtures/lora_regression_prompts.ndjson",
+        ),
+        golden_baseline_output_path=os.getenv(
+            "GOLDEN_BASELINE_OUTPUT_PATH",
+            "tests/contract/fixtures/lora_baseline_outputs.ndjson",
+        ),
+        golden_candidate_output_dir=os.getenv(
+            "GOLDEN_CANDIDATE_OUTPUT_DIR",
+            "./lora_validation",
+        ),
+        golden_validation_max_new_tokens=int(
+            os.getenv("GOLDEN_VALIDATION_MAX_NEW_TOKENS", "192")
+        ),
+        golden_max_regressions=int(os.getenv("GOLDEN_MAX_REGRESSIONS", "1")),
+        golden_max_mean_score_drop=float(
+            os.getenv("GOLDEN_MAX_MEAN_SCORE_DROP", "0.15")
+        ),
+        golden_min_pass_rate=float(os.getenv("GOLDEN_MIN_PASS_RATE", "0.85")),
+        golden_max_unsafe_cases=int(os.getenv("GOLDEN_MAX_UNSAFE_CASES", "0")),
         minio_endpoint=os.getenv("MINIO_ENDPOINT", "minio:9000"),
         minio_access_key=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
         minio_secret_key=os.getenv("MINIO_SECRET_KEY", "minioadmin123"),
@@ -398,6 +437,29 @@ class TrainingRequest(BaseModel):
     dataset_id: Optional[str] = Field(default=None, description="Training dataset identifier")
     author: Optional[str] = Field(default=None, description="Author for this adapter version")
     validation_metrics: Dict[str, Any] = Field(default_factory=dict, description="Validation metrics metadata")
+    golden_validation_enabled: Optional[bool] = Field(
+        default=None, description="Enable/disable golden-set validation for this run"
+    )
+    golden_validation_required: Optional[bool] = Field(
+        default=None, description="Block promotion when golden-set validation fails"
+    )
+    golden_suite_path: Optional[str] = Field(
+        default=None, description="Path to golden regression prompt suite"
+    )
+    golden_baseline_output_path: Optional[str] = Field(
+        default=None, description="Path to golden baseline outputs JSON"
+    )
+    golden_candidate_output_path: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional path to candidate outputs JSON. "
+            "If omitted, outputs are generated from the trained adapter."
+        ),
+    )
+    golden_thresholds: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Threshold overrides for golden-set gate",
+    )
 
 
 class JsonlTrainingRequest(BaseModel):
@@ -466,6 +528,25 @@ class LoRAOperationRequest(BaseModel):
 class AdapterDeployRequest(BaseModel):
     """Payload for adapter deployment / activation."""
     reason: str = Field(default="manual_deploy", description="Reason for adapter activation")
+class GoldenValidationRequest(BaseModel):
+    """Payload for explicit golden-set validation runs."""
+
+    suite_path: str = Field(
+        default="tests/contract/fixtures/lora_regression_prompts.ndjson",
+        description="Path to golden regression prompt suite",
+    )
+    baseline_output_path: str = Field(
+        default="tests/contract/fixtures/lora_baseline_outputs.ndjson",
+        description="Path to baseline outputs JSON",
+    )
+    candidate_output_path: str = Field(
+        ...,
+        description="Path to candidate outputs JSON",
+    )
+    thresholds: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Validation threshold overrides",
+    )
 
 
 # API Endpoints
@@ -655,6 +736,12 @@ async def trigger_training(request: TrainingRequest, background_tasks: Backgroun
             dataset_id=request.dataset_id,
             author=request.author,
             validation_metrics=request.validation_metrics,
+            golden_suite_path=request.golden_suite_path,
+            golden_baseline_output_path=request.golden_baseline_output_path,
+            golden_candidate_output_path=request.golden_candidate_output_path,
+            golden_validation_required=request.golden_validation_required,
+            golden_validation_enabled=request.golden_validation_enabled,
+            golden_thresholds=request.golden_thresholds,
         )
         
         return TrainingResponse(
@@ -665,6 +752,26 @@ async def trigger_training(request: TrainingRequest, background_tasks: Backgroun
         
     except Exception as e:
         logger.error(f"Failed to start training: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/validation/golden-set")
+async def validate_golden_set(request: GoldenValidationRequest):
+    """Run explicit golden-set validation for candidate LoRA outputs."""
+    if not trainer:
+        raise HTTPException(status_code=503, detail="Trainer not initialized")
+
+    try:
+        report = await asyncio.to_thread(
+            trainer.validate_golden_set,
+            suite_path=request.suite_path,
+            baseline_output_path=request.baseline_output_path,
+            candidate_output_path=request.candidate_output_path,
+            thresholds=request.thresholds,
+        )
+        return report
+    except Exception as e:
+        logger.error("Golden-set validation failed: %s", e, exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

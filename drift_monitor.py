@@ -13,6 +13,7 @@ Implements drift detection with:
 import os
 import logging
 import asyncio
+import re
 import yaml
 import json
 from datetime import datetime, timedelta
@@ -135,6 +136,10 @@ class DriftMonitorConfig(BaseModel):
     warning_kl_multiplier: float = Field(default=1.5)
     warning_psi_multiplier: float = Field(default=1.5)
     warning_accuracy_drop: float = Field(default=0.10)
+    eval_metric_name: str = Field(default="quality_eval_score")
+    eval_score_drop_min: float = Field(default=0.05)
+    warning_eval_score_drop: float = Field(default=0.08)
+    critical_eval_score_drop: float = Field(default=0.12)
     
     # Fine-tuning
     auto_trigger_finetuning: bool = Field(default=True)
@@ -150,6 +155,13 @@ class DriftMonitorConfig(BaseModel):
     postgres_db: str = Field(default="ai_platform")
     postgres_user: str = Field(default="ai_user")
     postgres_password: str = Field(default="ai_password")
+    
+    # Eval-first drift monitoring
+    min_eval_samples: int = Field(default=3)
+    retraining_recommend_min_drop: float = Field(default=0.08)
+    
+    # Incident management
+    open_incident_on_drift: bool = Field(default=True)
 
 
 def load_config(config_path: str = "configs/drift-monitor.yaml") -> DriftMonitorConfig:
@@ -161,6 +173,8 @@ def load_config(config_path: str = "configs/drift-monitor.yaml") -> DriftMonitor
         thresholds = load_thresholds(yaml_config)
         alert_event_policies = load_alert_event_policies(yaml_config)
         severity_policies = load_severity_policies(yaml_config)
+        eval_policy = yaml_config.get("drift_policy", {}).get("eval", {})
+        incident_policy = yaml_config.get("incidents", {})
 
         # Flatten nested config
         config_dict = {
@@ -192,6 +206,10 @@ def load_config(config_path: str = "configs/drift-monitor.yaml") -> DriftMonitor
             "warning_kl_multiplier": severity_policies["warning"].kl_multiplier,
             "warning_psi_multiplier": severity_policies["warning"].psi_multiplier,
             "warning_accuracy_drop": severity_policies["warning"].accuracy_delta,
+            "eval_metric_name": eval_policy.get("metric_name", "quality_eval_score"),
+            "eval_score_drop_min": eval_policy.get("drop_min", 0.05),
+            "warning_eval_score_drop": eval_policy.get("warning_drop", 0.08),
+            "critical_eval_score_drop": eval_policy.get("critical_drop", 0.12),
             "auto_trigger_finetuning": yaml_config.get("fine_tuning", {}).get("auto_trigger", True),
             "learning_engine_url": yaml_config.get("fine_tuning", {}).get("learning_engine_url", "http://learning-engine:8003"),
             "min_drift_score": yaml_config.get("fine_tuning", {}).get("min_drift_score", 0.3),
@@ -203,6 +221,9 @@ def load_config(config_path: str = "configs/drift-monitor.yaml") -> DriftMonitor
             "postgres_db": yaml_config.get("database", {}).get("name", "ai_platform"),
             "postgres_user": yaml_config.get("database", {}).get("user", "ai_user"),
             "postgres_password": yaml_config.get("database", {}).get("password", "ai_password"),
+            "min_eval_samples": yaml_config.get("monitoring", {}).get("min_eval_samples", 3),
+            "retraining_recommend_min_drop": yaml_config.get("fine_tuning", {}).get("recommend_min_eval_drop", 0.08),
+            "open_incident_on_drift": incident_policy.get("open_on_eval_drift", True),
         }
 
         return DriftMonitorConfig(**config_dict)
@@ -733,7 +754,151 @@ class DriftMonitor:
             return 0
         finally:
             cursor.close()
-    
+
+    def get_eval_scores(
+        self,
+        days: int = 7,
+        offset_days: int = 0,
+        scope_type: Optional[str] = None,
+        scope_value: Optional[str] = None,
+    ) -> List[float]:
+        """Get eval scores for a time window from lora_performance."""
+        conn = self.connect_db()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        end_date = datetime.now() - timedelta(days=offset_days)
+        start_date = end_date - timedelta(days=days)
+
+        query = """
+            SELECT metric_value
+            FROM lora_performance
+            WHERE metric_name = %s
+              AND timestamp >= %s
+              AND timestamp < %s
+        """
+        params: List[Any] = [self.config.eval_metric_name, start_date, end_date]
+
+        if scope_type == "project" and scope_value:
+            query += " AND COALESCE(metadata->>'project', '') = %s"
+            params.append(scope_value)
+        elif scope_type == "workspace" and scope_value:
+            query += " AND COALESCE(metadata->>'workspace', '') = %s"
+            params.append(scope_value)
+
+        query += " ORDER BY timestamp DESC"
+
+        try:
+            cursor.execute(query, tuple(params))
+            rows = cursor.fetchall()
+            scores: List[float] = []
+            for row in rows:
+                value = row.get("metric_value")
+                if value is None:
+                    continue
+                try:
+                    scores.append(float(value))
+                except (TypeError, ValueError):
+                    continue
+            return scores
+        except Exception as e:
+            logger.error(f"Failed to fetch eval scores: {e}")
+            return []
+        finally:
+            cursor.close()
+
+    def calculate_eval_score_metrics(
+        self,
+        baseline_scores: List[float],
+        current_scores: List[float],
+    ) -> Dict[str, float]:
+        """Calculate eval-score drift metrics between baseline and current windows."""
+        if not baseline_scores or not current_scores:
+            return {
+                "baseline_eval_score": 0.0,
+                "current_eval_score": 0.0,
+                "eval_score_delta": 0.0,
+                "eval_score_drop": 0.0,
+            }
+
+        baseline_eval_score = float(np.mean(baseline_scores))
+        current_eval_score = float(np.mean(current_scores))
+        eval_score_delta = current_eval_score - baseline_eval_score
+        eval_score_drop = max(0.0, baseline_eval_score - current_eval_score)
+
+        return {
+            "baseline_eval_score": baseline_eval_score,
+            "current_eval_score": current_eval_score,
+            "eval_score_delta": eval_score_delta,
+            "eval_score_drop": eval_score_drop,
+        }
+
+    def recommend_retraining(self, eval_score_drop: float, secondary_signal_count: int) -> bool:
+        """Recommend retraining from eval-drop primary signal plus secondary evidence."""
+        return (
+            eval_score_drop >= self.config.retraining_recommend_min_drop
+            or (
+                eval_score_drop >= self.config.eval_score_drop_min
+                and secondary_signal_count > 0
+            )
+        )
+
+    def open_drift_incident(
+        self,
+        scope_type: str,
+        scope_value: str,
+        severity: str,
+        metrics: Dict[str, Any],
+    ) -> Optional[str]:
+        """Open a drift incident record and return its id."""
+        if not self.config.open_incident_on_drift:
+            return None
+
+        scope_fragment = re.sub(r"[^a-zA-Z0-9_-]+", "-", f"{scope_type}-{scope_value}").strip("-").lower()
+        if not scope_fragment:
+            scope_fragment = "global"
+        incident_id = f"drift-{datetime.utcnow().strftime('%Y%m%d%H%M%S%f')}-{scope_fragment}"
+
+        summary = (
+            f"Eval quality drift detected for {scope_type}:{scope_value} "
+            f"(drop={metrics.get('eval_score_drop', 0.0):.4f})"
+        )
+        recommendation = metrics.get(
+            "recommendation",
+            "review_eval_suite_and_prepare_retraining",
+        )
+
+        conn = self.connect_db()
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO drift_incidents (
+                    incident_id, status, severity, scope_type, scope_value,
+                    summary, recommendation, payload, opened_at, updated_at
+                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    incident_id,
+                    "open",
+                    severity,
+                    scope_type,
+                    scope_value,
+                    summary,
+                    recommendation,
+                    json.dumps(metrics),
+                    datetime.now(),
+                    datetime.now(),
+                ),
+            )
+            conn.commit()
+            return incident_id
+        except Exception as e:
+            conn.rollback()
+            logger.error(f"Failed to open drift incident: {e}")
+            return None
+        finally:
+            cursor.close()
+
     async def run_drift_check(self) -> Dict[str, Any]:
         """
         Run drift detection check.
@@ -750,13 +915,8 @@ class DriftMonitor:
         try:
             scopes = self.list_monitoring_scopes(self.config.sliding_window_days)
             if not scopes:
-                logger.warning("No project/workspace scopes found for drift monitoring")
-                drift_checks_total.labels(status='skipped').inc()
-                return {
-                    "status": "skipped",
-                    "reason": "no_scopes_found",
-                    "timestamp": datetime.now().isoformat()
-                }
+                logger.warning("No project/workspace scopes found, falling back to global scope")
+                scopes = [("global", "global")]
 
             per_scope_results = []
             drift_found_any = False
@@ -765,7 +925,25 @@ class DriftMonitor:
             representative_metrics: Dict[str, Any] = {}
 
             for scope_type, scope_value in scopes:
-                scope_kwargs = {"project": scope_value} if scope_type == "project" else {"workspace": scope_value}
+                if scope_type == "project":
+                    scope_kwargs = {"project": scope_value}
+                elif scope_type == "workspace":
+                    scope_kwargs = {"workspace": scope_value}
+                else:
+                    scope_kwargs = {}
+
+                baseline_eval_scores = self.get_eval_scores(
+                    days=self.config.sliding_window_days,
+                    offset_days=self.config.sliding_window_days,
+                    scope_type=scope_type,
+                    scope_value=scope_value,
+                )
+                current_eval_scores = self.get_eval_scores(
+                    days=self.config.sliding_window_days,
+                    offset_days=0,
+                    scope_type=scope_type,
+                    scope_value=scope_value,
+                )
 
                 baseline_data = self.get_feedback_data(
                     days=self.config.sliding_window_days,
@@ -778,82 +956,148 @@ class DriftMonitor:
                     **scope_kwargs,
                 )
 
-                logger.info(f"Scope {scope_type}:{scope_value} baseline={len(baseline_data)}, current={len(current_data)}")
+                logger.info(
+                    "Scope %s:%s baseline_feedback=%s current_feedback=%s baseline_eval=%s current_eval=%s",
+                    scope_type,
+                    scope_value,
+                    len(baseline_data),
+                    len(current_data),
+                    len(baseline_eval_scores),
+                    len(current_eval_scores),
+                )
 
-                if len(baseline_data) < self.config.min_samples or len(current_data) < self.config.min_samples:
+                if (
+                    len(baseline_eval_scores) < self.config.min_eval_samples
+                    or len(current_eval_scores) < self.config.min_eval_samples
+                ):
                     per_scope_results.append(
                         {
                             "scope_type": scope_type,
                             "scope_value": scope_value,
                             "status": "skipped",
-                            "reason": "insufficient_samples",
-                            "baseline_count": len(baseline_data),
-                            "current_count": len(current_data),
+                            "reason": "insufficient_eval_samples",
+                            "baseline_eval_count": len(baseline_eval_scores),
+                            "current_eval_count": len(current_eval_scores),
+                            "min_eval_samples": self.config.min_eval_samples,
+                            "baseline_feedback_count": len(baseline_data),
+                            "current_feedback_count": len(current_data),
                         }
                     )
                     continue
 
-                baseline_texts = [f"{r['query']}\n{r['response']}" for r in baseline_data]
-                current_texts = [f"{r['query']}\n{r['response']}" for r in current_data]
+                eval_metrics = self.calculate_eval_score_metrics(
+                    baseline_scores=baseline_eval_scores,
+                    current_scores=current_eval_scores,
+                )
+                baseline_eval_score = eval_metrics["baseline_eval_score"]
+                current_eval_score = eval_metrics["current_eval_score"]
+                eval_score_drop = eval_metrics["eval_score_drop"]
 
-                baseline_embeddings = self.compute_embeddings(baseline_texts)
-                current_embeddings = self.compute_embeddings(current_texts)
-                kl_divergence = self.calculate_kl_divergence(baseline_embeddings, current_embeddings)
+                kl_divergence = 0.0
+                psi = 0.0
+                kl_drift = False
+                psi_drift = False
 
-                baseline_intent_dist = self.get_intent_distribution(baseline_data)
-                current_intent_dist = self.get_intent_distribution(current_data)
-                psi = self.calculate_psi(baseline_intent_dist, current_intent_dist)
+                secondary_samples_ready = (
+                    len(baseline_data) >= self.config.min_samples
+                    and len(current_data) >= self.config.min_samples
+                )
+                if secondary_samples_ready:
+                    baseline_texts = [f"{r['query']}\n{r['response']}" for r in baseline_data]
+                    current_texts = [f"{r['query']}\n{r['response']}" for r in current_data]
 
-                baseline_accuracy = self.calculate_accuracy_metrics(baseline_data)['accuracy']
-                current_accuracy = self.calculate_accuracy_metrics(current_data)['accuracy']
-                accuracy_delta = baseline_accuracy - current_accuracy
+                    baseline_embeddings = self.compute_embeddings(baseline_texts)
+                    current_embeddings = self.compute_embeddings(current_texts)
+                    kl_divergence = self.calculate_kl_divergence(
+                        baseline_embeddings,
+                        current_embeddings,
+                    )
 
-                kl_drift = kl_divergence > self.config.kl_threshold
-                psi_drift = psi > self.config.psi_threshold
-                accuracy_drift = current_accuracy < self.config.accuracy_min
-                drift_detected = kl_drift or psi_drift or accuracy_drift
+                    baseline_intent_dist = self.get_intent_distribution(baseline_data)
+                    current_intent_dist = self.get_intent_distribution(current_data)
+                    psi = self.calculate_psi(baseline_intent_dist, current_intent_dist)
+
+                    kl_drift = kl_divergence > self.config.kl_threshold
+                    psi_drift = psi > self.config.psi_threshold
+
+                eval_drop_detected = eval_score_drop >= self.config.eval_score_drop_min
+                drift_detected = eval_drop_detected
                 drift_found_any = drift_found_any or drift_detected
 
-                kl_score = kl_divergence / self.config.kl_threshold
-                psi_score = psi / self.config.psi_threshold
-                accuracy_score = max(0, accuracy_delta / (1 - self.config.accuracy_min))
-                combined_drift_score = (kl_score + psi_score + accuracy_score) / 3
+                secondary_signal_count = int(kl_drift) + int(psi_drift)
+                kl_score = kl_divergence / self.config.kl_threshold if self.config.kl_threshold else 0.0
+                psi_score = psi / self.config.psi_threshold if self.config.psi_threshold else 0.0
+                eval_drop_score = (
+                    eval_score_drop / self.config.eval_score_drop_min
+                    if self.config.eval_score_drop_min
+                    else 0.0
+                )
+                combined_drift_score = (2 * eval_drop_score + kl_score + psi_score) / 4
 
                 severity = None
                 if drift_detected:
                     if (
-                        kl_divergence > self.config.kl_threshold * self.config.critical_kl_multiplier
-                        or psi > self.config.psi_threshold * self.config.critical_psi_multiplier
-                        or accuracy_delta > self.config.critical_accuracy_drop
+                        eval_score_drop >= self.config.critical_eval_score_drop
+                        or secondary_signal_count >= 2
                     ):
                         severity = "critical"
-                    elif (
-                        kl_divergence > self.config.kl_threshold * self.config.warning_kl_multiplier
-                        or psi > self.config.psi_threshold * self.config.warning_psi_multiplier
-                        or accuracy_delta > self.config.warning_accuracy_drop
-                    ):
+                    elif eval_score_drop >= self.config.warning_eval_score_drop or secondary_signal_count >= 1:
                         severity = "warning"
                     else:
                         severity = "info"
-                        
+
+                retraining_recommended = self.recommend_retraining(eval_score_drop, secondary_signal_count)
+                recommendation = (
+                    "trigger_retraining_pipeline"
+                    if retraining_recommended
+                    else "monitor_next_eval_window"
+                )
+
                 metrics = {
                     "kl_divergence": kl_divergence,
                     "psi": psi,
-                    "baseline_accuracy": baseline_accuracy,
-                    "current_accuracy": current_accuracy,
-                    "accuracy_delta": accuracy_delta,
+                    # Legacy keys kept for dashboard compatibility; values now carry eval scores.
+                    "baseline_accuracy": baseline_eval_score,
+                    "current_accuracy": current_eval_score,
+                    "accuracy_delta": eval_score_drop,
+                    "baseline_eval_score": baseline_eval_score,
+                    "current_eval_score": current_eval_score,
+                    "eval_score_delta": eval_metrics["eval_score_delta"],
+                    "eval_score_drop": eval_score_drop,
+                    "eval_metric_name": self.config.eval_metric_name,
+                    "eval_drop_detected": eval_drop_detected,
+                    "secondary_signals": {
+                        "kl_drift": kl_drift,
+                        "psi_drift": psi_drift,
+                    },
+                    "secondary_signal_count": secondary_signal_count,
                     "combined_drift_score": combined_drift_score,
                     "drift_detected": drift_detected,
                     "severity": severity,
                     "scope_type": scope_type,
                     "scope_value": scope_value,
+                    "baseline_eval_samples": len(baseline_eval_scores),
+                    "current_eval_samples": len(current_eval_scores),
+                    "retraining_recommended": retraining_recommended,
+                    "recommendation": recommendation,
                 }
+
+                incident_id: Optional[str] = None
+                if drift_detected and severity:
+                    incident_id = self.open_drift_incident(
+                        scope_type=scope_type,
+                        scope_value=scope_value,
+                        severity=severity,
+                        metrics=metrics,
+                    )
+                metrics["incident_id"] = incident_id
+                metrics["incident_opened"] = incident_id is not None
 
                 self.store_drift_metrics(
                     kl_divergence,
                     psi,
-                    baseline_accuracy,
-                    current_accuracy,
+                    baseline_eval_score,
+                    current_eval_score,
                     drift_detected,
                     severity,
                     scope_type,
@@ -862,8 +1106,8 @@ class DriftMonitor:
 
                 kl_divergence_gauge.set(kl_divergence)
                 psi_gauge.set(psi)
-                baseline_accuracy_gauge.set(baseline_accuracy)
-                current_accuracy_gauge.set(current_accuracy)
+                baseline_accuracy_gauge.set(baseline_eval_score)
+                current_accuracy_gauge.set(current_eval_score)
                 combined_drift_score_gauge.set(combined_drift_score)
 
                 if drift_detected and severity:
@@ -873,45 +1117,65 @@ class DriftMonitor:
                     drift_detected_total.labels(severity=severity).inc()
 
                 if drift_detected and self.config.drift_detected_alert_enabled:
-                    drift_severity = self.config.drift_detected_alert_severity
+                    drift_severity = severity or self.config.drift_detected_alert_severity
                     message = (
-                        f"Event: drift_detected\n"
-                        f"Model drift detected for {scope_type}:{scope_value} with {drift_severity} severity.\n"
-                    message = (
-                        f"Model drift detected for {scope_type}:{scope_value} with {severity} severity.\n"
+                        f"Event: eval_drift_detected\n"
+                        f"Quality drift detected for {scope_type}:{scope_value}.\n"
+                        f"Eval Metric: {self.config.eval_metric_name}\n"
+                        f"Baseline Eval Score: {baseline_eval_score:.4f}\n"
+                        f"Current Eval Score: {current_eval_score:.4f}\n"
+                        f"Eval Score Drop: {eval_score_drop:.4f} "
+                        f"(threshold: {self.config.eval_score_drop_min:.4f})\n"
                         f"KL Divergence: {kl_divergence:.4f} (threshold: {self.config.kl_threshold})\n"
                         f"PSI: {psi:.4f} (threshold: {self.config.psi_threshold})\n"
-                        f"Current Accuracy: {current_accuracy:.4f} (minimum: {self.config.accuracy_min})\n"
+                        f"Secondary Signals: {secondary_signal_count}\n"
+                        f"Incident Opened: {'yes' if incident_id else 'no'}\n"
                         f"Combined Drift Score: {combined_drift_score:.4f}"
                     )
                     await self.send_slack_alert(drift_severity, message, metrics)
 
-                accuracy_drop_event = accuracy_delta >= self.config.accuracy_drop_min
-                if accuracy_drop_event and self.config.accuracy_drop_alert_enabled:
+                eval_drop_event = eval_score_drop >= self.config.accuracy_drop_min
+                if eval_drop_event and self.config.accuracy_drop_alert_enabled:
                     accuracy_severity = self.config.accuracy_drop_alert_severity
                     accuracy_message = (
-                        f"Event: accuracy_drop\n"
-                        f"Accuracy drop detected for {scope_type}:{scope_value} with {accuracy_severity} severity.\n"
-                        f"Baseline Accuracy: {baseline_accuracy:.4f}\n"
-                        f"Current Accuracy: {current_accuracy:.4f}\n"
-                        f"Accuracy Delta: {accuracy_delta:.4f} (minimum drop: {self.config.accuracy_drop_min:.4f})"
+                        f"Event: eval_score_drop\n"
+                        f"Eval score drop detected for {scope_type}:{scope_value} with {accuracy_severity} severity.\n"
+                        f"Baseline Eval Score: {baseline_eval_score:.4f}\n"
+                        f"Current Eval Score: {current_eval_score:.4f}\n"
+                        f"Eval Score Drop: {eval_score_drop:.4f} "
+                        f"(minimum drop: {self.config.accuracy_drop_min:.4f})"
                     )
                     await self.send_slack_alert(accuracy_severity, accuracy_message, metrics)
 
-                if drift_detected and combined_drift_score >= self.config.min_drift_score:
+                if (
+                    drift_detected
+                    and retraining_recommended
+                    and combined_drift_score >= self.config.min_drift_score
+                ):
                     await self.trigger_finetuning(metrics)
-                    await self.send_slack_alert(severity, message, metrics)
-                    if combined_drift_score >= self.config.min_drift_score:
-                        await self.trigger_finetuning(metrics)
 
-                per_scope_results.append({
-                    "scope_type": scope_type,
-                    "scope_value": scope_value,
-                    "status": "success",
-                    "metrics": metrics,
-                    "baseline_samples": len(baseline_data),
-                    "current_samples": len(current_data),
-                })
+                per_scope_results.append(
+                    {
+                        "scope_type": scope_type,
+                        "scope_value": scope_value,
+                        "status": "success",
+                        "metrics": metrics,
+                        "baseline_samples": len(baseline_data),
+                        "current_samples": len(current_data),
+                        "secondary_samples_ready": secondary_samples_ready,
+                    }
+                )
+
+            successful_scopes = sum(1 for result in per_scope_results if result.get("status") == "success")
+            if successful_scopes == 0:
+                drift_checks_total.labels(status='skipped').inc()
+                return {
+                    "status": "skipped",
+                    "reason": "insufficient_eval_samples",
+                    "scope_results": per_scope_results,
+                    "checked_scopes": len(scopes),
+                    "timestamp": datetime.now().isoformat(),
+                }
 
             drift_checks_total.labels(status='success').inc()
 
@@ -1191,12 +1455,27 @@ async def get_drift_summary():
             """
         )
         scoped_summary = [dict(row) for row in cursor.fetchall()]
+
+        incident_info = {"incident_count": 0}
+        try:
+            cursor.execute(
+                """
+                SELECT COUNT(*) as incident_count
+                FROM drift_incidents
+                WHERE opened_at >= NOW() - INTERVAL '30 days'
+                """
+            )
+            incident_info = cursor.fetchone() or {"incident_count": 0}
+        except Exception as incident_error:
+            conn.rollback()
+            logger.warning(f"Unable to query drift incidents summary: {incident_error}")
         cursor.close()
 
         return {
             "summary": dict(summary),
             "scoped_summary": scoped_summary,
             "finetuning_triggers": trigger_info['trigger_count'],
+            "open_incidents_last_30_days": incident_info["incident_count"],
             "last_finetuning_trigger": drift_monitor.last_finetuning_trigger.isoformat() 
                 if drift_monitor.last_finetuning_trigger else None,
             "is_monitoring": drift_monitor.is_monitoring
@@ -1204,6 +1483,53 @@ async def get_drift_summary():
     
     except Exception as e:
         logger.error(f"Failed to get drift summary: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/drift/incidents")
+async def get_drift_incidents(
+    days: int = 30,
+    status: Optional[str] = None,
+    scope_type: Optional[str] = None,
+    scope_value: Optional[str] = None,
+):
+    """List open and historical drift incidents."""
+    if not drift_monitor:
+        raise HTTPException(status_code=503, detail="Drift monitor not initialized")
+
+    try:
+        conn = drift_monitor.connect_db()
+        cursor = conn.cursor(cursor_factory=RealDictCursor)
+
+        start_date = datetime.now() - timedelta(days=days)
+        query = """
+            SELECT
+                incident_id, status, severity, scope_type, scope_value,
+                summary, recommendation, payload, opened_at, updated_at
+            FROM drift_incidents
+            WHERE opened_at >= %s
+        """
+        params: List[Any] = [start_date]
+
+        if status:
+            query += " AND status = %s"
+            params.append(status)
+        if scope_type and scope_value:
+            query += " AND scope_type = %s AND scope_value = %s"
+            params.extend([scope_type, scope_value])
+
+        query += " ORDER BY opened_at DESC"
+
+        cursor.execute(query, tuple(params))
+        incidents = [dict(row) for row in cursor.fetchall()]
+        cursor.close()
+        return {
+            "incidents": incidents,
+            "total": len(incidents),
+            "days": days,
+        }
+    except Exception as e:
+        logger.error(f"Failed to list drift incidents: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
