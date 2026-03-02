@@ -61,6 +61,8 @@ SENSITIVE_KEY_SUFFIX_MATCHES = (
     "_private_key",
 )
 
+RETRIEVED_CONTEXT_INSTRUCTION_FENCE = "<<<RETRIEVED_CONTEXT_FENCE>>>"
+
 UNTRUSTED_CONTEXT_INJECTION_PATTERNS = [
     re.compile(
         r"(?i)\b(ignore|disregard|forget)\b.{0,120}\b(previous|prior|above|system|developer|instructions?)\b"
@@ -70,11 +72,26 @@ UNTRUSTED_CONTEXT_INJECTION_PATTERNS = [
         r"(?i)\b(reveal|print|show)\b.{0,140}\b(system prompt|hidden prompt|secret|api key|token|password)\b"
     ),
     re.compile(r"(?i)\b(override|bypass)\b.{0,80}\b(policy|safety|guardrail|system)\b"),
+    re.compile(r"(?i)\b(send|exfiltrate|transmit|forward)\b.{0,60}\b(to|toward|into)\b"),
+    re.compile(r"(?i)\b(encode|base64|hex|rot13)\b.{0,40}\b(and|then)\b.{0,40}\b(return|send|output)\b"),
+    re.compile(r"(?i)\b(exfiltrate|leak|extract|export)\b.{0,80}\b(data|secret|credential|password|key)\b"),
+    re.compile(r"(?i)\b(curl|wget|http|ftp)\b.{0,100}\b(post|send|upload)\b"),
 ]
 
 
 def _redact_text_with_patterns(text: str, patterns: List[re.Pattern]) -> Tuple[str, int]:
     """Apply redaction patterns to text and return redacted text + match count."""
+    if not isinstance(text, str) or not text:
+        return text, 0
+
+    redacted = text
+    redaction_count = 0
+    for pattern in patterns:
+        redacted, applied = pattern.subn(REDACTION_TOKEN, redacted)
+        redaction_count += applied
+    return redacted, redaction_count
+
+
 def _normalize_key_name(key: str) -> str:
     """Normalize key names across snake_case, kebab-case and camelCase."""
     key_with_boundaries = re.sub(r"(?<!^)(?=[A-Z])", "_", key)
@@ -107,19 +124,6 @@ def _redact_sensitive_field_value(value: Any) -> Tuple[Any, int]:
             return value, 0
         return REDACTION_TOKEN, 1
     return REDACTION_TOKEN, 1
-
-
-def redact_secrets_in_text(text: str) -> Tuple[str, int]:
-    """Redact secret-like substrings from a string."""
-    if not isinstance(text, str) or not text:
-        return text, 0
-
-    redacted = text
-    redaction_count = 0
-    for pattern in patterns:
-        redacted, applied = pattern.subn(REDACTION_TOKEN, redacted)
-        redaction_count += applied
-    return redacted, redaction_count
 
 
 def redact_secrets_in_text(text: str) -> Tuple[str, int]:
@@ -340,3 +344,99 @@ def sanitize_tool_output_payload(payload: Any) -> Tuple[Any, Dict[str, Any]]:
         stats["strings_with_injection"] or stats["secret_redactions"]
     )
     return sanitized_payload, stats
+
+
+def redact_secrets_in_prompt(messages: List[Dict[str, Any]]) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """
+    Redact secrets and PII from messages before LLM call.
+    
+    Applied to all message content before sending to the LLM to prevent
+    accidental inclusion of sensitive data in prompts.
+    
+    Returns:
+        Tuple of (sanitized messages, redaction stats)
+    """
+    stats = {
+        "messages_processed": 0,
+        "secret_redactions": 0,
+        "pii_redactions": 0,
+    }
+    
+    sanitized_messages: List[Dict[str, Any]] = []
+    all_patterns = [*SECRET_PATTERNS, *PII_PATTERNS]
+    
+    for message in messages:
+        if not isinstance(message, dict):
+            sanitized_messages.append(message)
+            continue
+            
+        stats["messages_processed"] += 1
+        sanitized_message = dict(message)
+        
+        content = message.get("content")
+        if isinstance(content, str) and content:
+            redacted_content, redaction_count = _redact_text_with_patterns(content, all_patterns)
+            sanitized_message["content"] = redacted_content
+            stats["secret_redactions"] += redaction_count
+        
+        name = message.get("name")
+        if isinstance(name, str) and name:
+            redacted_name, redaction_count = _redact_text_with_patterns(name, all_patterns)
+            sanitized_message["name"] = redacted_name
+            stats["secret_redactions"] += redaction_count
+        
+        sanitized_messages.append(sanitized_message)
+    
+    stats["pii_redactions"] = stats["secret_redactions"]
+    
+    return sanitized_messages, stats
+
+
+def redact_secrets_in_response(response_text: str) -> Tuple[str, Dict[str, Any]]:
+    """
+    Redact secrets and PII from LLM output before returning to user.
+    
+    Applied to all LLM-generated text to prevent the model from leaking
+    secrets that may have been present in training data or context.
+    
+    Returns:
+        Tuple of (sanitized response text, redaction stats)
+    """
+    if not isinstance(response_text, str) or not response_text:
+        return response_text, {
+            "secret_redactions": 0,
+            "pii_redactions": 0,
+        }
+    
+    all_patterns = [*SECRET_PATTERNS, *PII_PATTERNS]
+    redacted_text, redaction_count = _redact_text_with_patterns(response_text, all_patterns)
+    
+    stats = {
+        "secret_redactions": redaction_count,
+        "pii_redactions": redaction_count,
+    }
+    
+    return redacted_text, stats
+
+
+def wrap_rag_chunk_with_fence(chunk_text: str, chunk_index: int, chunk_id: str) -> str:
+    """
+    Wrap a single RAG chunk with instruction fence markers.
+    
+    These markers help the LLM understand that the content is retrieved
+    context and should not be treated as user instructions.
+    
+    Args:
+        chunk_text: The retrieved text content
+        chunk_index: Zero-based index of the chunk
+        chunk_id: Unique identifier for the chunk
+        
+    Returns:
+        Fenced chunk text with markers
+    """
+    return (
+        f"{RETRIEVED_CONTEXT_INSTRUCTION_FENCE}\n"
+        f"[CONTEXT_CHUNK index={chunk_index} id={chunk_id}]\n"
+        f"{chunk_text}\n"
+        f"{RETRIEVED_CONTEXT_INSTRUCTION_FENCE}"
+    )

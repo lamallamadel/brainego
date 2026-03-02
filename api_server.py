@@ -52,9 +52,13 @@ from safety_sanitizer import (
     redact_sensitive,
     redact_sensitive_in_text,
     redact_secrets_in_text,
+    redact_secrets_in_prompt,
+    redact_secrets_in_response,
     sanitize_retrieved_context_chunks,
     sanitize_tool_output_payload,
     sanitize_untrusted_context_text,
+    wrap_rag_chunk_with_fence,
+    RETRIEVED_CONTEXT_INSTRUCTION_FENCE,
 )
 
 # Configure logging
@@ -4748,8 +4752,23 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     }
                     for r in rag_results
                 ]
+        # Redact secrets from prompt before LLM call (exfiltration safety)
+        messages_dicts = [msg.model_dump() if hasattr(msg, 'model_dump') else msg for msg in messages_for_generation]
+        sanitized_messages_dicts, prompt_redaction_stats = redact_secrets_in_prompt(messages_dicts)
+        if prompt_redaction_stats["secret_redactions"] > 0:
+            logger.warning(
+                "Secrets redacted from prompt before LLM call: redactions=%s messages=%s workspace=%s",
+                prompt_redaction_stats["secret_redactions"],
+                prompt_redaction_stats["messages_processed"],
+                workspace_id,
+            )
+        sanitized_messages = [
+            ChatMessage(**msg) if isinstance(msg, dict) else msg
+            for msg in sanitized_messages_dicts
+        ]
+        
         # Format prompt
-        prompt = format_chat_prompt(messages_for_generation)
+        prompt = format_chat_prompt(sanitized_messages)
         logger.info(f"Processing chat completion request with {len(request.messages)} messages")
         
         # Call Agent Router
@@ -4762,10 +4781,19 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         }
         
         generated_text, prompt_tokens, completion_tokens, routing_metadata = await generate_with_router(
-            messages=messages_for_generation,
+            messages=sanitized_messages,
             prompt=prompt,
             params=params
         )
+
+        # Redact secrets from LLM response before returning (exfiltration safety)
+        generated_text, response_redaction_stats = redact_secrets_in_response(generated_text)
+        if response_redaction_stats["secret_redactions"] > 0:
+            logger.warning(
+                "Secrets redacted from LLM response: redactions=%s workspace=%s",
+                response_redaction_stats["secret_redactions"],
+                workspace_id,
+            )
 
         generated_text, guardrail_metadata = apply_output_guardrails(generated_text)
         if guardrail_metadata:
@@ -4778,6 +4806,10 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             )
         routing_metadata = dict(routing_metadata or {})
         routing_metadata["security"] = security_metadata
+        routing_metadata["exfiltration_safety"] = {
+            "prompt_redactions": prompt_redaction_stats,
+            "response_redactions": response_redaction_stats,
+        }
         routing_metadata["workspace_id"] = workspace_id
         routing_metadata["user_id"] = effective_user_id
         routing_metadata["role"] = get_authenticated_role(raw_request)
@@ -5663,7 +5695,22 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
 
         messages_list.append(ChatMessage(role="user", content=clean_user_prompt_content(request.query)))
         
-        prompt = format_chat_prompt(messages_list)
+        # Redact secrets from prompt before LLM call (exfiltration safety)
+        messages_dicts = [msg.model_dump() if hasattr(msg, 'model_dump') else msg for msg in messages_list]
+        sanitized_messages_dicts, prompt_redaction_stats = redact_secrets_in_prompt(messages_dicts)
+        if prompt_redaction_stats["secret_redactions"] > 0:
+            logger.warning(
+                "Secrets redacted from RAG prompt before LLM call: redactions=%s messages=%s workspace=%s",
+                prompt_redaction_stats["secret_redactions"],
+                prompt_redaction_stats["messages_processed"],
+                workspace_id,
+            )
+        sanitized_messages = [
+            ChatMessage(**msg) if isinstance(msg, dict) else msg
+            for msg in sanitized_messages_dicts
+        ]
+        
+        prompt = format_chat_prompt(sanitized_messages)
         
         params = {
             "max_tokens": request.max_tokens,
@@ -5674,10 +5721,19 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
         
         generation_start = time.time()
         generated_text, prompt_tokens, completion_tokens, routing_metadata = await generate_with_router(
-            messages=messages_list,
+            messages=sanitized_messages,
             prompt=prompt,
             params=params
         )
+
+        # Redact secrets from LLM response before returning (exfiltration safety)
+        generated_text, response_redaction_stats = redact_secrets_in_response(generated_text)
+        if response_redaction_stats["secret_redactions"] > 0:
+            logger.warning(
+                "Secrets redacted from RAG response: redactions=%s workspace=%s",
+                response_redaction_stats["secret_redactions"],
+                workspace_id,
+            )
 
         generated_text, guardrail_metadata = apply_output_guardrails(generated_text)
         if guardrail_metadata:
@@ -5691,6 +5747,10 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
         
         retrieval_stats["generation_time_ms"] = round(generation_time_ms, 2)
         retrieval_stats["total_time_ms"] = round((time.time() - start_time) * 1000, 2)
+        retrieval_stats["exfiltration_safety"] = {
+            "prompt_redactions": prompt_redaction_stats,
+            "response_redactions": response_redaction_stats,
+        }
         if safety_verdict is not None:
             retrieval_stats["safety"] = safety_verdict.model_dump()
         
