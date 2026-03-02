@@ -156,3 +156,29 @@ def test_search_rejects_conflicting_workspace_filter():
             limit=2,
             filter_conditions={"workspace_id": "workspace-beta"},
         )
+
+
+def test_search_builds_repo_path_lang_filters():
+    """Ensure repo/path/lang retrieval filters map to metadata payload keys."""
+    storage = QdrantStorage.__new__(QdrantStorage)
+    storage.client = DummyClient()
+    storage.collection_name = "documents"
+
+    storage.search(
+        query_vector=[0.1, 0.2, 0.3],
+        workspace_id="workspace-alpha",
+        limit=4,
+        filter_conditions={
+            "repo": "acme/repo",
+            "path": {"any": ["src/api.py", "src/rag.py"]},
+            "lang": "python",
+        },
+    )
+
+    query_filter = storage.client.last_kwargs["query_filter"]
+    condition_by_key = {condition.key: condition for condition in query_filter.must}
+
+    assert condition_by_key["workspace_id"].match.value == "workspace-alpha"
+    assert condition_by_key["metadata.repo"].match.value == "acme/repo"
+    assert condition_by_key["metadata.path"].match.any == ["src/api.py", "src/rag.py"]
+    assert condition_by_key["metadata.lang"].match.value == "python"

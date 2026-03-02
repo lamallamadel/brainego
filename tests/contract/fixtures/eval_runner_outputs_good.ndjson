@@ -1,0 +1,29 @@
+{
+  "outputs": {
+    "rag-grounded-answer": {
+      "answer": "Le pipeline RAG fait d'abord une recuperation de documents pertinents, puis la generation d'une reponse fondee sur ces documents.",
+      "tools": [
+        "retriever.search",
+        "llm.generate"
+      ],
+      "citations": [
+        "doc://rag-overview",
+        "doc://retrieval-flow"
+      ]
+    },
+    "smalltalk-no-tool": {
+      "answer": "Bonjour !",
+      "tools": [],
+      "citations": []
+    },
+    "citation-required": {
+      "answer": "La sauvegarde suit une politique de retention avec cycles quotidiens et hebdomadaires.",
+      "tools": [
+        "policy.lookup"
+      ],
+      "citations": [
+        "doc://backup-policy-v2"
+      ]
+    }
+  }
+}
