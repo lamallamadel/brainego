@@ -1,6 +1,7 @@
 """
 Backup and Restore Testing for Production Validation
 Tests backup creation, restoration, and data integrity
+Includes cross-region backup replication verification
 """
 
 import asyncio
@@ -9,12 +10,22 @@ import logging
 import os
 import subprocess
 import time
+import hashlib
 from datetime import datetime
 from typing import Dict, List, Optional
 
 import psycopg2
 from qdrant_client import QdrantClient
 import redis
+
+try:
+    from boto3 import client as boto3_client
+    from botocore.exceptions import ClientError
+    BOTO3_AVAILABLE = True
+except ImportError:
+    BOTO3_AVAILABLE = False
+    logger = logging.getLogger(__name__)
+    logger.warning("boto3 not available, cross-region replication tests will be skipped")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +42,34 @@ class BackupRestoreTester:
         self.postgres_conn = None
         self.redis_client = None
         self.qdrant_client = None
+        
+        # MinIO/S3 configuration for cross-region replication
+        self.primary_region = os.getenv('PRIMARY_MINIO_ENDPOINT', 'minio:9000')
+        self.secondary_region = os.getenv('SECONDARY_MINIO_ENDPOINT', None)
+        self.minio_access_key = os.getenv('MINIO_ACCESS_KEY', 'minioadmin')
+        self.minio_secret_key = os.getenv('MINIO_SECRET_KEY', 'minioadmin123')
+        self.backup_bucket = os.getenv('BACKUP_BUCKET', 'backups')
+        
+        # Initialize S3 clients if boto3 available
+        self.primary_s3_client = None
+        self.secondary_s3_client = None
+        if BOTO3_AVAILABLE:
+            try:
+                self.primary_s3_client = boto3_client(
+                    's3',
+                    endpoint_url=f'http://{self.primary_region}',
+                    aws_access_key_id=self.minio_access_key,
+                    aws_secret_access_key=self.minio_secret_key
+                )
+                if self.secondary_region:
+                    self.secondary_s3_client = boto3_client(
+                        's3',
+                        endpoint_url=f'http://{self.secondary_region}',
+                        aws_access_key_id=self.minio_access_key,
+                        aws_secret_access_key=self.minio_secret_key
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to initialize S3 clients: {e}")
 
     def setup_connections(self):
         """Setup database connections"""
@@ -346,6 +385,160 @@ class BackupRestoreTester:
                 'reason': str(e)
             })
             return False
+    
+    def _calculate_checksum(self, s3_client, bucket: str, key: str) -> Optional[str]:
+        """Calculate checksum of S3 object"""
+        try:
+            response = s3_client.get_object(Bucket=bucket, Key=key)
+            sha256_hash = hashlib.sha256()
+            for chunk in response['Body'].iter_chunks(chunk_size=4096):
+                sha256_hash.update(chunk)
+            return sha256_hash.hexdigest()
+        except Exception as e:
+            logger.error(f"Failed to calculate checksum for {key}: {e}")
+            return None
+    
+    def test_cross_region_replication(self) -> bool:
+        """Test cross-region backup replication"""
+        logger.info('\n[TEST] Cross-Region Backup Replication')
+        
+        if not BOTO3_AVAILABLE:
+            logger.warning('✗ boto3 not available, skipping cross-region replication test')
+            self.test_results.append({
+                'test': 'cross_region_replication',
+                'status': 'skipped',
+                'reason': 'boto3 not available'
+            })
+            return False
+        
+        if not self.secondary_region or not self.secondary_s3_client:
+            logger.warning('✗ Secondary region not configured, skipping cross-region replication test')
+            self.test_results.append({
+                'test': 'cross_region_replication',
+                'status': 'skipped',
+                'reason': 'Secondary region not configured'
+            })
+            return False
+        
+        try:
+            # List backups in primary region
+            logger.info(f'Listing backups in primary region: {self.primary_region}')
+            primary_backups = []
+            
+            paginator = self.primary_s3_client.get_paginator('list_objects_v2')
+            pages = paginator.paginate(Bucket=self.backup_bucket)
+            
+            for page in pages:
+                if 'Contents' not in page:
+                    continue
+                for obj in page['Contents']:
+                    primary_backups.append({
+                        'key': obj['Key'],
+                        'size': obj['Size'],
+                        'etag': obj['ETag'].strip('"'),
+                        'last_modified': obj['LastModified']
+                    })
+            
+            if not primary_backups:
+                logger.error('✗ No backups found in primary region')
+                self.test_results.append({
+                    'test': 'cross_region_replication',
+                    'status': 'failed',
+                    'reason': 'No backups in primary region'
+                })
+                return False
+            
+            logger.info(f'Found {len(primary_backups)} backups in primary region')
+            
+            # Verify backups exist in secondary region
+            logger.info(f'Verifying backups in secondary region: {self.secondary_region}')
+            replicated_count = 0
+            checksum_verified = 0
+            missing_backups = []
+            checksum_mismatches = []
+            
+            for backup in primary_backups:
+                try:
+                    # Check if backup exists in secondary
+                    response = self.secondary_s3_client.head_object(
+                        Bucket=self.backup_bucket,
+                        Key=backup['key']
+                    )
+                    
+                    # Verify size matches
+                    if response['ContentLength'] == backup['size']:
+                        replicated_count += 1
+                        
+                        # Verify checksum for critical backups
+                        if any(db_type in backup['key'] for db_type in ['postgres', 'qdrant', 'neo4j']):
+                            primary_checksum = self._calculate_checksum(
+                                self.primary_s3_client, 
+                                self.backup_bucket, 
+                                backup['key']
+                            )
+                            secondary_checksum = self._calculate_checksum(
+                                self.secondary_s3_client, 
+                                self.backup_bucket, 
+                                backup['key']
+                            )
+                            
+                            if primary_checksum and secondary_checksum:
+                                if primary_checksum == secondary_checksum:
+                                    checksum_verified += 1
+                                else:
+                                    checksum_mismatches.append(backup['key'])
+                                    logger.warning(f"Checksum mismatch for {backup['key']}")
+                    else:
+                        logger.warning(f"Size mismatch for {backup['key']}")
+                        
+                except ClientError as e:
+                    if e.response['Error']['Code'] == '404':
+                        missing_backups.append(backup['key'])
+                        logger.warning(f"Missing in secondary: {backup['key']}")
+                    else:
+                        raise
+            
+            # Calculate replication percentage
+            replication_percentage = (replicated_count / len(primary_backups) * 100) if primary_backups else 0
+            
+            logger.info(f'Replicated: {replicated_count}/{len(primary_backups)} ({replication_percentage:.1f}%)')
+            logger.info(f'Checksum verified: {checksum_verified}')
+            
+            # Test passes if >95% replicated and no checksum mismatches
+            success = replication_percentage >= 95.0 and len(checksum_mismatches) == 0
+            
+            if success:
+                logger.info('✓ Cross-region replication verified')
+                self.test_results.append({
+                    'test': 'cross_region_replication',
+                    'status': 'passed',
+                    'primary_backups': len(primary_backups),
+                    'replicated': replicated_count,
+                    'replication_percentage': replication_percentage,
+                    'checksum_verified': checksum_verified
+                })
+            else:
+                logger.error(f'✗ Cross-region replication issues detected')
+                self.test_results.append({
+                    'test': 'cross_region_replication',
+                    'status': 'failed',
+                    'primary_backups': len(primary_backups),
+                    'replicated': replicated_count,
+                    'replication_percentage': replication_percentage,
+                    'missing_backups': missing_backups,
+                    'checksum_mismatches': checksum_mismatches
+                })
+            
+            return success
+            
+        except Exception as e:
+            logger.error(f'✗ Cross-region replication test failed: {e}')
+            self.test_results.append({
+                'test': 'cross_region_replication',
+                'status': 'failed',
+                'reason': str(e)
+            })
+            return False
 
     def generate_report(self):
         """Generate test report"""
@@ -416,6 +609,7 @@ class BackupRestoreTester:
             self.test_backup_creation()
             self.test_restore()
             self.test_data_loss()
+            self.test_cross_region_replication()
 
             self.generate_report()
 

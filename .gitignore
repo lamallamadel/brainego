@@ -48,6 +48,10 @@ logs/
 # Workspace (for filesystem MCP)
 workspace/
 
+# Disaster Recovery Drill Reports
+dr_drill_report_*.json
+backup_restore_report.json
+
 # Jaeger/Tracing data
 jaeger-data/
 
