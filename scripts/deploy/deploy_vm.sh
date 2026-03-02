@@ -145,6 +145,113 @@ get_previous_version() {
     fi
 }
 
+# Mark release as failed in metadata file
+mark_release_failed() {
+    local sha=$1
+    local reason=$2
+    local metadata_file="${RELEASES_DIR}/${sha}/.release_metadata"
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    
+    cat > "${metadata_file}" << EOF
+status=failed
+reason=${reason}
+failed_at=${timestamp}
+sha=${sha}
+EOF
+    
+    log_error "Release ${sha} marked as failed: ${reason}"
+    log_error "Metadata saved to: ${metadata_file}"
+}
+
+# Mark release as successful in metadata file
+mark_release_success() {
+    local sha=$1
+    local metadata_file="${RELEASES_DIR}/${sha}/.release_metadata"
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    
+    cat > "${metadata_file}" << EOF
+status=success
+deployed_at=${timestamp}
+sha=${sha}
+EOF
+    
+    log_success "Release ${sha} marked as successful"
+}
+
+# Run migrations as preflight step
+run_preflight_migrations() {
+    local sha=$1
+    local release_dir=$2
+    local migration_script="${release_dir}/scripts/deploy/run_migrations.sh"
+    local migration_log="${release_dir}/migration_preflight.log"
+    
+    log_info "Checking for migration script at: ${migration_script}"
+    
+    if [[ ! -f "${migration_script}" ]]; then
+        log_warn "Migration script not found - skipping migrations"
+        return 0
+    fi
+    
+    log_info "Executing migrations for release ${sha}..."
+    
+    # Set environment for migration script
+    export GIT_SHA="${sha}"
+    
+    # Capture both stdout and stderr
+    if bash "${migration_script}" > "${migration_log}" 2>&1; then
+        log_success "Migrations completed successfully"
+        
+        # Extract and log applied migration versions
+        local applied_versions=$(grep -E "Migration [0-9]+ applied successfully" "${migration_log}" | grep -oE "Migration [0-9]+" | awk '{print $2}' || echo "")
+        if [[ -n "${applied_versions}" ]]; then
+            log_info "Applied migration versions: ${applied_versions}"
+        else
+            log_info "No new migrations applied (all up to date)"
+        fi
+        
+        # Log migration summary
+        local migration_summary=$(grep -E "Applied: [0-9]+, Skipped: [0-9]+" "${migration_log}" | tail -n 1 || echo "")
+        if [[ -n "${migration_summary}" ]]; then
+            log_info "Migration summary: ${migration_summary}"
+        fi
+        
+        return 0
+    else
+        local exit_code=$?
+        log_error "Migration execution failed with exit code: ${exit_code}"
+        
+        # Extract failed migration version from log
+        local failed_version=$(grep -E "Failed to apply migration [0-9]+" "${migration_log}" | grep -oE "migration [0-9]+" | awk '{print $2}' | head -n 1 || echo "unknown")
+        log_error "Failed migration version: ${failed_version}"
+        
+        # Log stderr content (last 20 lines)
+        log_error "Migration error details (last 20 lines):"
+        tail -n 20 "${migration_log}" | while IFS= read -r line; do
+            log_error "  ${line}"
+        done
+        
+        # Save detailed error to metadata
+        local error_summary="Migration ${failed_version} failed. See ${migration_log} for full details."
+        log_error "${error_summary}"
+        
+        # Create extended metadata with migration failure details
+        local metadata_file="${RELEASES_DIR}/${sha}/.release_metadata"
+        local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+        
+        cat > "${metadata_file}" << EOF
+status=failed
+reason=migration_failed
+failed_at=${timestamp}
+sha=${sha}
+migration_version=${failed_version}
+migration_log=${migration_log}
+error_summary=${error_summary}
+EOF
+        
+        return 1
+    fi
+}
+
 # Deploy a specific version
 deploy() {
     local sha=$1
@@ -204,6 +311,14 @@ deploy() {
         fi
     done
     
+    # Run migrations as preflight step
+    log_info "Running database migrations as preflight step..."
+    if ! run_preflight_migrations "${sha}" "${release_dir}"; then
+        log_error "Migration preflight check failed - deployment aborted"
+        mark_release_failed "${sha}" "migration_failed"
+        exit 1
+    fi
+    
     # Measure downtime
     log_info "Stopping current services and starting new version..."
     log_warn "Beginning service switchover - downtime measurement starting"
@@ -224,8 +339,12 @@ deploy() {
     log_info "Performing health checks..."
     if ! health_check; then
         log_error "Health check failed. Consider rollback."
+        mark_release_failed "${sha}" "health_check_failed"
         exit 1
     fi
+    
+    # Mark release as successful
+    mark_release_success "${sha}"
     
     log_success "Deployment of ${sha} completed successfully!"
     log_info "Release directory: ${release_dir}"
@@ -306,13 +425,26 @@ status() {
     echo "Current version: ${current_version}"
     if [[ -L "${CURRENT_SYMLINK}" ]]; then
         echo "Current path: $(readlink -f ${CURRENT_SYMLINK})"
+        local current_metadata="${RELEASES_DIR}/${current_version}/.release_metadata"
+        if [[ -f "${current_metadata}" ]]; then
+            echo "Current release metadata:"
+            cat "${current_metadata}" | sed 's/^/  /'
+        fi
     fi
     
     echo "Previous version: ${previous_version}"
     
     echo ""
     echo "Available releases:"
-    ls -lht "${RELEASES_DIR}" 2>/dev/null || echo "  No releases found"
+    for release_dir in $(ls -t "${RELEASES_DIR}" 2>/dev/null); do
+        local metadata_file="${RELEASES_DIR}/${release_dir}/.release_metadata"
+        if [[ -f "${metadata_file}" ]]; then
+            local status=$(grep "^status=" "${metadata_file}" | cut -d'=' -f2)
+            echo "  ${release_dir} [${status}]"
+        else
+            echo "  ${release_dir} [no metadata]"
+        fi
+    done
     
     echo ""
     if [[ -d "${CURRENT_SYMLINK}" ]]; then
