@@ -10,6 +10,7 @@ from typing import Any, Dict, Set
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from safety_sanitizer import redact_secrets_in_text
 from workspace_context import get_valid_workspace_ids, resolve_workspace_id
 
 MAX_SERVE_URL = os.getenv("MAX_SERVE_URL", "http://localhost:8080").rstrip("/")
@@ -35,14 +36,6 @@ GUARDRAIL_UNSAFE_REQUEST_PATTERNS = [
     for pattern in (
         r"\b(build|make|create)\b.{0,30}\b(bomb|explosive|ied)\b",
         r"\bhow to\b.{0,40}\b(bomb|explosive|weapon)\b",
-    )
-]
-GUARDRAIL_SECRET_OUTPUT_PATTERNS = [
-    re.compile(pattern, re.IGNORECASE)
-    for pattern in (
-        r"\bsk-[a-z0-9]{8,}\b",
-        r"\b(api[_ -]?key|token|secret|password)\s*[:=]\s*[\"']?[a-z0-9_\-\/+=]{6,}[\"']?",
-        r"\b(aws_access_key_id|aws_secret_access_key|client_secret)\b",
     )
 ]
 
@@ -235,14 +228,14 @@ def _contains_unsafe_request(raw_body: bytes) -> bool:
 
 def _redact_secrets(content: bytes) -> bytes:
     text = content.decode("utf-8", errors="ignore")
-    for pattern in GUARDRAIL_SECRET_OUTPUT_PATTERNS:
-        text = pattern.sub("[REDACTED_SECRET]", text)
-    return text.encode("utf-8")
+    redacted_text, _ = redact_secrets_in_text(text)
+    return redacted_text.encode("utf-8")
 
 
 def _contains_secret_like_output(content: bytes) -> bool:
     text = content.decode("utf-8", errors="ignore")
-    return any(pattern.search(text) for pattern in GUARDRAIL_SECRET_OUTPUT_PATTERNS)
+    _, redaction_count = redact_secrets_in_text(text)
+    return redaction_count > 0
 def _collect_text_values(value: Any) -> list[str]:
     """Collect user-provided text from nested JSON payloads."""
     if isinstance(value, str):

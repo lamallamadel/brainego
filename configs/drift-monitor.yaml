@@ -17,12 +17,18 @@ drift_policy:
     kl_threshold: 0.1       # kl*threshold policy base
     psi_threshold: 0.2
     accuracy_min: 0.75
+  eval:
+    metric_name: "quality_eval_score" # Primary quality-eval metric in lora_performance.metric_name
+    drop_min: 0.05                    # Primary trigger threshold (baseline - current)
+    warning_drop: 0.08
+    critical_drop: 0.12
 
 # Monitoring windows
 monitoring:
   sliding_window_days: 7    # 7-day sliding window for comparison
   check_interval_hours: 6   # Run drift checks every 6 hours
   min_samples: 100          # Minimum samples required for drift detection
+  min_eval_samples: 3       # Minimum eval points per window for eval-drop trigger
 
 # Embedding analysis
 embeddings:
@@ -86,6 +92,11 @@ fine_tuning:
   cooldown_hours: 168       # Wait 7 days between auto-triggered fine-tuning
   fresh_data_window_days: 7 # Count fresh labeled feedback in this window
   min_fresh_labeled_samples: 100 # Minimum recent labels required before trigger
+  recommend_min_eval_drop: 0.08 # Recommend retraining when eval drop reaches this threshold
+
+# Incident management
+incidents:
+  open_on_eval_drift: true
 
 # Database configuration
 database:

@@ -15,6 +15,14 @@ import argparse
 from datetime import datetime
 from feedback_service import FeedbackService
 
+FEEDBACK_TAXONOMY_LABELS = {
+    "hallucination": "Hallucination",
+    "wrong_tool": "Wrong Tool",
+    "missing_citation": "Missing Citation",
+    "policy_denial": "Policy Denial",
+    "uncategorized": "Uncategorized",
+}
+
 
 def clear_screen():
     """Clear terminal screen."""
@@ -42,6 +50,15 @@ def display_overall_stats(service, days=7):
     print(f"Unique Users:        {stats['unique_users']:>6}")
     print(f"Unique Sessions:     {stats['unique_sessions']:>6}")
     print(f"Avg Memory Used:     {stats['avg_memory_used']:>6} bytes")
+
+    category_counts = stats.get("category_counts", {})
+    if category_counts:
+        print("\n🧭 Feedback Taxonomy")
+        print("-" * 80)
+        for key in ("hallucination", "wrong_tool", "missing_citation", "policy_denial", "uncategorized"):
+            if key in category_counts:
+                label = FEEDBACK_TAXONOMY_LABELS.get(key, key)
+                print(f"{label:20} {category_counts[key]:>6}")
 
 
 def display_accuracy_by_model(service):

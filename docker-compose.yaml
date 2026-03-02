@@ -555,6 +555,10 @@ services:
       - LORA_RANK=16
       - LORA_ALPHA=32
       - LORA_DROPOUT=0.05
+      - LORA_CONTROL_BASE_URL=http://max-serve-llama:8080
+      - LORA_RELOAD_ENDPOINT_PATH=/internal/lora/reload
+      - LORA_ROLLBACK_ENDPOINT_PATH=/internal/lora/rollback
+      - LORA_OPERATION_TIMEOUT_SECONDS=120
       - EWC_LAMBDA=500.0
       - BATCH_SIZE=4
       - LEARNING_RATE=2e-4

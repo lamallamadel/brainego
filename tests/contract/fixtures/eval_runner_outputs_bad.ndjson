@@ -1,0 +1,25 @@
+{
+  "outputs": {
+    "rag-grounded-answer": {
+      "answer": "Je pense que RAG est surtout une generation sans source.",
+      "tools": [
+        "llm.generate"
+      ],
+      "citations": [
+        "doc://invented"
+      ]
+    },
+    "smalltalk-no-tool": {
+      "answer": "Salut.",
+      "tools": [
+        "search.web"
+      ],
+      "citations": []
+    },
+    "citation-required": {
+      "answer": "La strategie est standard.",
+      "tools": [],
+      "citations": []
+    }
+  }
+}

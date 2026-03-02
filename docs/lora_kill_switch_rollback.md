@@ -9,12 +9,18 @@ The learning engine now exposes control endpoints:
 - `GET /lora/status`: inspect LoRA state (`enabled`, `active_adapter_version`, rollback history).
 - `POST /lora/disable`: kill-switch that disables LoRA usage and falls back to base model.
 - `POST /lora/enable`: re-enable LoRA usage, optionally pinning `adapter_version`.
+- `POST /lora/activate`: activate (hot-swap) a target `adapter_version` without restarting MAX Serve.
 - `POST /lora/rollback`: rollback adapter state to a target version or base model fallback.
+- `POST /adapters/{version}/deploy`: deploy + activate adapter through the LoRA control plane.
 
 ### Environment flags
 
 - `LORA_ENABLED` (`true`/`false`): default boot-time LoRA state.
 - `ACTIVE_LORA_ADAPTER` (optional): initial adapter version at startup.
+- `LORA_CONTROL_BASE_URL`: LoRA control plane URL (example: `http://max-serve-llama:8080`).
+- `LORA_RELOAD_ENDPOINT_PATH`: reload endpoint path (default: `/internal/lora/reload`).
+- `LORA_ROLLBACK_ENDPOINT_PATH`: rollback endpoint path (default: `/internal/lora/rollback`).
+- `LORA_OPERATION_TIMEOUT_SECONDS`: timeout target for hot-swap/rollback operations (default: `120` seconds).
 
 ## Rollback runbook
 
@@ -46,7 +52,7 @@ curl -X POST http://localhost:8003/lora/disable \
 
 ### Rollback to previous adapter
 
-If LoRA should remain enabled but current adapter is unhealthy:
+If LoRA should remain enabled but current adapter is unhealthy, rollback to the previous known-good version:
 
 ```bash
 curl -X POST http://localhost:8003/lora/rollback \
@@ -73,5 +79,8 @@ curl -X POST http://localhost:8003/lora/enable \
 ## Operational notes
 
 - Adapter deployment is blocked while kill-switch is active (`409 Conflict`).
+- `GET /lora/status` includes `known_good_adapter_version`, activation history, and rollback history for auditing.
+- Deploy/activation now call the LoRA control plane directly (no placeholder success path).
 - Every rollback operation appends an entry to `rollback_history` for auditing.
+- Rollback operations track duration and `within_target` against the 120s objective (<2 minutes).
 - Keep canary and monitoring checks in place before re-enabling new adapters.
