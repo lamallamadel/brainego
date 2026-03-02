@@ -691,6 +691,127 @@ async def enforce_auth_v1(request: Request, call_next):
         AUTH_ROLE_CONTEXT.reset(role_token)
         AUTH_METHOD_CONTEXT.reset(method_token)
 
+
+@app.middleware("http")
+async def enforce_usage_metering(request: Request, call_next):
+    """Automatically emit metering events for API requests, tokens, and tool calls."""
+    path = request.url.path
+    if request.method == "OPTIONS" or not _is_usage_metered_path(path):
+        return await call_next(request)
+    
+    started_at = time.time()
+    workspace_id = getattr(request.state, "workspace_id", None) or resolve_workspace_id(request)
+    user_id = get_authenticated_user_id(request)
+    request_id = getattr(request.state, "audit_request_id", None) or str(uuid.uuid4())
+    status_code = 500
+    prompt_tokens = 0
+    completion_tokens = 0
+    tool_calls_count = 0
+    model_name: Optional[str] = None
+    
+    try:
+        request_payload: Dict[str, Any] = {}
+        if hasattr(request.state, "_body"):
+            try:
+                request_payload = json.loads(request.state._body.decode("utf-8"))
+            except Exception:
+                pass
+        
+        response = await call_next(request)
+        status_code = response.status_code
+        
+        if hasattr(response, "body_iterator"):
+            body_chunks = []
+            async for chunk in response.body_iterator:
+                body_chunks.append(chunk)
+            body = b"".join(body_chunks)
+            
+            try:
+                response_data = json.loads(body.decode("utf-8"))
+                if isinstance(response_data, dict):
+                    usage = response_data.get("usage", {})
+                    if isinstance(usage, dict):
+                        prompt_tokens = int(usage.get("prompt_tokens", 0) or 0)
+                        completion_tokens = int(usage.get("completion_tokens", 0) or 0)
+                    model_name = str(response_data.get("model") or "").strip() or None
+                    tool_calls = response_data.get("tool_calls", [])
+                    if isinstance(tool_calls, list):
+                        tool_calls_count = len(tool_calls)
+            except Exception:
+                pass
+            
+            from starlette.responses import Response as StarletteResponse
+            return StarletteResponse(
+                content=body,
+                status_code=response.status_code,
+                headers=dict(response.headers),
+                media_type=response.media_type,
+            )
+        
+        return response
+    except Exception as exc:
+        raise
+    finally:
+        duration_ms = round((time.time() - started_at) * 1000, 2)
+        
+        if not workspace_id:
+            workspace_id = getattr(request.state, "workspace_id", None)
+        if not workspace_id:
+            workspace_id = RAG_DEFAULT_WORKSPACE_ID
+        
+        try:
+            _record_metering_event(
+                workspace_id=workspace_id,
+                meter_key="api_request",
+                quantity=1,
+                user_id=user_id,
+                request_id=request_id,
+                metadata={
+                    "endpoint": path,
+                    "method": request.method,
+                    "status_code": status_code,
+                    "duration_ms": duration_ms,
+                },
+            )
+        except Exception as exc:
+            logger.warning("Failed to record api_request metering event: %s", exc)
+        
+        if prompt_tokens > 0 or completion_tokens > 0:
+            total_tokens = prompt_tokens + completion_tokens
+            try:
+                _record_metering_event(
+                    workspace_id=workspace_id,
+                    meter_key="api_tokens",
+                    quantity=float(total_tokens),
+                    user_id=user_id,
+                    request_id=request_id,
+                    metadata={
+                        "endpoint": path,
+                        "model": model_name,
+                        "prompt_tokens": prompt_tokens,
+                        "completion_tokens": completion_tokens,
+                    },
+                )
+            except Exception as exc:
+                logger.warning("Failed to record api_tokens metering event: %s", exc)
+        
+        if tool_calls_count > 0:
+            try:
+                _record_metering_event(
+                    workspace_id=workspace_id,
+                    meter_key="api_tool_call",
+                    quantity=float(tool_calls_count),
+                    user_id=user_id,
+                    request_id=request_id,
+                    metadata={
+                        "endpoint": path,
+                        "tool_calls_count": tool_calls_count,
+                    },
+                )
+            except Exception as exc:
+                logger.warning("Failed to record api_tool_call metering event: %s", exc)
+
+
 # Request/Response Models
 class ChatMessage(BaseModel):
     role: str = Field(..., description="Role of the message author (system, user, assistant)")
@@ -1571,8 +1692,7 @@ def _record_metering_event(
             workspace_id=workspace_id,
             meter_key=meter_key,
             quantity=quantity,
-            request_id=request_id,
-            metadata=metadata,
+            request_id=safe_request_id,            metadata=safe_metadata,
             user_id=user_id,
         )
     except Exception as metering_exc:
@@ -4103,6 +4223,39 @@ async def admin_update_workspace_policy(
     except Exception as exc:
         logger.error("Failed to update workspace policy: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Workspace policy update error: {exc}")
+
+
+@app.get("/admin/metering/summary", response_model=MeteringSummaryResponse)
+async def admin_metering_summary(
+    raw_request: Request,
+    workspace_id: Optional[str] = Query(None, description="Optional workspace filter"),
+    user_id: Optional[str] = Query(None, description="Optional user filter"),
+    meter_key: Optional[str] = Query(None, description="Optional meter key filter"),
+    start_date: Optional[str] = Query(None, description="Start date (ISO-8601)"),
+    end_date: Optional[str] = Query(None, description="End date (ISO-8601)"),
+):
+    """Admin endpoint for metering usage summary across all workspaces."""
+    _require_admin(raw_request)
+    
+    start_filter = _safe_iso_datetime(start_date, "start_date")
+    end_filter = _safe_iso_datetime(end_date, "end_date")
+    if start_filter and end_filter and end_filter < start_filter:
+        raise HTTPException(status_code=400, detail="end_date must be greater than or equal to start_date")
+    
+    try:
+        result = get_metering_service().summarize_usage(
+            workspace_id=workspace_id,
+            user_id=user_id,
+            meter_key=meter_key,
+            start_date=start_filter,
+            end_date=end_filter,
+        )
+        return MeteringSummaryResponse(**result)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        logger.error("Failed to summarize metering: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Metering summary error: {exc}")
 
 
 @app.get("/metering", response_model=MeteringSummaryResponse)
@@ -6725,3 +6878,4 @@ if __name__ == "__main__":
         log_level="info",
         access_log=True
     )
+

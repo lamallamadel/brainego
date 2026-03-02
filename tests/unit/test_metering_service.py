@@ -42,7 +42,7 @@ def test_build_summary_filters_supports_workspace_user_key_and_dates() -> None:
     assert "meter_key = %s" in where_sql
     assert "created_at >= %s" in where_sql
     assert "created_at <= %s" in where_sql
-    assert params == ["ws-1", "rag.query.requests", start, end]
+    assert params == ["ws-1", "user-1", "rag.query.requests", start, end]
 
 
 @pytest.mark.unit
@@ -94,7 +94,7 @@ def test_add_event_redacts_sensitive_values_before_insert() -> None:
     assert result["status"] == "success"
     assert captured.get("committed") is True
     params = captured["params"]
-    metadata_payload = json.loads(params[5])
+    metadata_payload = json.loads(params[6])
 
     assert "alice@example.com" not in str(params)
     assert "sk-secretvalue12345" not in str(params)
@@ -102,7 +102,6 @@ def test_add_event_redacts_sensitive_values_before_insert() -> None:
     assert metadata_payload["email"] == "[REDACTED_SECRET]"
     assert metadata_payload["token"] == "[REDACTED_SECRET]"
     assert metadata_payload["ip"] == "[REDACTED_SECRET]"
-    assert params == ["ws-1", "user-1", "rag.query.requests", start, end]
 
 
 @pytest.mark.unit

@@ -96,6 +96,8 @@ class MeteringService:
             if normalized:
                 return normalized
         return None
+    
+    @staticmethod
     def _normalize_optional_user_id(user_id: Any) -> Optional[str]:
         if user_id is None:
             return None
@@ -204,7 +206,6 @@ class MeteringService:
                     (
                         resolved_event_id,
                         normalized_workspace_id,
-                        safe_meter_key,
                         normalized_user_id,
                         normalized_meter_key,
                         quantity_value,
@@ -219,7 +220,6 @@ class MeteringService:
                     "status": "success",
                     "event_id": row[0],
                     "workspace_id": normalized_workspace_id,
-                    "meter_key": safe_meter_key,
                     "user_id": normalized_user_id,
                     "meter_key": normalized_meter_key,
                     "quantity": quantity_value,
