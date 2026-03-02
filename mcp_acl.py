@@ -72,7 +72,7 @@ class MCPACLManager:
     ):
         self.acl_config = acl_config
         self.roles = acl_config.get("roles", {})
-        self.default_role = acl_config.get("default_role", "readonly")
+        self.default_role = acl_config.get("default_role", "viewer")
         self.api_key_roles = acl_config.get("api_key_roles", {})
         self.user_roles = acl_config.get("user_roles", {})
         

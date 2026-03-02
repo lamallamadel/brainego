@@ -98,6 +98,7 @@ AUDIT_EVENT_TYPE_QUERY_PATTERN = "^(request_event|tool_event|request|tool_call|m
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "").strip()
 DEFAULT_MCP_POLICY_ROLE = "viewer"
 SUPPORTED_MCP_POLICY_ROLES = {"admin", "developer", "viewer"}
+MCP_POLICY_ROLE_PRIORITY = {"viewer": 0, "developer": 1, "admin": 2}
 MCP_POLICY_ROLE_HEADERS = ("x-mcp-role", "x-user-role", "x-role")
 MCP_POLICY_SCOPE_HEADERS = ("x-mcp-scopes", "x-scopes", "x-scope", "scope")
 
@@ -1417,15 +1418,31 @@ def _is_admin_request(raw_request: Request) -> bool:
     return bool(provided_key) and provided_key == ADMIN_API_KEY
 
 
+def _is_admin_role_request(raw_request: Request) -> bool:
+    """Check whether authenticated role has admin privileges."""
+    authenticated_role = get_authenticated_role(raw_request)
+    normalized_role = _normalize_mcp_policy_role(authenticated_role)
+    return normalized_role == "admin"
+
+
+def _has_admin_privileges(raw_request: Request) -> bool:
+    """Allow admin operations via RBAC role or break-glass admin API key."""
+    return _is_admin_request(raw_request) or _is_admin_role_request(raw_request)
+
+
 def _require_admin(raw_request: Request) -> None:
     """Require admin privileges for management endpoints."""
-    if not ADMIN_API_KEY:
+    if _has_admin_privileges(raw_request):
+        return
+    if not ADMIN_API_KEY and not _is_auth_v1_enabled():
         raise HTTPException(
             status_code=503,
-            detail="admin endpoints are disabled because ADMIN_API_KEY is not configured",
+            detail=(
+                "admin endpoints are disabled because neither ADMIN_API_KEY "
+                "nor AUTH_V1 is configured"
+            ),
         )
-    if not _is_admin_request(raw_request):
-        raise HTTPException(status_code=403, detail="admin privileges required")
+    raise HTTPException(status_code=403, detail="admin privileges required")
 
 
 def _ensure_workspace_active(workspace_id: str, context: str) -> str:
@@ -1469,7 +1486,7 @@ def _resolve_workspace_scope(
         else None
     )
 
-    if _is_admin_request(raw_request):
+    if _has_admin_privileges(raw_request):
         if query_workspace:
             return query_workspace
         if header_workspace:
@@ -2271,6 +2288,39 @@ def _normalize_mcp_policy_role(raw_role: Optional[str]) -> str:
     return normalized_role
 
 
+def _role_priority(role: Optional[str]) -> int:
+    """Return monotonic role privilege rank used to block escalation."""
+    return MCP_POLICY_ROLE_PRIORITY.get(str(role or "").strip().lower(), -1)
+
+
+def _resolve_requested_mcp_policy_role(
+    *,
+    raw_request: Request,
+    explicit_role: Optional[str] = None,
+) -> Optional[str]:
+    """Resolve requested role from payload/headers, if supported."""
+    role_candidates: List[Optional[str]] = [explicit_role]
+    role_candidates.extend(raw_request.headers.get(header_name) for header_name in MCP_POLICY_ROLE_HEADERS)
+    for candidate in role_candidates:
+        if not isinstance(candidate, str) or not candidate.strip():
+            continue
+        normalized_role = _normalize_mcp_policy_role(candidate)
+        if normalized_role in SUPPORTED_MCP_POLICY_ROLES:
+            return normalized_role
+    return None
+
+
+def _resolve_authenticated_mcp_policy_role(raw_request: Request) -> Optional[str]:
+    """Resolve role from authenticated identity with least-privilege fallback."""
+    authenticated_role = get_authenticated_role(raw_request)
+    if not isinstance(authenticated_role, str) or not authenticated_role.strip():
+        return None
+    normalized_role = _normalize_mcp_policy_role(authenticated_role)
+    if normalized_role in SUPPORTED_MCP_POLICY_ROLES:
+        return normalized_role
+    return DEFAULT_MCP_POLICY_ROLE
+
+
 def _parse_scope_tokens(raw_scopes: Any) -> List[str]:
     """Parse scope tokens from strings/lists using comma/space separators."""
     if raw_scopes is None:
@@ -2296,13 +2346,19 @@ def _resolve_tool_policy_identity(
     explicit_scopes: Optional[List[str]] = None,
 ) -> Tuple[str, List[str]]:
     """Resolve effective RBAC role and scopes for MCP policy checks."""
-    role_candidates = [explicit_role]
-    role_candidates.extend(raw_request.headers.get(header_name) for header_name in MCP_POLICY_ROLE_HEADERS)
-    resolved_role = next(
-        (candidate for candidate in role_candidates if isinstance(candidate, str) and candidate.strip()),
-        None,
+    requested_role = _resolve_requested_mcp_policy_role(
+        raw_request=raw_request,
+        explicit_role=explicit_role,
     )
-    normalized_role = _normalize_mcp_policy_role(resolved_role)
+    authenticated_role = _resolve_authenticated_mcp_policy_role(raw_request)
+    if authenticated_role:
+        # Allow only same-or-lower privilege than authenticated role.
+        if requested_role and _role_priority(requested_role) <= _role_priority(authenticated_role):
+            normalized_role = requested_role
+        else:
+            normalized_role = authenticated_role
+    else:
+        normalized_role = requested_role or DEFAULT_MCP_POLICY_ROLE
 
     scope_candidates: List[Any] = [explicit_scopes]
     scope_candidates.extend(raw_request.headers.get(header_name) for header_name in MCP_POLICY_SCOPE_HEADERS)
@@ -2404,6 +2460,8 @@ def _require_admin_tool_policy_role(
 ) -> Tuple[str, List[str]]:
     """Ensure caller role is admin before policy management operations."""
     resolved_role, resolved_scopes = _resolve_tool_policy_identity(raw_request=raw_request)
+    if _is_admin_request(raw_request):
+        return "admin", resolved_scopes
     if resolved_role != "admin":
         raise HTTPException(
             status_code=403,
@@ -3712,7 +3770,7 @@ async def export_audit_events(
     Supported filters include workspace/user/model/status/date range/tool name.
     """
     query_params = raw_request.query_params
-    admin_request = _is_admin_request(raw_request)
+    admin_request = _has_admin_privileges(raw_request)
     workspace_scope_input = workspace_id or query_params.get("workspace")
     workspace_filter = _resolve_workspace_scope(
         raw_request=raw_request,
@@ -3904,7 +3962,7 @@ async def get_workspace_metering(
     end_date: Optional[str] = Query(None, description="End date (ISO-8601)"),
 ):
     """Return workspace-scoped metering aggregates."""
-    admin_request = _is_admin_request(raw_request)
+    admin_request = _has_admin_privileges(raw_request)
     workspace_filter = _resolve_workspace_scope(
         raw_request=raw_request,
         explicit_workspace_id=workspace_id,

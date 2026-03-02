@@ -18,3 +18,11 @@ def test_developer_acl_enables_issue_tracker_write_and_github_read_only() -> Non
     assert "jira_update_issue" in content
 
     assert "github_create_issue" not in content
+
+
+def test_acl_defines_viewer_role_as_default_with_read_only_alias() -> None:
+    content = CONFIG_PATH.read_text(encoding="utf-8")
+
+    assert "viewer:" in content
+    assert "default_role: viewer" in content
+    assert "readonly:" in content
