@@ -99,6 +99,24 @@ def test_policy_enforced_for_internal_mcp_tool_proxy() -> None:
     assert _function_calls(route, "enforce_mcp_tool_policy")
 
 
+def test_workspace_mismatch_guard_is_defined_and_used_on_mcp_routes() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "def _enforce_workspace_match(" in content
+    assert 'context="/v1/mcp"' in content
+    assert 'context="/internal/mcp/tools/call"' in content
+
+
+def test_mcp_tool_policy_rejects_workspace_mismatch_across_sources() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert '"workspace_id mismatch across headers/body/tool arguments"' in content
+
+
+def test_v1_mcp_call_tool_overrides_arguments_workspace_with_resolved_scope() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert 'tool_arguments["workspace_id"] = resolved_workspace_id' in content
+    assert 'payload["arguments"] = tool_arguments' in content
+
+
 def test_policy_engine_is_loaded_in_api_and_returns_policy_denied() -> None:
     content = SOURCE.read_text(encoding="utf-8")
     assert "load_default_tool_policy_engine" in content
