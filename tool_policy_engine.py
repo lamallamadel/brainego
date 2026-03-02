@@ -68,6 +68,21 @@ class WorkspaceRolePolicy:
         }
 
 
+
+
+@dataclass
+class ToolRedactionRule:
+    """Argument-level redaction rule scoped by workspace policy."""
+
+    argument: str
+    patterns: List[str] = field(default_factory=list)
+    replacement: str = "[REDACTED]"
+
+    def applies_to(self, argument_name: str, value: str) -> bool:
+        if argument_name != self.argument:
+            return False
+        return any(fnmatch.fnmatch(value, pattern) for pattern in self.patterns)
+
 @dataclass
 class WorkspaceToolPolicy:
     """Policy rules scoped to one workspace."""
@@ -83,6 +98,7 @@ class WorkspaceToolPolicy:
     role_policies: Dict[str, WorkspaceRolePolicy] = field(default_factory=dict)
     max_tool_calls_per_request: int = 0
     per_call_timeout_seconds: Optional[float] = None
+    redaction_rules: List[ToolRedactionRule] = field(default_factory=list)
 
     def allowed_tools_for_action(self, action: str) -> Set[str]:
         """Return tools allowed for an action including wildcard bucket."""
@@ -119,6 +135,14 @@ class WorkspaceToolPolicy:
             },
             "max_tool_calls_per_request": self.max_tool_calls_per_request,
             "per_call_timeout_seconds": self.per_call_timeout_seconds,
+            "redaction_rules": [
+                {
+                    "argument": rule.argument,
+                    "patterns": list(rule.patterns),
+                    "replacement": rule.replacement,
+                }
+                for rule in self.redaction_rules
+            ],
         }
         if self.role_policies:
             payload["default_role"] = self.default_role
@@ -258,6 +282,10 @@ class ToolPolicyEngine:
             config.get("per_call_timeout_seconds"),
             field_name=f"workspaces.{workspace_id}.per_call_timeout_seconds",
         )
+        redaction_rules = _parse_redaction_rules(
+            config.get("redaction_rules"),
+            field_name=f"workspaces.{workspace_id}.redaction_rules",
+        )
 
         return WorkspaceToolPolicy(
             workspace_id=workspace_id,
@@ -271,6 +299,7 @@ class ToolPolicyEngine:
             role_policies=role_policies,
             max_tool_calls_per_request=max_tool_calls_per_request,
             per_call_timeout_seconds=timeout_value,
+            redaction_rules=redaction_rules,
         )
 
     def resolve_workspace_id(self, workspace_id: Optional[str]) -> Optional[str]:
@@ -480,6 +509,37 @@ class ToolPolicyEngine:
             workspace_id=resolved_workspace,
             timeout_seconds=workspace_policy.resolve_timeout(default_timeout_seconds),
         )
+
+    def redact_tool_arguments(
+        self,
+        *,
+        workspace_id: Optional[str],
+        server_id: str,
+        tool_name: str,
+        arguments: Optional[Dict[str, Any]],
+    ) -> Tuple[Dict[str, Any], int]:
+        """Apply workspace redaction rules to argument payloads for auditing."""
+        payload = dict(arguments or {})
+        resolved_workspace = self.resolve_workspace_id(workspace_id)
+        if not resolved_workspace:
+            return payload, 0
+        workspace_policy = self.workspace_policies.get(resolved_workspace)
+        if not workspace_policy or not workspace_policy.redaction_rules:
+            return payload, 0
+
+        redacted_payload = dict(payload)
+        redactions = 0
+        for rule in workspace_policy.redaction_rules:
+            if rule.argument not in redacted_payload:
+                continue
+            values = _extract_argument_values(redacted_payload[rule.argument])
+            if not values:
+                continue
+            if any(any(fnmatch.fnmatch(value, pattern) for pattern in rule.patterns) for value in values):
+                redacted_payload[rule.argument] = rule.replacement
+                redactions += 1
+
+        return redacted_payload, redactions
 
     def _validate_allowlists(
         self,
@@ -804,6 +864,38 @@ def _parse_role_policies(raw_roles: Any, *, field_name: str) -> Dict[str, Worksp
             ),
         )
 
+    return parsed
+
+
+def _parse_redaction_rules(raw_rules: Any, *, field_name: str) -> List[ToolRedactionRule]:
+    if raw_rules is None:
+        return []
+    if not isinstance(raw_rules, list):
+        raise ValueError(f"{field_name} must be a list")
+
+    parsed: List[ToolRedactionRule] = []
+    for index, raw_rule in enumerate(raw_rules):
+        if not isinstance(raw_rule, dict):
+            raise ValueError(f"{field_name}[{index}] must be a mapping")
+        argument = raw_rule.get("argument")
+        if not isinstance(argument, str) or not argument.strip():
+            raise ValueError(f"{field_name}[{index}].argument must be a non-empty string")
+        patterns = _as_pattern_list(
+            raw_rule.get("patterns"),
+            field_name=f"{field_name}[{index}].patterns",
+        )
+        if not patterns:
+            raise ValueError(f"{field_name}[{index}].patterns must include at least one pattern")
+        replacement = raw_rule.get("replacement", "[REDACTED]")
+        if not isinstance(replacement, str):
+            raise ValueError(f"{field_name}[{index}].replacement must be a string")
+        parsed.append(
+            ToolRedactionRule(
+                argument=argument.strip(),
+                patterns=patterns,
+                replacement=replacement,
+            )
+        )
     return parsed
 
 
