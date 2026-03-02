@@ -1258,6 +1258,312 @@ def smoke_test_metrics_and_health() -> int:
         return 0
 
 
+def smoke_test_log_scrubbing() -> int:
+    """
+    Smoke test for log scrubbing with marker secrets.
+    
+    Tests:
+    1. POST /v1/chat/completions with marker secret in message content
+    2. POST /v1/rag/query with marker secret in query text
+    3. POST /internal/mcp/tools/call with marker secret in tool arguments
+    
+    For each test:
+    - Injects a unique TEST_SECRET_MARKER_ghp_SMOKE_TEST_xxxxx
+    - Captures docker compose logs from api-server-test (last 5 minutes)
+    - Asserts zero occurrences of the marker secret in logs (using regex)
+    - Asserts at least one occurrence of [REDACTED_SECRET] to confirm redaction
+    
+    Returns:
+        0 if all checks pass, 1 otherwise
+    """
+    print("=" * 60)
+    print("Smoke Test: Log Scrubbing")
+    print("=" * 60)
+    
+    api_url = os.getenv("PILOT_API_URL", "http://localhost:8000")
+    api_key = os.getenv("PILOT_API_KEY", "sk-test-key-123")
+    
+    failures = []
+    
+    # Marker secrets for each test
+    marker_secrets = {
+        "chat": "TEST_SECRET_MARKER_ghp_SMOKE_TEST_12345",
+        "rag": "TEST_SECRET_MARKER_ghp_SMOKE_TEST_67890",
+        "mcp": "TEST_SECRET_MARKER_ghp_SMOKE_TEST_ABCDE",
+    }
+    
+    # Determine if we're running in Docker or local process
+    use_docker_logs = os.getenv("LOG_SCRUBBING_USE_DOCKER", "true").lower() == "true"
+    
+    # Test 1: POST /v1/chat/completions with marker secret
+    print("\n[1/3] Testing POST /v1/chat/completions with marker secret...")
+    try:
+        marker_secret = marker_secrets["chat"]
+        
+        status, body = http_request(
+            "POST",
+            f"{api_url}/v1/chat/completions",
+            api_key=api_key,
+            payload={
+                "model": "llama-3.3-8b-instruct",
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": f"Store this secret: {marker_secret} for later use"
+                    }
+                ],
+                "workspace_id": "log-scrubbing-test-workspace",
+            },
+            timeout=30.0,
+        )
+        
+        if status not in (200, 400, 403):
+            print(f"  ⚠ Request returned status {status} (expected 200/400/403)")
+        else:
+            print(f"  ✓ Request completed with status {status}")
+        
+        # Wait a moment for logs to be flushed
+        time.sleep(2)
+        
+        # Capture logs
+        print("  Capturing logs...")
+        logs = _capture_logs(use_docker_logs, minutes=5)
+        
+        if logs is None:
+            failures.append("Test 1: Failed to capture logs")
+        else:
+            # Assert zero occurrences of marker secret
+            marker_pattern = re.escape(marker_secret)
+            matches = re.findall(marker_pattern, logs, re.IGNORECASE)
+            
+            if len(matches) > 0:
+                failures.append(
+                    f"Test 1: Found {len(matches)} occurrence(s) of marker secret '{marker_secret}' in logs (should be 0)"
+                )
+                print(f"  ✗ Marker secret leaked in logs ({len(matches)} occurrences)")
+            else:
+                print(f"  ✓ Marker secret not found in logs (scrubbed)")
+            
+            # Assert at least one occurrence of [REDACTED_SECRET]
+            redacted_matches = re.findall(r"\[REDACTED_SECRET\]", logs, re.IGNORECASE)
+            
+            if len(redacted_matches) == 0:
+                failures.append("Test 1: No [REDACTED_SECRET] found in logs (redaction may not have occurred)")
+                print(f"  ✗ No [REDACTED_SECRET] markers found")
+            else:
+                print(f"  ✓ Found {len(redacted_matches)} [REDACTED_SECRET] marker(s)")
+    
+    except Exception as exc:
+        failures.append(f"Test 1 error: {exc}")
+        import traceback
+        traceback.print_exc()
+    
+    # Test 2: POST /v1/rag/query with marker secret in query
+    print("\n[2/3] Testing POST /v1/rag/query with marker secret...")
+    try:
+        marker_secret = marker_secrets["rag"]
+        
+        status, body = http_request(
+            "POST",
+            f"{api_url}/v1/rag/query",
+            api_key=api_key,
+            payload={
+                "query": f"Search for information about {marker_secret} in the system",
+                "workspace_id": "log-scrubbing-test-workspace",
+                "top_k": 5,
+            },
+            timeout=30.0,
+        )
+        
+        if status not in (200, 400, 403):
+            print(f"  ⚠ Request returned status {status} (expected 200/400/403)")
+        else:
+            print(f"  ✓ Request completed with status {status}")
+        
+        # Wait a moment for logs to be flushed
+        time.sleep(2)
+        
+        # Capture logs
+        print("  Capturing logs...")
+        logs = _capture_logs(use_docker_logs, minutes=5)
+        
+        if logs is None:
+            failures.append("Test 2: Failed to capture logs")
+        else:
+            # Assert zero occurrences of marker secret
+            marker_pattern = re.escape(marker_secret)
+            matches = re.findall(marker_pattern, logs, re.IGNORECASE)
+            
+            if len(matches) > 0:
+                failures.append(
+                    f"Test 2: Found {len(matches)} occurrence(s) of marker secret '{marker_secret}' in logs (should be 0)"
+                )
+                print(f"  ✗ Marker secret leaked in logs ({len(matches)} occurrences)")
+            else:
+                print(f"  ✓ Marker secret not found in logs (scrubbed)")
+            
+            # Assert at least one occurrence of [REDACTED_SECRET]
+            redacted_matches = re.findall(r"\[REDACTED_SECRET\]", logs, re.IGNORECASE)
+            
+            if len(redacted_matches) == 0:
+                failures.append("Test 2: No [REDACTED_SECRET] found in logs (redaction may not have occurred)")
+                print(f"  ✗ No [REDACTED_SECRET] markers found")
+            else:
+                print(f"  ✓ Found {len(redacted_matches)} [REDACTED_SECRET] marker(s)")
+    
+    except Exception as exc:
+        failures.append(f"Test 2 error: {exc}")
+        import traceback
+        traceback.print_exc()
+    
+    # Test 3: POST /internal/mcp/tools/call with marker secret in arguments
+    print("\n[3/3] Testing POST /internal/mcp/tools/call with marker secret...")
+    try:
+        marker_secret = marker_secrets["mcp"]
+        
+        status, body = http_request(
+            "POST",
+            f"{api_url}/internal/mcp/tools/call",
+            api_key=api_key,
+            payload={
+                "server_id": "mcp-github",
+                "tool_name": "github_create_issue",
+                "arguments": {
+                    "repository": "brainego/core",
+                    "title": "Test issue",
+                    "body": f"Issue body contains secret: {marker_secret}",
+                },
+                "workspace_id": "log-scrubbing-test-workspace",
+            },
+            timeout=30.0,
+        )
+        
+        if status not in (200, 400, 403):
+            print(f"  ⚠ Request returned status {status} (expected 200/400/403)")
+        else:
+            print(f"  ✓ Request completed with status {status}")
+        
+        # Wait a moment for logs to be flushed
+        time.sleep(2)
+        
+        # Capture logs
+        print("  Capturing logs...")
+        logs = _capture_logs(use_docker_logs, minutes=5)
+        
+        if logs is None:
+            failures.append("Test 3: Failed to capture logs")
+        else:
+            # Assert zero occurrences of marker secret
+            marker_pattern = re.escape(marker_secret)
+            matches = re.findall(marker_pattern, logs, re.IGNORECASE)
+            
+            if len(matches) > 0:
+                failures.append(
+                    f"Test 3: Found {len(matches)} occurrence(s) of marker secret '{marker_secret}' in logs (should be 0)"
+                )
+                print(f"  ✗ Marker secret leaked in logs ({len(matches)} occurrences)")
+            else:
+                print(f"  ✓ Marker secret not found in logs (scrubbed)")
+            
+            # Assert at least one occurrence of [REDACTED_SECRET]
+            redacted_matches = re.findall(r"\[REDACTED_SECRET\]", logs, re.IGNORECASE)
+            
+            if len(redacted_matches) == 0:
+                failures.append("Test 3: No [REDACTED_SECRET] found in logs (redaction may not have occurred)")
+                print(f"  ✗ No [REDACTED_SECRET] markers found")
+            else:
+                print(f"  ✓ Found {len(redacted_matches)} [REDACTED_SECRET] marker(s)")
+    
+    except Exception as exc:
+        failures.append(f"Test 3 error: {exc}")
+        import traceback
+        traceback.print_exc()
+    
+    # Summary
+    print("\n" + "=" * 60)
+    print("Summary")
+    print("=" * 60)
+    if failures:
+        print(f"✗ {len(failures)} test(s) failed:")
+        for failure in failures:
+            print(f"  - {failure}")
+        return 1
+    else:
+        print("✓ All log scrubbing tests passed")
+        return 0
+
+
+def _capture_logs(use_docker: bool, minutes: int = 5) -> Optional[str]:
+    """
+    Capture logs from the API server.
+    
+    Args:
+        use_docker: If True, use 'docker compose logs', otherwise read local log files
+        minutes: Number of minutes of logs to capture (for docker logs --since)
+    
+    Returns:
+        Log content as string, or None if capture failed
+    """
+    try:
+        if use_docker:
+            # Use docker compose logs to capture from api-server-test container
+            cmd = [
+                "docker", "compose", "logs",
+                "--since", f"{minutes}m",
+                "--no-log-prefix",
+                "api-server-test"
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode != 0:
+                print(f"  ⚠ docker compose logs failed: {result.stderr}")
+                # Try without --no-log-prefix (older docker-compose versions)
+                cmd_fallback = [
+                    "docker", "compose", "logs",
+                    "--since", f"{minutes}m",
+                    "api-server-test"
+                ]
+                
+                result = subprocess.run(
+                    cmd_fallback,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                if result.returncode != 0:
+                    print(f"  ✗ docker compose logs failed (fallback): {result.stderr}")
+                    return None
+            
+            return result.stdout
+        
+        else:
+            # Read from local log file (in-process mode)
+            log_file = os.getenv("API_SERVER_LOG_FILE", "logs/api-server.log")
+            
+            if not os.path.exists(log_file):
+                print(f"  ⚠ Log file not found: {log_file}")
+                return None
+            
+            # Read last N minutes of logs (simple approach: read entire file)
+            # In production, you'd want to filter by timestamp
+            with open(log_file, "r", encoding="utf-8", errors="replace") as f:
+                return f.read()
+    
+    except subprocess.TimeoutExpired:
+        print(f"  ✗ Log capture timed out")
+        return None
+    except Exception as exc:
+        print(f"  ✗ Log capture failed: {exc}")
+        return None
+
+
 def main() -> int:
     """Run all pilot gate checks."""
     parser = argparse.ArgumentParser(
@@ -1324,8 +1630,17 @@ def main() -> int:
         action="store_true",
         help="Run smoke test for /health and /metrics endpoints",
     )
+    parser.add_argument(
+        "--smoke-log-scrubbing",
+        action="store_true",
+        help="Run smoke test for log scrubbing with marker secrets",
+    )
     
     args = parser.parse_args()
+    
+    # Handle --smoke-log-scrubbing mode
+    if args.smoke_log_scrubbing:
+        return smoke_test_log_scrubbing()
     
     # Handle --smoke-metrics-health mode
     if args.smoke_metrics_health:
