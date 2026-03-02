@@ -1,0 +1,228 @@
+{
+  "dashboard": {
+    "title": "Kong Gateway - Authentication & Rate Limiting",
+    "uid": "kong-auth-dashboard",
+    "tags": ["kong", "authentication", "rate-limiting"],
+    "timezone": "browser",
+    "schemaVersion": 16,
+    "version": 1,
+    "refresh": "30s",
+    "panels": [
+      {
+        "id": 1,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "type": "graph",
+        "title": "Request Rate",
+        "targets": [
+          {
+            "expr": "rate(kong_http_requests_total[5m])",
+            "legendFormat": "{{status_code}} - {{route}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "reqps", "label": "Requests/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 2,
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "type": "graph",
+        "title": "Request Latency (P50, P95, P99)",
+        "targets": [
+          {
+            "expr": "histogram_quantile(0.50, rate(kong_request_latency_ms_bucket[5m]))",
+            "legendFormat": "P50",
+            "refId": "A"
+          },
+          {
+            "expr": "histogram_quantile(0.95, rate(kong_request_latency_ms_bucket[5m]))",
+            "legendFormat": "P95",
+            "refId": "B"
+          },
+          {
+            "expr": "histogram_quantile(0.99, rate(kong_request_latency_ms_bucket[5m]))",
+            "legendFormat": "P99",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {"format": "ms", "label": "Latency"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 3,
+        "gridPos": {"h": 8, "w": 8, "x": 0, "y": 8},
+        "type": "graph",
+        "title": "Authentication Success Rate",
+        "targets": [
+          {
+            "expr": "sum(rate(kong_http_requests_total{status_code!~\"401|403\"}[5m])) / sum(rate(kong_http_requests_total[5m])) * 100",
+            "legendFormat": "Success Rate",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "percent", "label": "Success %", "min": 0, "max": 100},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 4,
+        "gridPos": {"h": 8, "w": 8, "x": 8, "y": 8},
+        "type": "graph",
+        "title": "Rate Limit Hits",
+        "targets": [
+          {
+            "expr": "rate(kong_http_requests_total{status_code=\"429\"}[5m])",
+            "legendFormat": "{{route}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "reqps", "label": "Rate Limited/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 5,
+        "gridPos": {"h": 8, "w": 8, "x": 16, "y": 8},
+        "type": "stat",
+        "title": "Active Connections",
+        "targets": [
+          {
+            "expr": "sum(kong_nginx_connections_total{state=\"active\"})",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "textMode": "value_and_name"
+        }
+      },
+      {
+        "id": 6,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+        "type": "graph",
+        "title": "Token Usage by Workspace",
+        "targets": [
+          {
+            "expr": "sum by (workspace_id) (increase(kong_tokens_used_total[1h]))",
+            "legendFormat": "{{workspace_id}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "short", "label": "Tokens"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 7,
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+        "type": "graph",
+        "title": "OAuth2 Token Grants",
+        "targets": [
+          {
+            "expr": "rate(kong_oauth2_tokens_issued_total[5m])",
+            "legendFormat": "{{grant_type}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "reqps", "label": "Tokens/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 8,
+        "gridPos": {"h": 8, "w": 8, "x": 0, "y": 24},
+        "type": "table",
+        "title": "Top Users by Request Count",
+        "targets": [
+          {
+            "expr": "topk(10, sum by (user_id) (increase(kong_http_requests_total[1h])))",
+            "format": "table",
+            "refId": "A"
+          }
+        ],
+        "transformations": [
+          {"id": "organize", "options": {"excludeByName": {"Time": true}}}
+        ]
+      },
+      {
+        "id": 9,
+        "gridPos": {"h": 8, "w": 8, "x": 8, "y": 24},
+        "type": "table",
+        "title": "Top Routes by Latency",
+        "targets": [
+          {
+            "expr": "topk(10, histogram_quantile(0.95, sum by (route, le) (rate(kong_request_latency_ms_bucket[5m]))))",
+            "format": "table",
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "gridPos": {"h": 8, "w": 8, "x": 16, "y": 24},
+        "type": "graph",
+        "title": "Error Rate by Status Code",
+        "targets": [
+          {
+            "expr": "sum by (status_code) (rate(kong_http_requests_total{status_code=~\"4..|5..\"}[5m]))",
+            "legendFormat": "{{status_code}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {"format": "reqps", "label": "Errors/sec"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 11,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+        "type": "graph",
+        "title": "Bandwidth Usage",
+        "targets": [
+          {
+            "expr": "rate(kong_bandwidth_bytes{type=\"egress\"}[5m])",
+            "legendFormat": "Egress",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(kong_bandwidth_bytes{type=\"ingress\"}[5m])",
+            "legendFormat": "Ingress",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {"format": "Bps", "label": "Bandwidth"},
+          {"format": "short"}
+        ]
+      },
+      {
+        "id": 12,
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+        "type": "graph",
+        "title": "Database Connection Pool",
+        "targets": [
+          {
+            "expr": "kong_datastore_reachable",
+            "legendFormat": "Reachable",
+            "refId": "A"
+          },
+          {
+            "expr": "kong_db_connection_pool_active",
+            "legendFormat": "Active Connections",
+            "refId": "B"
+          }
+        ]
+      }
+    ]
+  }
+}
