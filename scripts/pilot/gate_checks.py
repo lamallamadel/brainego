@@ -19,7 +19,9 @@ import argparse
 import json
 import os
 import re
+import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -390,6 +392,215 @@ def print_gate_result(result: GateResult) -> None:
             print(f"    - {failure}")
 
 
+def run_smoke_staging() -> int:
+    """
+    Smoke test for staging environment.
+    
+    Steps:
+    1. Boot Postgres/Qdrant/Redis/Neo4j/MAX with docker-compose.test.yml
+    2. Execute init.sql to create schema
+    3. Verify INSERT operations into feedback and workspace_metering_events tables
+    4. Cleanup with docker compose down -v
+    
+    Returns:
+        0 if all checks pass, 1 otherwise
+    """
+    print("=" * 60)
+    print("Smoke Test: Staging Environment")
+    print("=" * 60)
+    
+    cleanup_needed = False
+    
+    try:
+        # Step 1: Boot services with health checks
+        print("\n[1/4] Booting services (Postgres/Qdrant/Redis/Neo4j/MAX)...")
+        compose_up_cmd = [
+            "docker", "compose",
+            "-f", "docker-compose.test.yml",
+            "up", "-d", "--wait"
+        ]
+        
+        print(f"  Command: {' '.join(compose_up_cmd)}")
+        result = subprocess.run(
+            compose_up_cmd,
+            capture_output=True,
+            text=True,
+            timeout=300
+        )
+        
+        if result.returncode != 0:
+            print(f"  ✗ Failed to boot services:")
+            print(f"    stdout: {result.stdout}")
+            print(f"    stderr: {result.stderr}")
+            return 1
+        
+        print("  ✓ Services booted successfully")
+        cleanup_needed = True
+        
+        # Wait a bit for Postgres to be fully ready
+        print("  Waiting for Postgres to stabilize...")
+        time.sleep(5)
+        
+        # Step 2: Execute init.sql to create schema
+        print("\n[2/4] Executing init.sql to create schema...")
+        
+        psql_cmd = [
+            "docker", "exec", "-i",
+            "brainego-postgres-test",
+            "psql",
+            "-U", "ai_user",
+            "-d", "ai_platform_test"
+        ]
+        
+        init_sql_path = "init-scripts/postgres/init.sql"
+        
+        with open(init_sql_path, "r") as sql_file:
+            sql_content = sql_file.read()
+        
+        result = subprocess.run(
+            psql_cmd,
+            input=sql_content,
+            capture_output=True,
+            text=True,
+            timeout=60
+        )
+        
+        if result.returncode != 0:
+            print(f"  ✗ Failed to execute init.sql:")
+            print(f"    stdout: {result.stdout}")
+            print(f"    stderr: {result.stderr}")
+            return 1
+        
+        print("  ✓ Schema created successfully")
+        
+        # Step 3: Verify INSERT operations
+        print("\n[3/4] Verifying INSERT operations...")
+        
+        # Test INSERT into feedback table
+        feedback_insert_sql = """
+INSERT INTO feedback (
+    feedback_id, query, response, model, rating, 
+    memory_used, tools_called, reason, category, 
+    expected_answer, user_id, session_id, intent, project
+) VALUES (
+    'smoke-test-feedback-1',
+    'What is the capital of France?',
+    'The capital of France is Paris.',
+    'llama-3.3-8b',
+    1,
+    1024,
+    ARRAY['search', 'lookup'],
+    'Correct answer',
+    'geography',
+    'Paris',
+    'smoke-test-user',
+    'smoke-test-session',
+    'factual_query',
+    'smoke-staging'
+);
+
+SELECT id, feedback_id, query, model, rating FROM feedback WHERE feedback_id = 'smoke-test-feedback-1';
+"""
+        
+        result = subprocess.run(
+            psql_cmd,
+            input=feedback_insert_sql,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode != 0:
+            print(f"  ✗ Failed to INSERT into feedback table:")
+            print(f"    stdout: {result.stdout}")
+            print(f"    stderr: {result.stderr}")
+            return 1
+        
+        if "smoke-test-feedback-1" not in result.stdout:
+            print(f"  ✗ Failed to verify feedback INSERT:")
+            print(f"    Output: {result.stdout}")
+            return 1
+        
+        print("  ✓ feedback table INSERT verified")
+        
+        # Test INSERT into workspace_metering_events table
+        metering_insert_sql = """
+INSERT INTO workspace_metering_events (
+    event_id, workspace_id, user_id, meter_key, 
+    quantity, request_id, metadata
+) VALUES (
+    'smoke-test-metering-1',
+    'workspace-smoke-test',
+    'user-smoke-test',
+    'api.requests',
+    1.0,
+    'req-smoke-test-123',
+    '{"service": "api", "endpoint": "/v1/chat"}'::jsonb
+);
+
+SELECT id, event_id, workspace_id, user_id, meter_key, quantity FROM workspace_metering_events WHERE event_id = 'smoke-test-metering-1';
+"""
+        
+        result = subprocess.run(
+            psql_cmd,
+            input=metering_insert_sql,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode != 0:
+            print(f"  ✗ Failed to INSERT into workspace_metering_events table:")
+            print(f"    stdout: {result.stdout}")
+            print(f"    stderr: {result.stderr}")
+            return 1
+        
+        if "smoke-test-metering-1" not in result.stdout:
+            print(f"  ✗ Failed to verify workspace_metering_events INSERT:")
+            print(f"    Output: {result.stdout}")
+            return 1
+        
+        print("  ✓ workspace_metering_events table INSERT verified")
+        
+        print("\n[4/4] All smoke tests passed!")
+        return 0
+        
+    except subprocess.TimeoutExpired as e:
+        print(f"\n✗ Command timed out: {e}")
+        return 1
+    except FileNotFoundError as e:
+        print(f"\n✗ File not found: {e}")
+        return 1
+    except Exception as e:
+        print(f"\n✗ Unexpected error: {e}")
+        return 1
+    finally:
+        # Step 4: Cleanup
+        if cleanup_needed:
+            print("\n[Cleanup] Stopping and removing containers...")
+            compose_down_cmd = [
+                "docker", "compose",
+                "-f", "docker-compose.test.yml",
+                "down", "-v"
+            ]
+            
+            try:
+                result = subprocess.run(
+                    compose_down_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                
+                if result.returncode == 0:
+                    print("  ✓ Cleanup completed successfully")
+                else:
+                    print(f"  ⚠ Cleanup completed with warnings:")
+                    print(f"    stderr: {result.stderr}")
+            except Exception as cleanup_error:
+                print(f"  ⚠ Cleanup failed: {cleanup_error}")
+
+
 def main() -> int:
     """Run all pilot gate checks."""
     parser = argparse.ArgumentParser(
@@ -441,8 +652,17 @@ def main() -> int:
         action="store_true",
         help="Run integration tests via pytest (tests/integration/ -m integration -v)",
     )
+    parser.add_argument(
+        "--smoke-staging",
+        action="store_true",
+        help="Run smoke test for staging environment (docker-compose.test.yml)",
+    )
     
     args = parser.parse_args()
+    
+    # Handle --smoke-staging mode
+    if args.smoke_staging:
+        return run_smoke_staging()
     
     # Handle --run-pytest mode
     if args.run_pytest:
