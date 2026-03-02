@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS feedback (
     tools_called TEXT[] DEFAULT ARRAY[]::TEXT[],
     rating INTEGER NOT NULL CHECK (rating IN (-1, 1)),
     reason TEXT,
+    category VARCHAR(64),
+    expected_answer TEXT,
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     user_id VARCHAR(255),
     session_id VARCHAR(255),
@@ -28,8 +30,14 @@ CREATE INDEX IF NOT EXISTS idx_feedback_model ON feedback(model);
 CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(rating);
 CREATE INDEX IF NOT EXISTS idx_feedback_intent ON feedback(intent);
 CREATE INDEX IF NOT EXISTS idx_feedback_project ON feedback(project);
+CREATE INDEX IF NOT EXISTS idx_feedback_category ON feedback(category);
 CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON feedback(user_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_session_id ON feedback(session_id);
+
+-- Backward-compatible schema migration for existing databases
+ALTER TABLE feedback ADD COLUMN IF NOT EXISTS reason TEXT;
+ALTER TABLE feedback ADD COLUMN IF NOT EXISTS category VARCHAR(64);
+ALTER TABLE feedback ADD COLUMN IF NOT EXISTS expected_answer TEXT;
 
 -- Create accuracy tracking materialized view
 CREATE MATERIALIZED VIEW IF NOT EXISTS model_accuracy_by_intent AS
@@ -80,6 +88,8 @@ RETURNS TABLE (
     model VARCHAR,
     rating INTEGER,
     reason TEXT,
+    category VARCHAR,
+    expected_answer TEXT,
     weight NUMERIC,
     timestamp TIMESTAMP WITH TIME ZONE,
     intent VARCHAR,
@@ -93,6 +103,8 @@ BEGIN
         f.model,
         f.rating,
         f.reason,
+        f.category,
+        f.expected_answer,
         CASE 
             WHEN f.rating = 1 THEN 2.0
             WHEN f.rating = -1 THEN 0.5
@@ -130,6 +142,114 @@ GRANT ALL PRIVILEGES ON SEQUENCE feedback_id_seq TO ai_user;
 GRANT SELECT ON model_accuracy_by_intent TO ai_user;
 GRANT EXECUTE ON FUNCTION get_weekly_finetuning_dataset TO ai_user;
 GRANT EXECUTE ON FUNCTION refresh_model_accuracy TO ai_user;
+
+-- Structured audit logs (requests + tool calls)
+CREATE TABLE IF NOT EXISTS audit_events (
+    id SERIAL PRIMARY KEY,
+    event_id VARCHAR(255) UNIQUE NOT NULL,
+    event_type VARCHAR(32) NOT NULL CHECK (
+        event_type IN ('request_event', 'tool_event', 'request', 'tool_call', 'mcp_tool_call')
+    ),
+    timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    request_id VARCHAR(255),
+    workspace_id VARCHAR(255),
+    user_id VARCHAR(255),
+    role VARCHAR(64),
+    model VARCHAR(255),
+    status VARCHAR(32),
+    tool_name VARCHAR(255),
+    tool_calls JSONB DEFAULT '[]'::JSONB,
+    endpoint TEXT,
+    method VARCHAR(16),
+    status_code INTEGER,
+    latency_ms DOUBLE PRECISION,
+    duration_ms DOUBLE PRECISION,
+    redacted_arguments JSONB DEFAULT '{}'::JSONB,
+    request_payload JSONB DEFAULT '{}'::JSONB,
+    response_payload JSONB DEFAULT '{}'::JSONB,
+    metadata JSONB DEFAULT '{}'::JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS role VARCHAR(64);
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS model VARCHAR(255);
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS status VARCHAR(32);
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS tool_calls JSONB DEFAULT '[]'::JSONB;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS latency_ms DOUBLE PRECISION;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS redacted_arguments JSONB DEFAULT '{}'::JSONB;
+ALTER TABLE audit_events DROP CONSTRAINT IF EXISTS audit_events_event_type_check;
+ALTER TABLE audit_events
+    ADD CONSTRAINT audit_events_event_type_check
+    CHECK (event_type IN ('request_event', 'tool_event', 'request', 'tool_call', 'mcp_tool_call'));
+UPDATE audit_events
+SET latency_ms = duration_ms
+WHERE latency_ms IS NULL
+  AND duration_ms IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp);
+CREATE INDEX IF NOT EXISTS idx_audit_events_workspace_id ON audit_events(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_user_id ON audit_events(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_events_role ON audit_events(role);
+CREATE INDEX IF NOT EXISTS idx_audit_events_model ON audit_events(model);
+CREATE INDEX IF NOT EXISTS idx_audit_events_status ON audit_events(status);
+CREATE INDEX IF NOT EXISTS idx_audit_events_tool_name ON audit_events(tool_name);
+CREATE INDEX IF NOT EXISTS idx_audit_events_event_type ON audit_events(event_type);
+CREATE INDEX IF NOT EXISTS idx_audit_events_request_id ON audit_events(request_id);
+
+GRANT ALL PRIVILEGES ON TABLE audit_events TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE audit_events_id_seq TO ai_user;
+
+-- Workspace registry (tenant lifecycle)
+CREATE TABLE IF NOT EXISTS workspaces (
+    id SERIAL PRIMARY KEY,
+    workspace_id VARCHAR(255) UNIQUE NOT NULL,
+    display_name VARCHAR(255),
+    status VARCHAR(16) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
+    metadata JSONB DEFAULT '{}'::JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    disabled_at TIMESTAMP WITH TIME ZONE
+);
+
+CREATE INDEX IF NOT EXISTS idx_workspaces_workspace_id ON workspaces(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_workspaces_status ON workspaces(status);
+
+DROP TRIGGER IF EXISTS trigger_update_workspaces_timestamp ON workspaces;
+CREATE TRIGGER trigger_update_workspaces_timestamp
+    BEFORE UPDATE ON workspaces
+    FOR EACH ROW
+    EXECUTE FUNCTION update_updated_at_column();
+
+GRANT ALL PRIVILEGES ON TABLE workspaces TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE workspaces_id_seq TO ai_user;
+
+-- Workspace/user-scoped metering events
+CREATE TABLE IF NOT EXISTS workspace_metering_events (
+    id SERIAL PRIMARY KEY,
+    event_id VARCHAR(255) UNIQUE NOT NULL,
+    workspace_id VARCHAR(255) NOT NULL,
+    user_id VARCHAR(255),
+    meter_key VARCHAR(128) NOT NULL,
+    quantity DOUBLE PRECISION NOT NULL DEFAULT 1,
+    request_id VARCHAR(255),
+    metadata JSONB DEFAULT '{}'::JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+ALTER TABLE workspace_metering_events
+    ADD COLUMN IF NOT EXISTS user_id VARCHAR(255);
+
+CREATE INDEX IF NOT EXISTS idx_metering_workspace_id ON workspace_metering_events(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_metering_user_id ON workspace_metering_events(user_id);
+CREATE INDEX IF NOT EXISTS idx_metering_meter_key ON workspace_metering_events(meter_key);
+CREATE INDEX IF NOT EXISTS idx_metering_created_at ON workspace_metering_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_metering_workspace_meter_key
+    ON workspace_metering_events(workspace_id, meter_key);
+CREATE INDEX IF NOT EXISTS idx_metering_workspace_user_meter_key
+    ON workspace_metering_events(workspace_id, user_id, meter_key);
+
+GRANT ALL PRIVILEGES ON TABLE workspace_metering_events TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE workspace_metering_events_id_seq TO ai_user;
 
 -- Drift monitoring tables
 -- Create drift_metrics table for tracking drift detection results
@@ -170,11 +290,32 @@ CREATE TABLE IF NOT EXISTS finetuning_triggers (
 CREATE INDEX IF NOT EXISTS idx_finetuning_triggers_timestamp ON finetuning_triggers(trigger_timestamp);
 CREATE INDEX IF NOT EXISTS idx_finetuning_triggers_job_id ON finetuning_triggers(job_id);
 
+-- Create drift_incidents table for eval-drop incidents and retraining recommendations
+CREATE TABLE IF NOT EXISTS drift_incidents (
+    id SERIAL PRIMARY KEY,
+    incident_id VARCHAR(255) UNIQUE NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'open',
+    severity VARCHAR(20) NOT NULL,
+    scope_type VARCHAR(50),
+    scope_value VARCHAR(255),
+    summary TEXT NOT NULL,
+    recommendation TEXT NOT NULL,
+    payload JSONB DEFAULT '{}'::JSONB,
+    opened_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_drift_incidents_opened_at ON drift_incidents(opened_at);
+CREATE INDEX IF NOT EXISTS idx_drift_incidents_status ON drift_incidents(status);
+CREATE INDEX IF NOT EXISTS idx_drift_incidents_scope ON drift_incidents(scope_type, scope_value);
+
 -- Grant permissions to ai_user for drift monitoring tables
 GRANT ALL PRIVILEGES ON TABLE drift_metrics TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE drift_metrics_id_seq TO ai_user;
 GRANT ALL PRIVILEGES ON TABLE finetuning_triggers TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE finetuning_triggers_id_seq TO ai_user;
+GRANT ALL PRIVILEGES ON TABLE drift_incidents TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE drift_incidents_id_seq TO ai_user;
 
 -- LoRA adapter version tracking
 CREATE TABLE IF NOT EXISTS lora_adapters (
@@ -228,3 +369,95 @@ GRANT ALL PRIVILEGES ON TABLE lora_adapters TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE lora_adapters_id_seq TO ai_user;
 GRANT ALL PRIVILEGES ON TABLE lora_performance TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE lora_performance_id_seq TO ai_user;
+
+-- Jailbreak adversarial evaluation tracking
+CREATE TABLE IF NOT EXISTS adversarial_test_results (
+    id SERIAL PRIMARY KEY,
+    evaluation_id VARCHAR(255) NOT NULL,
+    attempt_id VARCHAR(255) NOT NULL,
+    base_model VARCHAR(255) NOT NULL,
+    adapter_version VARCHAR(50),
+    attack_family VARCHAR(100),
+    blocked BOOLEAN NOT NULL,
+    safely_handled BOOLEAN NOT NULL,
+    tested_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB DEFAULT '{}'::JSONB,
+    UNIQUE(evaluation_id, attempt_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_adversarial_results_model_version
+    ON adversarial_test_results(base_model, adapter_version);
+CREATE INDEX IF NOT EXISTS idx_adversarial_results_tested_at
+    ON adversarial_test_results(tested_at);
+
+-- Safety judge outcome for each adversarial attempt
+CREATE TABLE IF NOT EXISTS safety_judge_results (
+    id SERIAL PRIMARY KEY,
+    evaluation_id VARCHAR(255) NOT NULL,
+    attempt_id VARCHAR(255) NOT NULL,
+    is_safe BOOLEAN NOT NULL,
+    judge_name VARCHAR(100),
+    judged_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    metadata JSONB DEFAULT '{}'::JSONB,
+    UNIQUE(evaluation_id, attempt_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_safety_judge_results_judged_at
+    ON safety_judge_results(judged_at);
+
+-- Daily jailbreak robustness score (% blocked/safely handled and safety-approved)
+CREATE MATERIALIZED VIEW IF NOT EXISTS jailbreak_robustness_daily AS
+SELECT
+    date_trunc('day', a.tested_at) AS day,
+    a.base_model,
+    COALESCE(a.adapter_version, 'base') AS adapter_version,
+    COUNT(*)::INTEGER AS attempt_count,
+    COUNT(*) FILTER (
+        WHERE (a.blocked OR a.safely_handled) AND COALESCE(s.is_safe, false)
+    )::INTEGER AS robust_attempt_count,
+    ROUND(
+        (
+            COUNT(*) FILTER (
+                WHERE (a.blocked OR a.safely_handled) AND COALESCE(s.is_safe, false)
+            )::NUMERIC / NULLIF(COUNT(*)::NUMERIC, 0)
+        ) * 100,
+        2
+    ) AS robustness_score
+FROM adversarial_test_results a
+LEFT JOIN safety_judge_results s
+    ON s.evaluation_id = a.evaluation_id
+    AND s.attempt_id = a.attempt_id
+GROUP BY date_trunc('day', a.tested_at), a.base_model, COALESCE(a.adapter_version, 'base');
+
+CREATE UNIQUE INDEX IF NOT EXISTS idx_jailbreak_robustness_daily_unique
+    ON jailbreak_robustness_daily(day, base_model, adapter_version);
+
+-- Helper to refresh dashboard view and persist latest score in lora_performance
+CREATE OR REPLACE FUNCTION refresh_jailbreak_robustness()
+RETURNS VOID AS $$
+BEGIN
+    REFRESH MATERIALIZED VIEW CONCURRENTLY jailbreak_robustness_daily;
+
+    INSERT INTO lora_performance (adapter_version, metric_name, metric_value, sample_count, metadata)
+    SELECT
+        adapter_version,
+        'jailbreak_robustness',
+        robustness_score,
+        attempt_count,
+        jsonb_build_object('base_model', base_model, 'day', day)
+    FROM jailbreak_robustness_daily
+    WHERE day = (
+        SELECT MAX(day)
+        FROM jailbreak_robustness_daily latest
+        WHERE latest.base_model = jailbreak_robustness_daily.base_model
+          AND latest.adapter_version = jailbreak_robustness_daily.adapter_version
+    );
+END;
+$$ LANGUAGE plpgsql;
+
+GRANT ALL PRIVILEGES ON TABLE adversarial_test_results TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE adversarial_test_results_id_seq TO ai_user;
+GRANT ALL PRIVILEGES ON TABLE safety_judge_results TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE safety_judge_results_id_seq TO ai_user;
+GRANT SELECT ON jailbreak_robustness_daily TO ai_user;
+GRANT EXECUTE ON FUNCTION refresh_jailbreak_robustness TO ai_user;

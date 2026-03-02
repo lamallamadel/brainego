@@ -1,0 +1,92 @@
+# Workspace-scoped MCP tool policy (deny-by-default).
+# Any workspace not listed below is denied.
+
+version: 1
+default_workspace: default
+default_role: viewer
+
+workspaces:
+  default:
+    # Only listed MCP servers are callable from the internal proxy.
+    allowed_mcp_servers:
+      - mcp-github
+      - mcp-linear
+      - mcp-jira
+      - mcp-notion
+      - mcp-filesystem
+      - mcp-slack
+      - mcp-gmail
+      - mcp-calendar
+      - mcp-docs
+
+    # Minimal RBAC profile (AFR-86):
+    # - viewer: read-only
+    # - developer: read + explicit write scopes
+    # - admin: full policy management + full tool access
+    default_role: viewer
+    roles:
+      admin:
+        allowed_tool_actions:
+          - read
+          - write
+          - delete
+        tool_scopes:
+          read: ["*"]
+          write: ["*"]
+          delete: ["*"]
+
+      developer:
+        allowed_tool_actions:
+          - read
+          - write
+        tool_scopes:
+          # GitHub is intentionally read-only in v1.
+          read: ["*"]
+          # Scoped issue-tracker writes only (Linear/Jira).
+          write:
+            - "linear_create_issue"
+            - "linear_update_issue"
+            - "jira_create_issue"
+            - "jira_update_issue"
+        required_scopes:
+          # Explicit policy scopes are mandatory for any write call.
+          write:
+            - "mcp.tool.write"
+            - "mcp.issue_tracker.write"
+
+      viewer:
+        allowed_tool_actions:
+          - read
+        tool_scopes:
+          read: ["*"]
+
+    # Legacy workspace-level fields are retained for backward compatibility.
+    allowed_tool_actions:
+      - read
+      - write
+      - delete
+
+    # Legacy allowed tools by action (wildcard possible).
+    allowed_tool_names:
+      read: ["*"]
+      write:
+        - "linear_create_issue"
+        - "linear_update_issue"
+        - "jira_create_issue"
+        - "jira_update_issue"
+      delete: []
+
+    # Optional argument allowlists.
+    allowlists:
+      servers:
+        mcp-filesystem:
+          path:
+            - "/workspace/**"
+            - "workspace/**"
+          target_path:
+            - "/workspace/**"
+            - "workspace/**"
+
+    # Per-request budget and timeout controls.
+    max_tool_calls_per_request: 25
+    per_call_timeout_seconds: 10

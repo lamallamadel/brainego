@@ -4,12 +4,14 @@
 import os
 import json
 import logging
+import json
 import re
 from typing import Any, Dict, Set
 
 import httpx
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
+from workspace_context import get_valid_workspace_ids, resolve_workspace_id
 
 MAX_SERVE_URL = os.getenv("MAX_SERVE_URL", "http://localhost:8080").rstrip("/")
 MAX_CHAT_PATH = os.getenv("MAX_CHAT_PATH", "/v1/chat/completions")
@@ -19,6 +21,31 @@ FORWARD_TIMEOUT_SECONDS = float(os.getenv("FORWARD_TIMEOUT_SECONDS", "20"))
 
 ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 EXCLUDED_HEADERS = {"host", "content-length", "connection"}
+WORKSPACE_ID_RESPONSE_HEADER = "X-Workspace-Id"
+
+GUARDRAIL_SUSPICIOUS_REQUEST_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(print|show|dump|reveal|exfiltrat(e|ion)|leak)\b.{0,80}\b(secret|credential|token|api[_ -]?key)\b",
+        r"\b(os\.environ|environment variable|env var|\.env|process\.env)\b",
+        r"\b(internal config|runtime config|system prompt|service account)\b",
+    )
+]
+GUARDRAIL_UNSAFE_REQUEST_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\b(build|make|create)\b.{0,30}\b(bomb|explosive|ied)\b",
+        r"\bhow to\b.{0,40}\b(bomb|explosive|weapon)\b",
+    )
+]
+GUARDRAIL_SECRET_OUTPUT_PATTERNS = [
+    re.compile(pattern, re.IGNORECASE)
+    for pattern in (
+        r"\bsk-[a-z0-9]{8,}\b",
+        r"\b(api[_ -]?key|token|secret|password)\s*[:=]\s*[\"']?[a-z0-9_\-\/+=]{6,}[\"']?",
+        r"\b(aws_access_key_id|aws_secret_access_key|client_secret)\b",
+    )
+]
 
 GUARDRAIL_SUSPICIOUS_REQUEST_PATTERNS = [
     re.compile(pattern, re.IGNORECASE)
@@ -93,6 +120,48 @@ def _is_protected_path(path: str) -> bool:
     return path in {"/v1/chat", "/v1/rag/query", "/memory"} or path.startswith("/memory/")
 
 
+def _is_workspace_protected_path(path: str) -> bool:
+    """Return True when request path requires a valid workspace context."""
+    return _is_protected_path(path)
+
+
+@app.middleware("http")
+async def enforce_workspace_context(request: Request, call_next):
+    """Validate workspace_id for all proxied business endpoints."""
+    if request.method == "OPTIONS" or not _is_workspace_protected_path(request.url.path):
+        return await call_next(request)
+
+    workspace_id = resolve_workspace_id(request)
+    if not workspace_id:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": (
+                    "Missing workspace_id. Provide X-Workspace-Id header "
+                    "or workspace_id query parameter."
+                ),
+                "type": "workspace_error",
+                "code": "workspace_id_missing",
+            },
+        )
+
+    valid_workspace_ids = get_valid_workspace_ids()
+    if workspace_id not in valid_workspace_ids:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": f"Unknown workspace_id: {workspace_id}",
+                "type": "workspace_error",
+                "code": "workspace_id_unknown",
+            },
+        )
+
+    request.state.workspace_id = workspace_id
+    response = await call_next(request)
+    response.headers[WORKSPACE_ID_RESPONSE_HEADER] = workspace_id
+    return response
+
+
 @app.middleware("http")
 async def enforce_api_key(request: Request, call_next):
     """Protect MVP endpoints with API key authentication."""
@@ -161,6 +230,26 @@ def _contains_suspicious_exfiltration_request(raw_body: bytes) -> bool:
                 return True
     return False
 
+
+
+
+def _contains_unsafe_request(raw_body: bytes) -> bool:
+    if not raw_body:
+        return False
+
+    try:
+        payload = json.loads(raw_body)
+    except json.JSONDecodeError:
+        return False
+
+    for text in _extract_text_values(payload):
+        normalized = text.strip()
+        if not normalized:
+            continue
+        for pattern in GUARDRAIL_UNSAFE_REQUEST_PATTERNS:
+            if pattern.search(normalized):
+                return True
+    return False
 
 def _redact_secrets(content: bytes) -> bytes:
     text = content.decode("utf-8", errors="ignore")
@@ -267,13 +356,30 @@ async def _forward_request(request: Request, downstream_url: str) -> Response:
                 )
             body = json.dumps({"guardrail": "Request content redacted by safety policy"}).encode("utf-8")
 
+                    detail="I'm sorry, but I can't help with requests to expose secrets or environment configuration.",
+                )
+            body = json.dumps({"guardrail": "Request content redacted by safety policy"}).encode("utf-8")
+
+        if mode != "off" and _contains_unsafe_request(body):
+            if mode == "block":
+                raise HTTPException(
+                    status_code=403,
+                    detail="I'm sorry, but I can't help with requests for harmful instructions.",
+                )
+            body = json.dumps({"guardrail": "Unsafe request content redacted by safety policy"}).encode("utf-8")
+
+        forwarded_headers = _forward_headers(request)
+        workspace_id = getattr(request.state, "workspace_id", None)
+        if workspace_id:
+            forwarded_headers[WORKSPACE_ID_RESPONSE_HEADER] = workspace_id
+
         async with httpx.AsyncClient(timeout=FORWARD_TIMEOUT_SECONDS) as client:
             response = await client.request(
                 method=request.method,
                 url=downstream_url,
                 params=request.query_params,
                 content=body if body else None,
-                headers=_forward_headers(request),
+                headers=forwarded_headers,
             )
     except httpx.TimeoutException as exc:
         raise HTTPException(status_code=504, detail=f"Downstream timeout: {downstream_url}") from exc

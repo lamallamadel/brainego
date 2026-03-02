@@ -49,3 +49,19 @@ def test_github_collection_forwards_issue_pr_commit_flags():
 def test_collection_schedule_uses_github_toggle_variable():
     config = Path("configs/collection-schedule.yaml").read_text(encoding="utf-8")
     assert "enabled: ${ENABLE_GITHUB_INGESTION}" in config
+
+
+def test_github_repo_source_is_supported_with_incremental_defaults():
+    source = Path("data_collectors/ingestion_worker.py").read_text(encoding="utf-8")
+
+    assert "if source == \"github_repo\":" in source
+    assert "return _collect_and_process_github_repo(config)" in source
+    assert "incremental = _is_truthy(config.get(\"incremental\"), default=True)" in source
+    assert "reindex = _is_truthy(config.get(\"reindex\"), default=False)" in source
+
+
+def test_collection_schedule_includes_github_repo_codebase_sync():
+    config = Path("configs/collection-schedule.yaml").read_text(encoding="utf-8")
+    assert "name: github_repo_codebase_sync" in config
+    assert "source: github_repo" in config
+    assert "incremental: true" in config

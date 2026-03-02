@@ -94,7 +94,7 @@ class IngestionQueue:
         Enqueue a data collection job.
         
         Args:
-            source: Data source (github, notion, slack)
+            source: Data source (github, github_repo, notion, slack)
             config: Collection configuration
             
         Returns:

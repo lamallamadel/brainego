@@ -11,9 +11,7 @@ def _parse() -> ast.Module:
     return ast.parse(SOURCE.read_text(encoding="utf-8"))
 
 
-def test_v1_mcp_route_exists() -> None:
-    module = _parse()
-    found = False
+def _find_route(module: ast.Module, path: str, method: str) -> ast.AsyncFunctionDef | None:
     for node in module.body:
         if isinstance(node, ast.AsyncFunctionDef):
             for dec in node.decorator_list:
@@ -22,16 +20,150 @@ def test_v1_mcp_route_exists() -> None:
                     and isinstance(dec.func, ast.Attribute)
                     and isinstance(dec.func.value, ast.Name)
                     and dec.func.value.id == "app"
-                    and dec.func.attr == "post"
+                    and dec.func.attr == method
                     and dec.args
                     and isinstance(dec.args[0], ast.Constant)
-                    and dec.args[0].value == "/v1/mcp"
+                    and dec.args[0].value == path
                 ):
-                    found = True
-    assert found
+                    return node
+    return None
+
+
+def _function_calls(function_node: ast.AsyncFunctionDef, function_name: str) -> bool:
+    for node in ast.walk(function_node):
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == function_name:
+            return True
+    return False
+
+
+def test_v1_mcp_route_exists() -> None:
+    module = _parse()
+    route = _find_route(module, "/v1/mcp", "post")
+    assert route is not None
+
+
+def test_internal_mcp_tool_proxy_route_exists() -> None:
+    module = _parse()
+    route = _find_route(module, "/internal/mcp/tools/call", "post")
+    assert route is not None
 
 
 def test_v1_mcp_proxy_targets_mcp_gateway() -> None:
     content = SOURCE.read_text(encoding="utf-8")
     assert 'MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://mcpjungle:9100")' in content
     assert 'f"{MCP_GATEWAY_URL}/mcp"' in content
+
+def test_internal_mcp_tool_proxy_supports_workspace_policy_fields() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "workspace_id: Optional[str]" in content
+    assert "request_id: Optional[str]" in content
+    assert "action: Optional[str]" in content
+    assert "role: Optional[str]" in content
+    assert "scopes: Optional[List[str]]" in content
+    assert "workspace_id=request.workspace_id" in content
+    assert "request_id=request.request_id" in content
+    assert "action=request.action" in content
+    assert "role=request.role" in content
+    assert "scopes=request.scopes" in content
+
+
+def test_mcp_proxy_models_include_write_confirmation_fields() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "confirm: bool = Field(" in content
+    assert "confirmation_id: Optional[str] = Field(" in content
+
+
+def test_v1_mcp_proxy_passes_confirmation_fields_to_gateway_payload() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert 'payload["confirm"] = request.confirm' in content
+    assert 'payload["confirmation_id"] = request.confirmation_id' in content
+
+
+def test_internal_mcp_proxy_passes_confirmation_fields_to_gateway_client() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "confirm=request.confirm" in content
+    assert "confirmation_id=request.confirmation_id" in content
+
+
+def test_policy_enforced_for_v1_mcp_call_tool() -> None:
+    module = _parse()
+    route = _find_route(module, "/v1/mcp", "post")
+    assert route is not None
+    assert _function_calls(route, "enforce_mcp_tool_policy")
+
+
+def test_policy_enforced_for_internal_mcp_tool_proxy() -> None:
+    module = _parse()
+    route = _find_route(module, "/internal/mcp/tools/call", "post")
+    assert route is not None
+    assert _function_calls(route, "enforce_mcp_tool_policy")
+
+
+def test_workspace_mismatch_guard_is_defined_and_used_on_mcp_routes() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "def _enforce_workspace_match(" in content
+    assert 'context="/v1/mcp"' in content
+    assert 'context="/internal/mcp/tools/call"' in content
+
+
+def test_mcp_tool_policy_rejects_workspace_mismatch_across_sources() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert '"workspace_id mismatch across headers/body/tool arguments"' in content
+
+
+def test_v1_mcp_call_tool_overrides_arguments_workspace_with_resolved_scope() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert 'tool_arguments["workspace_id"] = resolved_workspace_id' in content
+    assert 'payload["arguments"] = tool_arguments' in content
+
+
+def test_policy_engine_is_loaded_in_api_and_returns_policy_denied() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "load_default_tool_policy_engine" in content
+    assert "workspace_id is required by tool policy" in content
+    assert '"error": "PolicyDenied"' in content
+
+
+def test_mcp_policy_denials_are_returned_as_http_403_payloads() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "status_code=403" in content
+    assert "reason=decision.reason or \"MCP tool call denied by policy\"" in content
+    assert "raise HTTPException(status_code=exc.status_code, detail=detail_payload)" in content
+
+
+def test_internal_proxy_redacts_policy_denied_details_before_returning_response() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "safe_detail_payload, _ = _redact_value_for_audit(detail_payload)" in content
+    assert "detail_data = {k: v for k, v in safe_detail_payload.items() if k not in {\"ok\", \"error\"}}" in content
+    assert 'error=str(safe_detail_payload.get("error") or "PolicyDenied")' in content
+    assert "return JSONResponse(status_code=exc.status_code, content=denied_payload)" in content
+
+
+def test_tool_call_audit_redacts_request_response_and_error_payloads() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "safe_request_payload, request_redactions = _redact_value_for_audit(request_payload or {})" in content
+    assert "safe_response_payload, response_redactions = _redact_value_for_audit(response_payload or {})" in content
+    assert "safe_error, error_redactions = _redact_value_for_audit(error or \"\")" in content
+
+
+def test_internal_proxy_applies_policy_timeout_to_transport_client() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "timeout_seconds=effective_timeout_seconds" in content
+
+
+def test_admin_policy_management_routes_exist() -> None:
+    module = _parse()
+    get_route = _find_route(module, "/internal/mcp/policies/{workspace_id}", "get")
+    put_route = _find_route(module, "/internal/mcp/policies/{workspace_id}", "put")
+    assert get_route is not None
+    assert put_route is not None
+
+
+def test_admin_policy_management_routes_require_admin_role() -> None:
+    module = _parse()
+    get_route = _find_route(module, "/internal/mcp/policies/{workspace_id}", "get")
+    put_route = _find_route(module, "/internal/mcp/policies/{workspace_id}", "put")
+    assert get_route is not None
+    assert put_route is not None
+    assert _function_calls(get_route, "_require_admin_tool_policy_role")
+    assert _function_calls(put_route, "_require_admin_tool_policy_role")

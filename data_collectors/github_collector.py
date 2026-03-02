@@ -1,14 +1,108 @@
 #!/usr/bin/env python3
 """
 GitHub Data Collector
-Collects issues, PRs, commits, and discussions from GitHub repositories.
+Collects issues, PRs, commits, discussions, and repository code files
+from GitHub repositories.
 """
 
+import base64
+import fnmatch
+import hashlib
+import json
 import os
 import logging
-from typing import List, Dict, Any, Optional
+from pathlib import Path
+from typing import List, Dict, Any, Optional, Set, Tuple
 from datetime import datetime, timedelta
-from github import Github, GithubException
+
+try:
+    from github import Github, GithubException
+except Exception:  # pragma: no cover - allows unit tests without PyGithub
+    Github = None  # type: ignore[assignment]
+
+    class GithubException(Exception):
+        """Fallback GitHub exception when PyGithub is unavailable."""
+
+
+DEFAULT_GITHUB_REPO_SYNC_STATE_PATH = "/tmp/brainego_github_repo_sync_state.json"
+DEFAULT_MAX_FILE_SIZE_BYTES = 200_000
+_BINARY_EXTENSIONS = {
+    ".bin",
+    ".7z",
+    ".a",
+    ".bmp",
+    ".class",
+    ".dat",
+    ".dll",
+    ".dylib",
+    ".exe",
+    ".gif",
+    ".gz",
+    ".ico",
+    ".jar",
+    ".jpeg",
+    ".jpg",
+    ".lock",
+    ".mp3",
+    ".mp4",
+    ".o",
+    ".pdf",
+    ".png",
+    ".pyc",
+    ".so",
+    ".svg",
+    ".tar",
+    ".tgz",
+    ".wav",
+    ".webp",
+    ".woff",
+    ".woff2",
+    ".wasm",
+    ".zip",
+}
+_EXCLUDED_PATH_PARTS = {
+    ".git",
+    ".next",
+    ".venv",
+    "__pycache__",
+    "build",
+    "coverage",
+    "dist",
+    "node_modules",
+    "target",
+    "venv",
+}
+_LANGUAGE_BY_EXTENSION = {
+    ".c": "c",
+    ".cc": "cpp",
+    ".cpp": "cpp",
+    ".cs": "csharp",
+    ".css": "css",
+    ".go": "go",
+    ".h": "c",
+    ".hpp": "cpp",
+    ".html": "html",
+    ".java": "java",
+    ".js": "javascript",
+    ".json": "json",
+    ".kt": "kotlin",
+    ".md": "markdown",
+    ".php": "php",
+    ".py": "python",
+    ".rb": "ruby",
+    ".rs": "rust",
+    ".scala": "scala",
+    ".sh": "shell",
+    ".sql": "sql",
+    ".swift": "swift",
+    ".toml": "toml",
+    ".ts": "typescript",
+    ".tsx": "typescript",
+    ".txt": "text",
+    ".xml": "xml",
+    ".yaml": "yaml",
+    ".yml": "yaml",
+}
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +121,12 @@ class GitHubCollector:
         if not token:
             raise ValueError("GitHub token is required")
         
+        if Github is None:
+            raise RuntimeError(
+                "PyGithub is required for GitHubCollector. "
+                "Install dependency: PyGithub>=2.1.1"
+            )
+
         self.github = Github(token)
         self.user = self.github.get_user()
         logger.info(f"Initialized GitHub collector for user: {self.user.login}")
@@ -79,6 +179,466 @@ class GitHubCollector:
         except GithubException as e:
             logger.error(f"Error accessing repository {repo_name}: {e}")
             raise
+
+    @staticmethod
+    def build_repository_document_id(repo_name: str, path: str, workspace_id: str) -> str:
+        """Build a deterministic document_id for a repository file."""
+        normalized_repo = str(repo_name).strip().lower()
+        normalized_path = str(path).strip()
+        normalized_workspace = str(workspace_id).strip()
+        identifier = f"{normalized_workspace}:{normalized_repo}:{normalized_path}"
+        return hashlib.sha256(identifier.encode("utf-8")).hexdigest()
+
+    def collect_repository_codebase(
+        self,
+        repo_name: str,
+        workspace_id: str,
+        branch: Optional[str] = None,
+        incremental: bool = True,
+        reindex: bool = False,
+        state_path: Optional[str] = None,
+        max_file_size_bytes: int = DEFAULT_MAX_FILE_SIZE_BYTES,
+        include_patterns: Optional[List[str]] = None,
+        exclude_patterns: Optional[List[str]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Collect repository source files for codebase-aware RAG ingestion.
+
+        The first sync is full. Subsequent syncs are incremental by default by
+        diffing the last synced commit against the latest default-branch commit.
+        """
+        normalized_workspace_id = str(workspace_id or "").strip()
+        if not normalized_workspace_id:
+            raise ValueError("workspace_id is required for repository codebase ingestion")
+
+        if max_file_size_bytes <= 0:
+            raise ValueError("max_file_size_bytes must be greater than 0")
+
+        normalized_include_patterns = self._normalize_glob_patterns(include_patterns)
+        normalized_exclude_patterns = self._normalize_glob_patterns(exclude_patterns)
+
+        repo = self.github.get_repo(repo_name)
+        target_branch = branch or repo.default_branch
+        head_commit_sha = repo.get_branch(target_branch).commit.sha
+
+        effective_state_path = Path(
+            state_path
+            or os.getenv("GITHUB_REPO_SYNC_STATE_PATH", DEFAULT_GITHUB_REPO_SYNC_STATE_PATH)
+        )
+
+        sync_state = self._load_repo_sync_state(effective_state_path)
+        state_key = self._build_sync_state_key(
+            repo_full_name=repo.full_name,
+            workspace_id=normalized_workspace_id,
+            branch=target_branch,
+        )
+        previous_state = sync_state.get(state_key, {})
+        previous_commit = previous_state.get("last_commit")
+        previous_paths = {
+            str(path).strip()
+            for path in previous_state.get("indexed_paths", [])
+            if str(path).strip()
+        }
+
+        mode = "full"
+        changed_paths: Set[str] = set()
+        deleted_paths: Set[str] = set()
+
+        if incremental and previous_commit and not reindex:
+            if previous_commit == head_commit_sha:
+                mode = "incremental"
+                changed_paths = set()
+                deleted_paths = set()
+            else:
+                try:
+                    comparison = repo.compare(previous_commit, head_commit_sha)
+                    changed_paths, deleted_paths = self._extract_compare_paths(
+                        getattr(comparison, "files", []),
+                        include_patterns=normalized_include_patterns,
+                        exclude_patterns=normalized_exclude_patterns,
+                    )
+                    mode = "incremental"
+                except Exception as exc:
+                    logger.warning(
+                        "Incremental compare failed for %s (%s -> %s): %s. Falling back to full sync.",
+                        repo.full_name,
+                        previous_commit,
+                        head_commit_sha,
+                        exc,
+                    )
+                    changed_paths = set(
+                        self._list_repository_paths(
+                            repo=repo,
+                            ref=head_commit_sha,
+                            max_file_size_bytes=max_file_size_bytes,
+                            include_patterns=normalized_include_patterns,
+                            exclude_patterns=normalized_exclude_patterns,
+                        )
+                    )
+                    deleted_paths = previous_paths - changed_paths
+                    mode = "full_fallback"
+        else:
+            changed_paths = set(
+                self._list_repository_paths(
+                    repo=repo,
+                    ref=head_commit_sha,
+                    max_file_size_bytes=max_file_size_bytes,
+                    include_patterns=normalized_include_patterns,
+                    exclude_patterns=normalized_exclude_patterns,
+                )
+            )
+            deleted_paths = previous_paths - changed_paths
+            mode = "full_reindex" if reindex else "full"
+
+        documents: List[Dict[str, Any]] = []
+        skipped_paths: Set[str] = set()
+        for path in sorted(changed_paths):
+            document = self._build_repository_document(
+                repo=repo,
+                path=path,
+                commit_sha=head_commit_sha,
+                branch=target_branch,
+                workspace_id=normalized_workspace_id,
+                max_file_size_bytes=max_file_size_bytes,
+                include_patterns=normalized_include_patterns,
+                exclude_patterns=normalized_exclude_patterns,
+            )
+            if document is None:
+                skipped_paths.add(path)
+                if path in previous_paths:
+                    deleted_paths.add(path)
+                continue
+            documents.append(document)
+
+        if mode == "incremental":
+            indexed_paths = set(previous_paths)
+        else:
+            indexed_paths = set()
+        indexed_paths -= deleted_paths
+        indexed_paths -= skipped_paths
+        indexed_paths.update(doc["metadata"]["path"] for doc in documents)
+
+        sync_state[state_key] = {
+            "repo": repo.full_name,
+            "workspace_id": normalized_workspace_id,
+            "branch": target_branch,
+            "last_commit": head_commit_sha,
+            "indexed_paths": sorted(indexed_paths),
+            "updated_at": datetime.utcnow().isoformat(),
+        }
+        self._save_repo_sync_state(effective_state_path, sync_state)
+
+        return {
+            "status": "success",
+            "repository": repo.full_name,
+            "repo": repo.full_name,
+            "branch": target_branch,
+            "workspace_id": normalized_workspace_id,
+            "workspace": normalized_workspace_id,
+            "documents": documents,
+            "deleted_paths": sorted(deleted_paths),
+            "skipped_paths": sorted(skipped_paths),
+            "sync": {
+                "mode": mode,
+                "incremental": mode == "incremental",
+                "previous_commit": previous_commit,
+                "current_commit": head_commit_sha,
+                "documents_collected": len(documents),
+                "paths_deleted": len(deleted_paths),
+                "paths_skipped": len(skipped_paths),
+            },
+        }
+
+    @staticmethod
+    def _build_sync_state_key(repo_full_name: str, workspace_id: str, branch: str) -> str:
+        """Create stable key used for persisted sync state."""
+        return f"{repo_full_name}:{workspace_id}:{branch}"
+
+    @staticmethod
+    def _normalize_glob_patterns(
+        patterns: Optional[Any],
+    ) -> Optional[List[str]]:
+        """Normalize include/exclude glob patterns from list-like or CSV input."""
+        if patterns is None:
+            return None
+
+        normalized: List[str] = []
+        if isinstance(patterns, str):
+            raw_values = patterns.split(",")
+        elif isinstance(patterns, (list, tuple, set)):
+            raw_values = list(patterns)
+        else:
+            raise ValueError("Patterns must be provided as a list or comma-separated string")
+
+        for raw_pattern in raw_values:
+            if raw_pattern is None:
+                continue
+            pattern = str(raw_pattern).strip()
+            if pattern:
+                normalized.append(pattern)
+
+        return normalized or None
+
+    @staticmethod
+    def _load_repo_sync_state(path: Path) -> Dict[str, Any]:
+        """Load repository sync state from disk."""
+        if not path.exists():
+            return {}
+        try:
+            with path.open("r", encoding="utf-8") as state_file:
+                payload = json.load(state_file)
+            return payload if isinstance(payload, dict) else {}
+        except Exception as exc:
+            logger.warning("Unable to read GitHub sync state %s: %s", path, exc)
+            return {}
+
+    @staticmethod
+    def _save_repo_sync_state(path: Path, payload: Dict[str, Any]) -> None:
+        """Persist repository sync state on disk."""
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("w", encoding="utf-8") as state_file:
+            json.dump(payload, state_file, indent=2, sort_keys=True)
+
+    def _extract_compare_paths(
+        self,
+        files: Any,
+        include_patterns: Optional[List[str]],
+        exclude_patterns: Optional[List[str]],
+    ) -> Tuple[Set[str], Set[str]]:
+        """Extract changed and removed file paths from GitHub compare response."""
+        changed_paths: Set[str] = set()
+        deleted_paths: Set[str] = set()
+
+        for changed_file in files or []:
+            path = str(getattr(changed_file, "filename", "")).strip()
+            if not path:
+                continue
+
+            status = str(getattr(changed_file, "status", "")).strip().lower()
+            previous_filename = str(
+                getattr(changed_file, "previous_filename", "") or ""
+            ).strip()
+
+            if status == "removed":
+                if self._should_collect_repository_path(
+                    path=path,
+                    include_patterns=include_patterns,
+                    exclude_patterns=exclude_patterns,
+                ):
+                    deleted_paths.add(path)
+                continue
+
+            if status == "renamed":
+                if previous_filename and self._should_collect_repository_path(
+                    path=previous_filename,
+                    include_patterns=include_patterns,
+                    exclude_patterns=exclude_patterns,
+                ):
+                    deleted_paths.add(previous_filename)
+                if self._should_collect_repository_path(
+                    path=path,
+                    include_patterns=include_patterns,
+                    exclude_patterns=exclude_patterns,
+                ):
+                    changed_paths.add(path)
+                continue
+
+            if self._should_collect_repository_path(
+                path=path,
+                include_patterns=include_patterns,
+                exclude_patterns=exclude_patterns,
+            ):
+                changed_paths.add(path)
+
+        return changed_paths, deleted_paths
+
+    def _list_repository_paths(
+        self,
+        repo: Any,
+        ref: str,
+        max_file_size_bytes: int,
+        include_patterns: Optional[List[str]],
+        exclude_patterns: Optional[List[str]],
+    ) -> List[str]:
+        """List collectable repository file paths for a given ref."""
+        tree = repo.get_git_tree(ref, recursive=True)
+        paths: List[str] = []
+
+        for item in getattr(tree, "tree", []):
+            if getattr(item, "type", None) != "blob":
+                continue
+
+            path = str(getattr(item, "path", "")).strip()
+            size = getattr(item, "size", 0) or 0
+            if not path:
+                continue
+
+            if int(size) > max_file_size_bytes:
+                continue
+
+            if not self._should_collect_repository_path(
+                path=path,
+                include_patterns=include_patterns,
+                exclude_patterns=exclude_patterns,
+            ):
+                continue
+
+            paths.append(path)
+
+        return sorted(paths)
+
+    @staticmethod
+    def _should_collect_repository_path(
+        path: str,
+        include_patterns: Optional[List[str]],
+        exclude_patterns: Optional[List[str]],
+    ) -> bool:
+        """Determine whether a repository path should be indexed."""
+        normalized_path = str(path).strip()
+        if not normalized_path:
+            return False
+
+        lowered_path = normalized_path.lower()
+        suffix = Path(lowered_path).suffix
+        if suffix in _BINARY_EXTENSIONS:
+            return False
+
+        parts = {part.lower() for part in Path(normalized_path).parts}
+        if parts.intersection(_EXCLUDED_PATH_PARTS):
+            return False
+
+        if include_patterns:
+            if not any(fnmatch.fnmatch(normalized_path, pattern) for pattern in include_patterns):
+                return False
+
+        if exclude_patterns:
+            if any(fnmatch.fnmatch(normalized_path, pattern) for pattern in exclude_patterns):
+                return False
+
+        return True
+
+    @staticmethod
+    def _decode_content_to_text(content_file: Any) -> Optional[str]:
+        """Decode repository file content to UTF-8 text."""
+        raw_bytes = getattr(content_file, "decoded_content", None)
+        if raw_bytes is None:
+            encoded_content = getattr(content_file, "content", None)
+            if not encoded_content:
+                return None
+            try:
+                raw_bytes = base64.b64decode(encoded_content)
+            except Exception:
+                return None
+
+        if not isinstance(raw_bytes, (bytes, bytearray)):
+            return None
+        if GitHubCollector._is_probably_binary_bytes(raw_bytes):
+            return None
+
+        try:
+            text = raw_bytes.decode("utf-8")
+        except UnicodeDecodeError:
+            text = raw_bytes.decode("utf-8", errors="replace")
+            replacement_ratio = text.count("\ufffd") / max(len(text), 1)
+            if replacement_ratio > 0.05:
+                return None
+
+        normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
+        return normalized_text if normalized_text.strip() else None
+
+    @staticmethod
+    def _is_probably_binary_bytes(raw_bytes: bytes) -> bool:
+        """Best-effort binary detection for decoded content payloads."""
+        if not raw_bytes:
+            return False
+
+        if b"\x00" in raw_bytes:
+            return True
+
+        sample = raw_bytes[:8192]
+        allowed_controls = {9, 10, 13}
+        control_bytes = sum(
+            1
+            for byte in sample
+            if byte < 32 and byte not in allowed_controls
+        )
+        control_ratio = control_bytes / max(len(sample), 1)
+        return control_ratio > 0.30
+
+    @staticmethod
+    def _detect_language(path: str) -> str:
+        """Infer programming language from file path."""
+        normalized_path = str(path).strip()
+        filename = Path(normalized_path).name.lower()
+        if filename == "dockerfile":
+            return "dockerfile"
+        if filename.startswith("makefile"):
+            return "makefile"
+
+        suffix = Path(normalized_path).suffix.lower()
+        return _LANGUAGE_BY_EXTENSION.get(suffix, "text")
+
+    def _build_repository_document(
+        self,
+        repo: Any,
+        path: str,
+        commit_sha: str,
+        branch: str,
+        workspace_id: str,
+        max_file_size_bytes: int,
+        include_patterns: Optional[List[str]],
+        exclude_patterns: Optional[List[str]],
+    ) -> Optional[Dict[str, Any]]:
+        """Build a RAG-ready document from a repository file path."""
+        if not self._should_collect_repository_path(path, include_patterns, exclude_patterns):
+            return None
+
+        try:
+            content = repo.get_contents(path, ref=commit_sha)
+        except Exception as exc:
+            logger.warning("Unable to fetch %s@%s: %s", path, commit_sha, exc)
+            return None
+
+        if isinstance(content, list):
+            return None
+
+        file_size = int(getattr(content, "size", 0) or 0)
+        if file_size > max_file_size_bytes:
+            return None
+
+        text = self._decode_content_to_text(content)
+        if text is None:
+            return None
+
+        repo_name = repo.full_name
+        document_id = self.build_repository_document_id(
+            repo_name=repo_name,
+            path=path,
+            workspace_id=workspace_id,
+        )
+        collected_at = datetime.utcnow().isoformat()
+
+        metadata = {
+            "source": "github_repo",
+            "type": "code_file",
+            "repo": repo_name,
+            "repository": repo_name,
+            "path": path,
+            "commit": commit_sha,
+            "branch": branch,
+            "lang": self._detect_language(path),
+            "workspace": workspace_id,
+            "workspace_id": workspace_id,
+            "document_id": document_id,
+            "blob_sha": getattr(content, "sha", None),
+            "file_size": file_size,
+            "collected_at": collected_at,
+        }
+
+        return {
+            "text": text,
+            "metadata": metadata,
+        }
     
     def _collect_issues(
         self,

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# Needs: python-package:httpx>=0.28.1
 """Internal MCP gateway client for brainego API services."""
 
 import logging
@@ -8,6 +9,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional, Set
 
 import httpx
+
+from safety_sanitizer import redact_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -40,12 +43,15 @@ class InternalMCPGatewayClient:
     def __init__(
         self,
         gateway_base_url: str,
-        allowed_tools: Set[str],
+        allowed_tools: Optional[Set[str]] = None,
         timeout_seconds: float = 10.0,
         api_key: Optional[str] = None,
     ):
         self.gateway_base_url = gateway_base_url.rstrip("/")
-        self.allowed_tools = {tool.strip() for tool in allowed_tools if tool.strip()}
+        # Backward compatibility only; authorization lives in api_server proxy.
+        self.allowed_tools = {
+            tool.strip() for tool in (allowed_tools or set()) if tool and tool.strip()
+        }
         self.timeout_seconds = timeout_seconds
         self.api_key = api_key
 
@@ -61,10 +67,13 @@ class InternalMCPGatewayClient:
             api_key=os.getenv("MCP_GATEWAY_API_KEY"),
         )
 
-    def _headers(self) -> Dict[str, str]:
+    def _headers(self, workspace_id: Optional[str] = None) -> Dict[str, str]:
         headers = {"content-type": "application/json"}
         if self.api_key:
+            headers["authorization"] = f"Bearer {self.api_key}"
             headers["x-api-key"] = self.api_key
+        if workspace_id:
+            headers["x-workspace-id"] = workspace_id
         return headers
 
     def is_tool_allowed(self, tool_name: str) -> bool:
@@ -78,51 +87,63 @@ class InternalMCPGatewayClient:
         tool_name: str,
         arguments: Optional[Dict[str, Any]] = None,
         context: Optional[str] = None,
+        workspace_id: Optional[str] = None,
+        timeout_seconds: Optional[float] = None,
+        confirm: Optional[bool] = None,
+        confirmation_id: Optional[str] = None,
     ) -> MCPToolResult:
         started_at = time.perf_counter()
+        raw_arguments = arguments or {}
+        redacted_arguments, argument_redactions = redact_secrets(raw_arguments)
         payload = {
             "server_id": server_id,
             "tool_name": tool_name,
-            "arguments": arguments or {},
+            "arguments": raw_arguments,
         }
+        if workspace_id:
+            payload["workspace_id"] = workspace_id
+        if confirm is not None:
+            payload["confirm"] = bool(confirm)
+        if confirmation_id:
+            payload["confirmation_id"] = confirmation_id
 
-        if not self.is_tool_allowed(tool_name):
-            latency_ms = (time.perf_counter() - started_at) * 1000
-            error = f"Tool '{tool_name}' is not allowed for API-routed MCP calls"
-            logger.warning(
-                "mcp_tool_call tool=%s status=blocked latency_ms=%.2f error=%s context=%s",
+        # Authorization is enforced centrally by api_server/tool_policy_engine.
+        # Keep the legacy local allowlist as an optional observability signal only.
+        if self.allowed_tools and not self.is_tool_allowed(tool_name):
+            logger.info(
+                "mcp_tool_call tool=%s local_allowlist_miss=true context=%s (not enforced client-side)",
                 tool_name,
-                latency_ms,
-                error,
                 context,
             )
-            return MCPToolResult(
-                ok=False,
-                tool_name=tool_name,
-                latency_ms=latency_ms,
-                status_code=403,
-                error=error,
-            )
+
+        effective_timeout_seconds = (
+            float(timeout_seconds)
+            if timeout_seconds is not None and float(timeout_seconds) > 0
+            else self.timeout_seconds
+        )
 
         try:
-            async with httpx.AsyncClient(timeout=self.timeout_seconds) as client:
+            async with httpx.AsyncClient(timeout=effective_timeout_seconds) as client:
                 response = await client.post(
                     f"{self.gateway_base_url}/mcp/tools/call",
                     json=payload,
-                    headers=self._headers(),
+                    headers=self._headers(workspace_id=workspace_id),
                 )
 
             latency_ms = (time.perf_counter() - started_at) * 1000
 
             if response.status_code >= 400:
-                error = response.text
+                error, error_redactions = redact_secrets(response.text)
                 logger.error(
-                    "mcp_tool_call tool=%s status=error http_status=%s latency_ms=%.2f error=%s context=%s",
+                    "mcp_tool_call tool=%s status=error http_status=%s latency_ms=%.2f error=%s context=%s arguments=%s argument_redactions=%s error_redactions=%s",
                     tool_name,
                     response.status_code,
                     latency_ms,
                     error,
                     context,
+                    redacted_arguments,
+                    argument_redactions,
+                    error_redactions,
                 )
                 return MCPToolResult(
                     ok=False,
@@ -133,32 +154,42 @@ class InternalMCPGatewayClient:
                 )
 
             data = response.json()
+            redacted_data, output_redactions = redact_secrets(data)
+            if not isinstance(redacted_data, dict):
+                redacted_data = {"result": redacted_data}
             logger.info(
-                "mcp_tool_call tool=%s status=ok http_status=%s latency_ms=%.2f context=%s",
+                "mcp_tool_call tool=%s status=ok http_status=%s latency_ms=%.2f context=%s arguments=%s argument_redactions=%s output_redactions=%s",
                 tool_name,
                 response.status_code,
                 latency_ms,
                 context,
+                redacted_arguments,
+                argument_redactions,
+                output_redactions,
             )
             return MCPToolResult(
                 ok=True,
                 tool_name=tool_name,
                 latency_ms=latency_ms,
                 status_code=response.status_code,
-                data=data,
+                data=redacted_data,
             )
         except Exception as exc:
             latency_ms = (time.perf_counter() - started_at) * 1000
+            redacted_error, error_redactions = redact_secrets(str(exc))
             logger.exception(
-                "mcp_tool_call tool=%s status=exception latency_ms=%.2f context=%s",
+                "mcp_tool_call tool=%s status=exception latency_ms=%.2f context=%s arguments=%s argument_redactions=%s error_redactions=%s",
                 tool_name,
                 latency_ms,
                 context,
+                redacted_arguments,
+                argument_redactions,
+                error_redactions,
             )
             return MCPToolResult(
                 ok=False,
                 tool_name=tool_name,
                 latency_ms=latency_ms,
                 status_code=502,
-                error=str(exc),
+                error=redacted_error,
             )

@@ -95,6 +95,30 @@ python load_test.py --requests 500 --concurrency 20 --scenario all
 python load_test.py --requests 1000 --concurrency 32 --max-tokens 200
 ```
 
+## Pilot Onboarding (AFR-118)
+
+For guided pilot onboarding (<2 hours), use:
+
+- Runbook: `docs/pilot_readiness_runbook.md`
+- Scripts:
+  - `bash scripts/pilot/pilot_preflight.sh`
+  - `python3 scripts/pilot/demo_mcp_rbac_policy.py`
+  - `python3 scripts/pilot/demo_repo_index.py`
+  - `bash scripts/pilot/demo_incident_drill.sh`
+  - `bash scripts/pilot/run_pilot_demo.sh`
+
+The runbook includes explicit steps for GitHub + tracker connector setup, policy guardrails, RBAC validation, demo scenarios, and rollback.
+
+Convenience make targets:
+
+```bash
+make pilot-preflight
+make pilot-demo-rbac
+make pilot-demo-index
+make pilot-demo-incident
+make pilot-demo
+```
+
 ## Service Endpoints
 
 | Service | Endpoint | Description |
@@ -215,6 +239,24 @@ python load_test.py \
 - **medium**: Standard assistant query
 - **long**: Complex multi-turn conversation
 - **all**: Run all scenarios sequentially
+
+## Adversarial Safety Runner
+
+Use the AFR-77 adversarial harness to send a prompt suite through the safety gateway and generate a pass/fail report by category.
+
+```bash
+python scripts/adversarial_test_runner.py \
+  --suite tests/contract/fixtures/adversarial_prompt_suite.ndjson \
+  --gateway-url http://localhost:9100/v1/chat/completions \
+  --api-key sk-test-key-123 \
+  --output artifacts/adversarial_report.json
+```
+
+The report contains:
+
+- global totals (passed/failed/pass_rate)
+- per-category totals and observed outcomes (`blocked`, `warned`, `allowed`)
+- per-case observed verdict and reason
 
 ### Metrics Reported
 

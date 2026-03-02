@@ -68,6 +68,8 @@ neo4j-plugins/
 # Test outputs
 load_test_report.json
 *.json
+!configs/grafana/dashboards/
+!configs/grafana/dashboards/*.json
 
 # Temporary files
 tmp/

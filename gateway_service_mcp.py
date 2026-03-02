@@ -36,6 +36,8 @@ from memory_service import MemoryService
 from memory_scoring_config import load_memory_scoring_config
 from mcp_client import MCPClientService
 from mcp_acl import MCPACLManager
+from mcp_write_confirmation import PendingWritePlanStore, requires_write_confirmation
+from workspace_context import get_valid_workspace_ids, resolve_workspace_id
 from telemetry import init_telemetry, get_tracer, shutdown_telemetry
 from opentelemetry import trace
 
@@ -83,12 +85,20 @@ if ENV_API_KEYS:
         if key:
             API_KEYS[key] = {"name": "env-key", "tier": "standard"}
 
+WORKSPACE_ID_RESPONSE_HEADER = "X-Workspace-Id"
+WORKSPACE_OPTIONAL_PATHS = {"/", "/health", "/metrics"}
+WORKSPACE_OPTIONAL_PREFIXES = ("/docs", "/redoc", "/openapi.json")
+WORKSPACE_REQUIRED_PREFIXES = ("/mcp",)
+
 # Global services
 rag_service = None
 memory_service = None
 mcp_client = None
 mcp_acl = None
 redis_client = None
+write_confirmation_store = PendingWritePlanStore(
+    ttl_seconds=int(os.getenv("MCP_WRITE_CONFIRMATION_TTL_SECONDS", "900"))
+)
 
 
 # Lifespan context manager for startup/shutdown
@@ -223,6 +233,130 @@ async def verify_api_key(
     }
 
 
+def _is_workspace_enforced_path(path: str) -> bool:
+    """Return True when workspace context is mandatory for the request path."""
+    if path in WORKSPACE_OPTIONAL_PATHS:
+        return False
+    if any(path.startswith(prefix) for prefix in WORKSPACE_OPTIONAL_PREFIXES):
+        return False
+    return path.startswith(WORKSPACE_REQUIRED_PREFIXES)
+
+
+def _normalize_workspace_id(value: Any, context: str) -> str:
+    """Normalize workspace identifier and reject empty values."""
+    normalized = str(value).strip() if value is not None else ""
+    if not normalized:
+        raise HTTPException(status_code=400, detail=f"{context} requires workspace_id")
+    return normalized
+
+
+def get_current_workspace_id(request: Request) -> str:
+    """Read workspace_id attached by middleware."""
+    workspace_id = getattr(request.state, "workspace_id", None)
+    if isinstance(workspace_id, str) and workspace_id.strip():
+        return workspace_id.strip()
+    raise HTTPException(status_code=500, detail="Workspace context missing")
+
+
+def _resolve_workspace_for_request(
+    *,
+    raw_request: Request,
+    provided_workspace_id: Optional[str],
+    context: str,
+) -> str:
+    """Ensure body/query workspace selectors cannot escape request context."""
+    context_workspace_id = get_current_workspace_id(raw_request)
+    normalized_context_workspace = _normalize_workspace_id(context_workspace_id, context)
+    if provided_workspace_id is None:
+        return normalized_context_workspace
+
+    normalized_provided_workspace = _normalize_workspace_id(provided_workspace_id, context)
+    if normalized_provided_workspace != normalized_context_workspace:
+        raise HTTPException(
+            status_code=403,
+            detail=f"{context} cannot access another workspace scope",
+        )
+    return normalized_context_workspace
+
+
+def _ensure_workspace_arguments(
+    *,
+    arguments: Optional[Dict[str, Any]],
+    workspace_id: str,
+    context: str,
+) -> Dict[str, Any]:
+    """Inject workspace_id into tool arguments and reject mismatches."""
+    normalized_workspace_id = _normalize_workspace_id(workspace_id, context)
+    normalized_arguments = dict(arguments or {})
+
+    existing_workspace = normalized_arguments.get("workspace_id")
+    if existing_workspace is not None:
+        normalized_existing_workspace = _normalize_workspace_id(existing_workspace, context)
+        if normalized_existing_workspace != normalized_workspace_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"{context} cannot access another workspace scope",
+            )
+
+    metadata = normalized_arguments.get("metadata")
+    if isinstance(metadata, dict):
+        normalized_metadata = dict(metadata)
+        existing_metadata_workspace = normalized_metadata.get("workspace_id")
+        if existing_metadata_workspace is not None:
+            normalized_metadata_workspace = _normalize_workspace_id(
+                existing_metadata_workspace,
+                context,
+            )
+            if normalized_metadata_workspace != normalized_workspace_id:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"{context} cannot access another workspace scope",
+                )
+        normalized_metadata["workspace_id"] = normalized_workspace_id
+        normalized_arguments["metadata"] = normalized_metadata
+
+    normalized_arguments["workspace_id"] = normalized_workspace_id
+    return normalized_arguments
+
+
+@app.middleware("http")
+async def enforce_workspace_context(request: Request, call_next):
+    """Require and validate workspace_id on all MCP endpoints."""
+    path = request.url.path
+    if request.method == "OPTIONS" or not _is_workspace_enforced_path(path):
+        return await call_next(request)
+
+    workspace_id = resolve_workspace_id(request)
+    if not workspace_id:
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": (
+                    "Missing workspace_id. Provide X-Workspace-Id header "
+                    "or workspace_id query parameter."
+                ),
+                "type": "workspace_error",
+                "code": "workspace_id_missing",
+            },
+        )
+
+    valid_workspace_ids = get_valid_workspace_ids()
+    if workspace_id not in valid_workspace_ids:
+        return JSONResponse(
+            status_code=404,
+            content={
+                "detail": f"Unknown workspace_id: {workspace_id}",
+                "type": "workspace_error",
+                "code": "workspace_id_unknown",
+            },
+        )
+
+    request.state.workspace_id = workspace_id
+    response = await call_next(request)
+    response.headers[WORKSPACE_ID_RESPONSE_HEADER] = workspace_id
+    return response
+
+
 # Pydantic models
 class ChatMessage(BaseModel):
     role: str = Field(..., description="Role of the message author")
@@ -233,18 +367,29 @@ class ChatMessage(BaseModel):
 class MCPResourceRequest(BaseModel):
     server_id: str = Field(..., description="MCP server ID")
     uri: Optional[str] = Field(None, description="Resource URI (for read_resource)")
+    workspace_id: Optional[str] = Field(None, description="Workspace scope for the MCP request")
 
 
 class MCPToolRequest(BaseModel):
     server_id: str = Field(..., description="MCP server ID")
     tool_name: str = Field(..., description="Tool name to call")
     arguments: Dict[str, Any] = Field(default_factory=dict, description="Tool arguments")
+    workspace_id: Optional[str] = Field(None, description="Workspace scope for the MCP request")
+    confirm: bool = Field(
+        default=False,
+        description="Explicit confirmation for write actions that mutate issues/comments",
+    )
+    confirmation_id: Optional[str] = Field(
+        None,
+        description="Pending confirmation ID returned by an earlier unconfirmed write request",
+    )
 
 
 class MCPPromptRequest(BaseModel):
     server_id: str = Field(..., description="MCP server ID")
     prompt_name: str = Field(..., description="Prompt name")
     arguments: Dict[str, Any] = Field(default_factory=dict, description="Prompt arguments")
+    workspace_id: Optional[str] = Field(None, description="Workspace scope for the MCP request")
 
 
 class HealthResponse(BaseModel):
@@ -446,11 +591,17 @@ async def get_metrics():
 @app.post("/mcp")
 async def unified_mcp_gateway(
     request: Dict[str, Any],
+    raw_request: Request,
     auth: Dict[str, Any] = Depends(verify_api_key)
 ):
     """Unified MCP endpoint supporting list_tools/call_tool/list_resources/read_resource."""
     action = request.get("action")
     server_id = request.get("server_id")
+    workspace_id = _resolve_workspace_for_request(
+        raw_request=raw_request,
+        provided_workspace_id=request.get("workspace_id"),
+        context="/mcp",
+    )
 
     if not action:
         raise HTTPException(status_code=400, detail="Missing required field: action")
@@ -458,36 +609,58 @@ async def unified_mcp_gateway(
         raise HTTPException(status_code=400, detail="Missing required field: server_id")
 
     if action == "list_tools":
-        return await list_mcp_tools(MCPResourceRequest(server_id=server_id), auth)
+        return await list_mcp_tools(
+            MCPResourceRequest(server_id=server_id, workspace_id=workspace_id),
+            raw_request,
+            auth,
+        )
 
     if action == "call_tool":
         tool_name = request.get("tool_name")
         if not tool_name:
             raise HTTPException(status_code=400, detail="Missing required field: tool_name")
+        tool_arguments = _ensure_workspace_arguments(
+            arguments=request.get("arguments") or {},
+            workspace_id=workspace_id,
+            context="/mcp",
+        )
         return await call_mcp_tool(
             MCPToolRequest(
                 server_id=server_id,
                 tool_name=tool_name,
-                arguments=request.get("arguments") or {}
+                arguments=tool_arguments,
+                workspace_id=workspace_id,
+                confirm=bool(request.get("confirm", False)),
+                confirmation_id=request.get("confirmation_id"),
             ),
+            raw_request,
             auth
         )
 
     if action == "list_resources":
-        return await list_mcp_resources(MCPResourceRequest(server_id=server_id), auth)
+        return await list_mcp_resources(
+            MCPResourceRequest(server_id=server_id, workspace_id=workspace_id),
+            raw_request,
+            auth,
+        )
 
     if action == "read_resource":
         uri = request.get("uri")
         if not uri:
             raise HTTPException(status_code=400, detail="Missing required field: uri")
-        return await read_mcp_resource(MCPResourceRequest(server_id=server_id, uri=uri), auth)
+        return await read_mcp_resource(
+            MCPResourceRequest(server_id=server_id, uri=uri, workspace_id=workspace_id),
+            raw_request,
+            auth,
+        )
 
     raise HTTPException(status_code=400, detail=f"Unsupported action: {action}")
 
 @app.get("/mcp/servers")
-async def list_mcp_servers(auth: Dict[str, Any] = Depends(verify_api_key)):
+async def list_mcp_servers(raw_request: Request, auth: Dict[str, Any] = Depends(verify_api_key)):
     """List all available MCP servers with access control."""
     tracer = get_tracer() if ENABLE_TELEMETRY else None
+    workspace_id = get_current_workspace_id(raw_request)
     
     with tracer.start_as_current_span("list_mcp_servers") if tracer else NoOpSpan():
         if not mcp_client:
@@ -516,7 +689,8 @@ async def list_mcp_servers(auth: Dict[str, Any] = Depends(verify_api_key)):
             return {
                 "servers": filtered_servers,
                 "total": len(filtered_servers),
-                "role": role
+                "role": role,
+                "workspace_id": workspace_id,
             }
         except Exception as e:
             logger.error(f"Error listing MCP servers: {e}")
@@ -527,10 +701,16 @@ async def list_mcp_servers(auth: Dict[str, Any] = Depends(verify_api_key)):
 @app.post("/mcp/resources/list")
 async def list_mcp_resources(
     request: MCPResourceRequest,
+    raw_request: Request,
     auth: Dict[str, Any] = Depends(verify_api_key)
 ):
     """List resources from an MCP server."""
     tracer = get_tracer() if ENABLE_TELEMETRY else None
+    workspace_id = _resolve_workspace_for_request(
+        raw_request=raw_request,
+        provided_workspace_id=request.workspace_id,
+        context="/mcp/resources/list",
+    )
     
     with tracer.start_as_current_span("list_mcp_resources") if tracer else NoOpSpan():
         if not mcp_client:
@@ -541,7 +721,7 @@ async def list_mcp_resources(
         
         start_time = time.time()
         role = auth.get("role", "readonly")
-        identifier = f"{role}:{auth.get('api_key', '')[:10]}"
+        identifier = f"{workspace_id}:{role}:{auth.get('api_key', '')[:10]}"
         
         try:
             # Validate access
@@ -573,6 +753,7 @@ async def list_mcp_resources(
             
             return {
                 "server_id": request.server_id,
+                "workspace_id": workspace_id,
                 "resources": resources,
                 "count": len(resources)
             }
@@ -588,10 +769,16 @@ async def list_mcp_resources(
 @app.post("/mcp/resources/read")
 async def read_mcp_resource(
     request: MCPResourceRequest,
+    raw_request: Request,
     auth: Dict[str, Any] = Depends(verify_api_key)
 ):
     """Read a resource from an MCP server."""
     tracer = get_tracer() if ENABLE_TELEMETRY else None
+    workspace_id = _resolve_workspace_for_request(
+        raw_request=raw_request,
+        provided_workspace_id=request.workspace_id,
+        context="/mcp/resources/read",
+    )
     
     with tracer.start_as_current_span("read_mcp_resource") if tracer else NoOpSpan():
         if not mcp_client:
@@ -605,7 +792,7 @@ async def read_mcp_resource(
         
         start_time = time.time()
         role = auth.get("role", "readonly")
-        identifier = f"{role}:{auth.get('api_key', '')[:10]}"
+        identifier = f"{workspace_id}:{role}:{auth.get('api_key', '')[:10]}"
         
         try:
             # Validate access
@@ -629,6 +816,7 @@ async def read_mcp_resource(
             
             return {
                 "server_id": request.server_id,
+                "workspace_id": workspace_id,
                 "resource": resource
             }
         except HTTPException:
@@ -643,10 +831,16 @@ async def read_mcp_resource(
 @app.post("/mcp/tools/list")
 async def list_mcp_tools(
     request: MCPResourceRequest,
+    raw_request: Request,
     auth: Dict[str, Any] = Depends(verify_api_key)
 ):
     """List tools from an MCP server."""
     tracer = get_tracer() if ENABLE_TELEMETRY else None
+    workspace_id = _resolve_workspace_for_request(
+        raw_request=raw_request,
+        provided_workspace_id=request.workspace_id,
+        context="/mcp/tools/list",
+    )
     
     with tracer.start_as_current_span("list_mcp_tools") if tracer else NoOpSpan():
         if not mcp_client:
@@ -657,7 +851,7 @@ async def list_mcp_tools(
         
         start_time = time.time()
         role = auth.get("role", "readonly")
-        identifier = f"{role}:{auth.get('api_key', '')[:10]}"
+        identifier = f"{workspace_id}:{role}:{auth.get('api_key', '')[:10]}"
         
         try:
             # Validate access
@@ -689,6 +883,7 @@ async def list_mcp_tools(
             
             return {
                 "server_id": request.server_id,
+                "workspace_id": workspace_id,
                 "tools": tools,
                 "count": len(tools)
             }
@@ -704,10 +899,21 @@ async def list_mcp_tools(
 @app.post("/mcp/tools/call")
 async def call_mcp_tool(
     request: MCPToolRequest,
+    raw_request: Request,
     auth: Dict[str, Any] = Depends(verify_api_key)
 ):
     """Call a tool on an MCP server."""
     tracer = get_tracer() if ENABLE_TELEMETRY else None
+    workspace_id = _resolve_workspace_for_request(
+        raw_request=raw_request,
+        provided_workspace_id=request.workspace_id,
+        context="/mcp/tools/call",
+    )
+    tool_arguments = _ensure_workspace_arguments(
+        arguments=request.arguments,
+        workspace_id=workspace_id,
+        context="/mcp/tools/call",
+    )
     
     with tracer.start_as_current_span("call_mcp_tool") if tracer else NoOpSpan():
         if not mcp_client:
@@ -718,7 +924,7 @@ async def call_mcp_tool(
         
         start_time = time.time()
         role = auth.get("role", "readonly")
-        identifier = f"{role}:{auth.get('api_key', '')[:10]}"
+        identifier = f"{workspace_id}:{role}:{auth.get('api_key', '')[:10]}"
         
         try:
             # Determine operation type (read vs write)
@@ -738,12 +944,54 @@ async def call_mcp_tool(
             
             if not allowed:
                 raise HTTPException(status_code=403, detail=reason)
+
+            caller_id = f"{workspace_id}:{auth.get('api_key') or identifier}"
+            requires_confirmation = requires_write_confirmation(request.tool_name)
+            if request.confirmation_id and not request.confirm:
+                raise HTTPException(
+                    status_code=400,
+                    detail="confirmation_id requires confirm=true",
+                )
+
+            if requires_confirmation:
+                if request.confirm and request.confirmation_id:
+                    plan_matches, mismatch_reason = write_confirmation_store.consume_plan(
+                        confirmation_id=request.confirmation_id,
+                        requested_by=caller_id,
+                        server_id=request.server_id,
+                        tool_name=request.tool_name,
+                        arguments=tool_arguments,
+                    )
+                    if not plan_matches:
+                        raise HTTPException(status_code=409, detail=mismatch_reason)
+                elif not request.confirm:
+                    pending_plan = write_confirmation_store.create_plan(
+                        requested_by=caller_id,
+                        server_id=request.server_id,
+                        tool_name=request.tool_name,
+                        arguments=tool_arguments,
+                    )
+                    latency_ms = (time.time() - start_time) * 1000
+                    metrics.record_request(latency_ms, is_mcp=True)
+                    return {
+                        "server_id": request.server_id,
+                        "workspace_id": workspace_id,
+                        "tool_name": request.tool_name,
+                        "status": "pending_confirmation",
+                        "confirmation_required": True,
+                        "message": (
+                            "Write action requires explicit confirmation. "
+                            "Re-send the exact same call with confirm=true and confirmation_id."
+                        ),
+                        "confirmation_id": pending_plan.confirmation_id,
+                        "planned_call": pending_plan.to_public_dict(),
+                    }
             
             # Call tool
             result = await mcp_client.call_tool(
                 request.server_id,
                 request.tool_name,
-                request.arguments
+                tool_arguments
             )
             
             latency_ms = (time.time() - start_time) * 1000
@@ -751,6 +999,7 @@ async def call_mcp_tool(
             
             return {
                 "server_id": request.server_id,
+                "workspace_id": workspace_id,
                 "tool_name": request.tool_name,
                 "result": result
             }

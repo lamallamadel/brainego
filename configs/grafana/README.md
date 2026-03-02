@@ -11,6 +11,7 @@ configs/grafana/
 │   ├── learning-engine.json
 │   ├── mcp-activity.json
 │   ├── model-routing-overview.json
+│   ├── safety-guardrails-overview.json
 │   ├── kong-dashboard.json
 │   ├── drift-overview.json
 │   └── ...
@@ -205,6 +206,42 @@ Focused dashboard for model selection quality and fallback behavior.
 
 ---
 
+### 5. Safety & Guardrail Monitoring (`safety-guardrails-overview.json`)
+
+**UID**: `safety-guardrails-overview`  
+**Tags**: `safety`, `guardrails`, `jailbreak`, `security`  
+**Refresh**: 30s
+
+Tracks safety policy enforcement volume, block rates, and jailbreak robustness trends across deployments.
+
+**Metrics Displayed**:
+- **Blocked Requests (range total)**
+  - Source: `guardrail_requests_total{decision="blocked"}`
+  - Uses `increase()` over selected time range
+- **Current Blocked Rate (5m)**
+  - Source: blocked vs all from `guardrail_requests_total`
+  - Formula: `sum(rate(blocked)) / sum(rate(all))`
+- **Safety Policies Triggered by Category**
+  - Source: `guardrail_policy_triggers_total` (or legacy `guardrail_policy_trigger_total`)
+  - Grouped by `policy_category`
+- **Blocked Request Ratio Over Time**
+  - Source: `guardrail_requests_total`
+  - Time-series for ongoing guardrail pressure
+- **Jailbreak Robustness Evolution by Deployment**
+  - Source: `jailbreak_robustness_score{deployment=...}`
+  - Multi-deployment trend chart via `deployment` variable
+- **Latest Jailbreak Robustness by Deployment**
+  - Source: `jailbreak_robustness_score`
+  - Bar gauge snapshot for quick release comparison
+
+**Use Cases**:
+- Detect sudden increases in blocked prompts after model releases
+- Identify the dominant safety policy categories being triggered
+- Compare jailbreak resilience between active deployments
+- Support release gates based on robustness score trends
+
+---
+
 ## Datasources
 
 ### Prometheus
@@ -287,6 +324,13 @@ providers:
 |--------|------|--------|-------------|
 | `mcp_requests_total` | Counter | server, operation, status | MCP requests |
 | `mcp_operation_duration_seconds` | Histogram | server, operation | MCP operation latency |
+
+### Safety & Guardrail Metrics
+| Metric | Type | Labels | Description |
+|--------|------|--------|-------------|
+| `guardrail_requests_total` | Counter | decision, policy_category, deployment | Total requests evaluated by safety guardrails |
+| `guardrail_policy_triggers_total` | Counter | policy_category, deployment | Count of triggered safety policy categories |
+| `jailbreak_robustness_score` | Gauge | deployment, model_version | Normalized jailbreak robustness score (0-1) |
 
 ## Importing Dashboards
 

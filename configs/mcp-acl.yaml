@@ -9,6 +9,14 @@ roles:
         resources: ["*"]
         tools: ["*"]
         operations: ["read", "write", "delete"]
+      mcp-linear:
+        resources: ["*"]
+        tools: ["*"]
+        operations: ["read", "write", "delete"]
+      mcp-jira:
+        resources: ["*"]
+        tools: ["*"]
+        operations: ["read", "write", "delete"]
       mcp-notion:
         resources: ["*"]
         tools: ["*"]
@@ -22,7 +30,7 @@ roles:
       requests_per_hour: 10000
 
   developer:
-    description: "Read/write access to code repositories and filesystem"
+    description: "GitHub read access plus scoped issue-tracker write access"
     permissions:
       mcp-github:
         resources:
@@ -35,12 +43,39 @@ roles:
           - "github_search_repositories"
           - "github_get_repository"
           - "github_list_issues"
-          - "github_create_issue"
           - "github_get_issue"
           - "github_list_pull_requests"
           - "github_get_pull_request"
           - "github_search_code"
           - "github_get_file_contents"
+        operations: ["read"]
+      mcp-linear:
+        resources:
+          - "teams"
+          - "projects"
+          - "issues"
+          - "users"
+        tools:
+          - "linear_list_issues"
+          - "linear_get_issue"
+          - "linear_create_issue"
+          - "linear_update_issue"
+          - "linear_search_issues"
+          - "linear_list_projects"
+          - "linear_list_teams"
+        operations: ["read", "write"]
+      mcp-jira:
+        resources:
+          - "projects"
+          - "issues"
+          - "issue_types"
+        tools:
+          - "jira_search_issues"
+          - "jira_get_issue"
+          - "jira_create_issue"
+          - "jira_update_issue"
+          - "jira_list_projects"
+          - "jira_get_project"
         operations: ["read", "write"]
       mcp-notion:
         resources:
@@ -83,6 +118,28 @@ roles:
           - "github_get_issue"
           - "github_search_code"
         operations: ["read"]
+      mcp-linear:
+        resources:
+          - "teams"
+          - "projects"
+          - "issues"
+        tools:
+          - "linear_list_issues"
+          - "linear_get_issue"
+          - "linear_search_issues"
+          - "linear_list_projects"
+          - "linear_list_teams"
+        operations: ["read"]
+      mcp-jira:
+        resources:
+          - "projects"
+          - "issues"
+        tools:
+          - "jira_search_issues"
+          - "jira_get_issue"
+          - "jira_list_projects"
+          - "jira_get_project"
+        operations: ["read"]
       mcp-notion:
         resources:
           - "pages"
@@ -110,15 +167,36 @@ roles:
       requests_per_hour: 2000
 
   writer:
-    description: "Write access to Notion and limited GitHub access"
+    description: "Write access to Notion and issue trackers with GitHub read-only"
     permissions:
       mcp-github:
         resources:
           - "issues"
         tools:
           - "github_list_issues"
-          - "github_create_issue"
           - "github_get_issue"
+        operations: ["read"]
+      mcp-linear:
+        resources:
+          - "teams"
+          - "projects"
+          - "issues"
+        tools:
+          - "linear_list_issues"
+          - "linear_get_issue"
+          - "linear_create_issue"
+          - "linear_update_issue"
+          - "linear_search_issues"
+        operations: ["read", "write"]
+      mcp-jira:
+        resources:
+          - "projects"
+          - "issues"
+        tools:
+          - "jira_search_issues"
+          - "jira_get_issue"
+          - "jira_create_issue"
+          - "jira_update_issue"
         operations: ["read", "write"]
       mcp-notion:
         resources:
@@ -159,6 +237,28 @@ roles:
           - "github_list_issues"
           - "github_get_issue"
         operations: ["read"]
+      mcp-linear:
+        resources:
+          - "teams"
+          - "projects"
+          - "issues"
+        tools:
+          - "linear_list_issues"
+          - "linear_get_issue"
+          - "linear_search_issues"
+          - "linear_list_projects"
+          - "linear_list_teams"
+        operations: ["read"]
+      mcp-jira:
+        resources:
+          - "projects"
+          - "issues"
+        tools:
+          - "jira_search_issues"
+          - "jira_get_issue"
+          - "jira_list_projects"
+          - "jira_get_project"
+        operations: ["read"]
       mcp-notion:
         resources:
           - "pages"
@@ -198,6 +298,28 @@ roles:
           - "github_get_pull_request"
           - "github_search_code"
           - "github_get_file_contents"
+        operations: ["read"]
+      mcp-linear:
+        resources:
+          - "teams"
+          - "projects"
+          - "issues"
+        tools:
+          - "linear_list_issues"
+          - "linear_get_issue"
+          - "linear_search_issues"
+          - "linear_list_projects"
+          - "linear_list_teams"
+        operations: ["read"]
+      mcp-jira:
+        resources:
+          - "projects"
+          - "issues"
+        tools:
+          - "jira_search_issues"
+          - "jira_get_issue"
+          - "jira_list_projects"
+          - "jira_get_project"
         operations: ["read"]
       mcp-notion:
         resources:

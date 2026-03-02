@@ -30,7 +30,9 @@ def main():
     dashboards = [
         "platform-overview.json",
         "learning-engine.json",
-        "mcp-activity.json"
+        "mcp-activity.json",
+        "safety-guardrails-overview.json",
+        "usage-metering.json",
     ]
     
     all_valid = True

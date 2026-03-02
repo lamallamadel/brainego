@@ -30,6 +30,131 @@ def _normalize_channel_ids(raw_channel_ids: Any) -> List[str]:
     return []
 
 
+def _is_truthy(value: Any, default: bool = False) -> bool:
+    """Interpret bool-like values from env/config payloads."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_workspace_id(config: Dict[str, Any]) -> str:
+    """Resolve workspace_id for ingestion operations."""
+    workspace_id = config.get("workspace_id") or os.getenv("RAG_DEFAULT_WORKSPACE_ID", "default")
+    normalized_workspace_id = str(workspace_id).strip()
+    if not normalized_workspace_id:
+        raise ValueError("workspace_id must be a non-empty string")
+    return normalized_workspace_id
+
+
+def _collect_and_process_github_repo(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Collect and ingest GitHub repository codebase into vector storage."""
+    repo_name = str(config.get("repo_name") or "").strip()
+    if not repo_name:
+        raise ValueError("repo_name is required for source='github_repo'")
+
+    from data_collectors.github_collector import GitHubCollector
+    from rag_service import RAGIngestionService
+
+    workspace_id = _resolve_workspace_id(config)
+    branch = config.get("branch")
+    incremental = _is_truthy(config.get("incremental"), default=True)
+    reindex = _is_truthy(config.get("reindex"), default=False)
+    state_path = config.get("sync_state_path")
+    max_file_size_bytes = int(
+        config.get(
+            "max_file_size_bytes",
+            os.getenv("GITHUB_REPO_MAX_FILE_SIZE_BYTES", "200000"),
+        )
+    )
+    include_patterns = config.get("include_patterns")
+    exclude_patterns = config.get("exclude_patterns")
+
+    collector = GitHubCollector()
+    sync_result = collector.collect_repository_codebase(
+        repo_name=repo_name,
+        workspace_id=workspace_id,
+        branch=branch,
+        incremental=incremental,
+        reindex=reindex,
+        state_path=state_path,
+        max_file_size_bytes=max_file_size_bytes,
+        include_patterns=include_patterns,
+        exclude_patterns=exclude_patterns,
+    )
+
+    documents = sync_result.get("documents", [])
+    deleted_paths = sync_result.get("deleted_paths", [])
+
+    if not documents and not deleted_paths:
+        return {
+            "status": "success",
+            "source": "github_repo",
+            "repo": str(sync_result.get("repository", repo_name)).strip() or repo_name,
+            "repository": str(sync_result.get("repository", repo_name)).strip() or repo_name,
+            "workspace": workspace_id,
+            "workspace_id": workspace_id,
+            "collected": 0,
+            "processed": 0,
+            "total_chunks": 0,
+            "deleted_paths": 0,
+            "deleted_documents": 0,
+            "sync": sync_result.get("sync", {}),
+            "message": "No repository changes detected",
+            "completed_at": datetime.utcnow().isoformat(),
+        }
+
+    qdrant_host = os.getenv("QDRANT_HOST", "localhost")
+    qdrant_port = int(os.getenv("QDRANT_PORT", "6333"))
+    rag_service = RAGIngestionService(
+        qdrant_host=qdrant_host,
+        qdrant_port=qdrant_port,
+        collection_name="documents",
+    )
+
+    deleted_document_ids = 0
+
+    for document in documents:
+        metadata = document.get("metadata", {})
+        document_id = metadata.get("document_id")
+        if not document_id:
+            continue
+        rag_service.delete_document(document_id, workspace_id=workspace_id)
+        deleted_document_ids += 1
+
+    sync_repository_name = str(sync_result.get("repository", repo_name)).strip() or repo_name
+    for path in deleted_paths:
+        document_id = collector.build_repository_document_id(
+            repo_name=sync_repository_name,
+            path=path,
+            workspace_id=workspace_id,
+        )
+        rag_service.delete_document(document_id, workspace_id=workspace_id)
+        deleted_document_ids += 1
+
+    batch_result = rag_service.ingest_documents_batch(
+        documents=documents,
+        workspace_id=workspace_id,
+    )
+
+    return {
+        "status": "success",
+        "source": "github_repo",
+        "repo": sync_repository_name,
+        "repository": sync_repository_name,
+        "workspace": workspace_id,
+        "workspace_id": workspace_id,
+        "collected": len(documents),
+        "processed": batch_result.get("documents_processed", len(documents)),
+        "total_chunks": batch_result.get("total_chunks", 0),
+        "deleted_paths": len(deleted_paths),
+        "deleted_documents": deleted_document_ids,
+        "sync": sync_result.get("sync", {}),
+        "completed_at": datetime.utcnow().isoformat(),
+    }
+
+
 def process_document(document: Dict[str, Any]) -> Dict[str, Any]:
     """
     Process a single document through the ingestion pipeline.
@@ -94,23 +219,18 @@ def collect_and_process(
     This function is executed by RQ workers.
     
     Args:
-        source: Data source (github, notion, slack)
+        source: Data source (github, github_repo, notion, slack)
         config: Collection configuration
         
     Returns:
         Collection and processing result
     """
-    from data_collectors.github_collector import GitHubCollector
-    from data_collectors.notion_collector import NotionCollector
-    from data_collectors.slack_collector import SlackCollector
-    from data_collectors.mcp_streaming_collector import MCPStreamingCollector
-    from data_collectors.format_normalizer import FormatNormalizer
-    from data_collectors.deduplicator import Deduplicator
-    from rag_service import RAGIngestionService
-    
     try:
         logger.info(f"Starting collection from {source} with config: {config}")
-        
+
+        if source == "github_repo":
+            return _collect_and_process_github_repo(config)
+
         documents = []
         
         if source == "github":
@@ -168,6 +288,7 @@ def collect_and_process(
         elif source == "notion_mcp":
             from data_collectors.notion_mcp_ingestion import NotionMCPIngestionJob
             from mcp_client import MCPClientService
+            from rag_service import RAGIngestionService
             import yaml
 
             mcp_config_path = os.getenv("MCP_SERVERS_CONFIG", "configs/mcp-servers.yaml")
@@ -218,6 +339,7 @@ def collect_and_process(
                 logger.warning("No Slack channels specified")
 
         elif source == "mcp-slack":
+            from data_collectors.mcp_streaming_collector import MCPStreamingCollector
             collector = MCPStreamingCollector(config_path=config.get("mcp_config_path"))
             channel_ids = _normalize_channel_ids(config.get("channel_ids", []))
             hours_back = config.get("hours_back", 2)
