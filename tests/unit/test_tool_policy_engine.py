@@ -251,6 +251,7 @@ def test_policy_engine_allowlist_rejects_list_argument_when_one_value_is_outside
                 "/workspace/ok/file1.txt",
                 "/workspace/ok/file2.txt",
                 "/etc/passwd",
+            ]
             ],
         },
         default_timeout_seconds=3.0,
@@ -258,6 +259,82 @@ def test_policy_engine_allowlist_rejects_list_argument_when_one_value_is_outside
 
     assert decision.allowed is False
     assert "outside allowlist" in (decision.reason or "")
+
+
+@pytest.mark.unit
+def test_policy_engine_supports_semantic_github_org_repo_and_tracker_project_allowlists(tmp_path):
+    config_path = _write_policy(
+        tmp_path,
+        {
+            "default_workspace": "ws-1",
+            "workspaces": {
+                "ws-1": {
+                    "allowed_mcp_servers": ["mcp-github", "mcp-linear"],
+                    "allowed_tool_actions": ["read", "write"],
+                    "allowed_tool_names": {
+                        "read": ["github_list_issues"],
+                        "write": ["linear_create_issue"],
+                    },
+                    "allowlists": {
+                        "servers": {
+                            "mcp-github": {
+                                "github_org": ["afroware"],
+                                "github_repo": ["afroware/brainego", "brainego"],
+                            },
+                            "mcp-linear": {
+                                "tracker_project": ["AFR", "Afroware"],
+                            },
+                        }
+                    },
+                }
+            },
+        },
+    )
+    engine = ToolPolicyEngine.from_yaml(config_path)
+
+    allowed_github = engine.evaluate_tool_call(
+        workspace_id="ws-1",
+        request_id="req-gh-ok",
+        server_id="mcp-github",
+        tool_name="github_list_issues",
+        action="read",
+        arguments={"repository": {"full_name": "afroware/brainego"}},
+        default_timeout_seconds=3.0,
+    )
+    denied_github = engine.evaluate_tool_call(
+        workspace_id="ws-1",
+        request_id="req-gh-ko",
+        server_id="mcp-github",
+        tool_name="github_list_issues",
+        action="read",
+        arguments={"repository": "otherorg/otherrepo"},
+        default_timeout_seconds=3.0,
+    )
+    allowed_tracker = engine.evaluate_tool_call(
+        workspace_id="ws-1",
+        request_id="req-tracker-ok",
+        server_id="mcp-linear",
+        tool_name="linear_create_issue",
+        action="write",
+        arguments={"projectKey": "AFR"},
+        default_timeout_seconds=3.0,
+    )
+    denied_tracker = engine.evaluate_tool_call(
+        workspace_id="ws-1",
+        request_id="req-tracker-ko",
+        server_id="mcp-linear",
+        tool_name="linear_create_issue",
+        action="write",
+        arguments={"project": "NOPE"},
+        default_timeout_seconds=3.0,
+    )
+
+    assert allowed_github.allowed is True
+    assert denied_github.allowed is False
+    assert "outside allowlist" in (denied_github.reason or "")
+    assert allowed_tracker.allowed is True
+    assert denied_tracker.allowed is False
+    assert "outside allowlist" in (denied_tracker.reason or "")
     assert allowed.timeout_seconds == 0.75
 
 
