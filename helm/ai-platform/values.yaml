@@ -1741,12 +1741,15 @@ blueGreen:
             topologyKey: kubernetes.io/hostname
 
 # Vertical Pod Autoscaler (VPA) Configuration
+# Auto-generated VPA manifests are in templates/vpa.yaml
+# To regenerate: python scripts/observability/apply_vpa_recommendations.py
 vpa:
   enabled: false
   updateMode: Auto  # Options: Off, Initial, Recreate, Auto
   
-  # Gateway VPA limits
-  gateway:
+  # API Server VPA limits (updateMode: Auto)
+  apiServer:
+    updateMode: Auto
     minAllowed:
       cpu: 100m
       memory: 256Mi
@@ -1754,8 +1757,19 @@ vpa:
       cpu: 2
       memory: 4Gi
   
-  # MCPJungle VPA limits
+  # Gateway VPA limits (updateMode: Auto)
+  gateway:
+    updateMode: Auto
+    minAllowed:
+      cpu: 100m
+      memory: 256Mi
+    maxAllowed:
+      cpu: 2
+      memory: 4Gi
+  
+  # MCPJungle VPA limits (updateMode: Auto)
   mcpjungle:
+    updateMode: Auto
     minAllowed:
       cpu: 200m
       memory: 512Mi
@@ -1763,8 +1777,9 @@ vpa:
       cpu: 4
       memory: 8Gi
   
-  # Mem0 VPA limits
+  # Mem0 VPA limits (updateMode: Auto)
   mem0:
+    updateMode: Auto
     minAllowed:
       cpu: 100m
       memory: 256Mi
@@ -1772,8 +1787,9 @@ vpa:
       cpu: 2
       memory: 4Gi
   
-  # Grafana VPA limits
+  # Grafana VPA limits (updateMode: Auto)
   grafana:
+    updateMode: Auto
     minAllowed:
       cpu: 100m
       memory: 256Mi
@@ -1781,14 +1797,75 @@ vpa:
       cpu: 2
       memory: 4Gi
   
-  # Jaeger VPA limits
+  # Jaeger VPA limits (updateMode: Auto)
   jaeger:
+    updateMode: Auto
     minAllowed:
       cpu: 100m
       memory: 256Mi
     maxAllowed:
       cpu: 2
       memory: 4Gi
+  
+  # Prometheus VPA limits (updateMode: Auto)
+  prometheus:
+    updateMode: Auto
+    minAllowed:
+      cpu: 200m
+      memory: 512Mi
+    maxAllowed:
+      cpu: 4
+      memory: 8Gi
+  
+  # Redis VPA limits (updateMode: Initial - StatefulSet)
+  redis:
+    updateMode: Initial
+    minAllowed:
+      cpu: 100m
+      memory: 256Mi
+    maxAllowed:
+      cpu: 2
+      memory: 4Gi
+  
+  # Qdrant VPA limits (updateMode: Initial - StatefulSet)
+  qdrant:
+    updateMode: Initial
+    minAllowed:
+      cpu: 200m
+      memory: 512Mi
+    maxAllowed:
+      cpu: 4
+      memory: 8Gi
+  
+  # Postgres VPA limits (updateMode: Initial - StatefulSet)
+  postgres:
+    updateMode: Initial
+    minAllowed:
+      cpu: 200m
+      memory: 512Mi
+    maxAllowed:
+      cpu: 4
+      memory: 16Gi
+  
+  # Neo4j VPA limits (updateMode: Initial - StatefulSet)
+  neo4j:
+    updateMode: Initial
+    minAllowed:
+      cpu: 200m
+      memory: 512Mi
+    maxAllowed:
+      cpu: 4
+      memory: 16Gi
+  
+  # Minio VPA limits (updateMode: Initial - StatefulSet)
+  minio:
+    updateMode: Initial
+    minAllowed:
+      cpu: 100m
+      memory: 256Mi
+    maxAllowed:
+      cpu: 4
+      memory: 8Gi
 
 # API Server configuration (for resource right-sizing)
 apiServer:

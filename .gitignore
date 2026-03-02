@@ -103,6 +103,11 @@ cost-optimization-reports/
 resource_recommendations.json
 helm-values-patch*.yaml
 
+# VPA Automation (generated files)
+vpa_application_summary.json
+manifests/vpa/*.yaml
+!manifests/vpa/example-vpa.yaml
+
 # Observability Stack
 loki-data/
 alertmanager-data/
