@@ -87,6 +87,16 @@ workspaces:
             - "/workspace/**"
             - "workspace/**"
 
+
+    # Policy-driven argument redaction for audit/event logs.
+    redaction_rules:
+      - argument: "token"
+        patterns: ["*"]
+        replacement: "[REDACTED_TOKEN]"
+      - argument: "authorization"
+        patterns: ["Bearer *", "token *"]
+        replacement: "[REDACTED_AUTH]"
+
     # Per-request budget and timeout controls.
     max_tool_calls_per_request: 25
     max_tool_calls_per_workspace_window: 200
