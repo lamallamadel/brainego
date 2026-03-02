@@ -297,3 +297,46 @@ def sanitize_retrieved_context_chunks(
         "secret_redactions": secret_redactions,
     }
     return sanitized_chunks, stats
+
+
+def sanitize_tool_output_payload(payload: Any) -> Tuple[Any, Dict[str, Any]]:
+    """
+    Sanitize tool output payloads before prompt injection or user delivery.
+
+    Applies untrusted-context policy checks and secret redaction recursively on
+    all string leaves while preserving the original payload shape.
+    """
+    stats = {
+        "strings_processed": 0,
+        "strings_with_injection": 0,
+        "dropped_injection_lines": 0,
+        "secret_redactions": 0,
+        "policy_triggered": False,
+    }
+
+    def _sanitize_value(value: Any) -> Any:
+        if isinstance(value, str):
+            sanitized_text, metadata = sanitize_untrusted_context_text(value)
+            stats["strings_processed"] += 1
+            if metadata["injection_detected"]:
+                stats["strings_with_injection"] += 1
+            stats["dropped_injection_lines"] += int(metadata["dropped_injection_lines"])
+            stats["secret_redactions"] += int(metadata["secret_redactions"])
+            return sanitized_text
+
+        if isinstance(value, dict):
+            return {key: _sanitize_value(item) for key, item in value.items()}
+
+        if isinstance(value, list):
+            return [_sanitize_value(item) for item in value]
+
+        if isinstance(value, tuple):
+            return tuple(_sanitize_value(item) for item in value)
+
+        return value
+
+    sanitized_payload = _sanitize_value(payload)
+    stats["policy_triggered"] = bool(
+        stats["strings_with_injection"] or stats["secret_redactions"]
+    )
+    return sanitized_payload, stats
