@@ -257,6 +257,28 @@ groups:
   - name: drift_alerts
     interval: 30s
     rules:
+      # Eval score trending down (warning)
+      - alert: EvalScoreDropWarning
+        expr: (drift_baseline_accuracy - drift_current_accuracy) > 0.08
+        for: 10m
+        labels:
+          severity: warning
+          component: drift-monitor
+        annotations:
+          summary: "Eval score drop detected"
+          description: "Current eval score dropped by {{ $value }} from baseline (warning threshold: 0.08)"
+
+      # Eval score trending down (critical)
+      - alert: EvalScoreDropCritical
+        expr: (drift_baseline_accuracy - drift_current_accuracy) > 0.12
+        for: 10m
+        labels:
+          severity: critical
+          component: drift-monitor
+        annotations:
+          summary: "Critical eval score regression"
+          description: "Current eval score dropped by {{ $value }} from baseline (critical threshold: 0.12)"
+
       # Drift detected
       - alert: DriftDetected
         expr: drift_score > 0.15
@@ -278,6 +300,31 @@ groups:
         annotations:
           summary: "High model drift detected"
           description: "Drift score is {{ $value }} (threshold: 0.25) - immediate action required"
+
+      # Drift event volume anomaly in the last hour
+      - alert: DriftEventSpike
+        expr: sum(increase(drift_detected_total[1h])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: drift-monitor
+        annotations:
+          summary: "Drift event spike detected"
+          description: "Drift detections reached {{ $value }} over the last hour (threshold: 5)"
+
+      # Drift persists but retraining has not been triggered recently
+      - alert: RetrainingMissingAfterDrift
+        expr: |
+          (sum(increase(drift_detected_total[6h])) > 0)
+          and on()
+          (sum(increase(finetuning_triggers_total{trigger_type="automatic"}[24h])) == 0)
+        for: 15m
+        labels:
+          severity: warning
+          component: drift-monitor
+        annotations:
+          summary: "Retraining missing after drift detections"
+          description: "Drift events were detected in the last 6h, but no automatic retraining trigger was observed in 24h"
 
   - name: budget_alerts
     interval: 30s
