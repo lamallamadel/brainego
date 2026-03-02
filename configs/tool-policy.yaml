@@ -99,4 +99,6 @@ workspaces:
 
     # Per-request budget and timeout controls.
     max_tool_calls_per_request: 25
+    max_tool_calls_per_workspace_window: 200
+    workspace_quota_window_seconds: 60
     per_call_timeout_seconds: 10
