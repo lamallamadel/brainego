@@ -106,6 +106,28 @@ def test_policy_engine_is_loaded_in_api_and_returns_policy_denied() -> None:
     assert '"error": "PolicyDenied"' in content
 
 
+def test_mcp_policy_denials_are_returned_as_http_403_payloads() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "status_code=403" in content
+    assert "reason=decision.reason or \"MCP tool call denied by policy\"" in content
+    assert "raise HTTPException(status_code=exc.status_code, detail=detail_payload)" in content
+
+
+def test_internal_proxy_redacts_policy_denied_details_before_returning_response() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "safe_detail_payload, _ = _redact_value_for_audit(detail_payload)" in content
+    assert "detail_data = {k: v for k, v in safe_detail_payload.items() if k not in {\"ok\", \"error\"}}" in content
+    assert 'error=str(safe_detail_payload.get("error") or "PolicyDenied")' in content
+    assert "return JSONResponse(status_code=exc.status_code, content=denied_payload)" in content
+
+
+def test_tool_call_audit_redacts_request_response_and_error_payloads() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "safe_request_payload, request_redactions = _redact_value_for_audit(request_payload or {})" in content
+    assert "safe_response_payload, response_redactions = _redact_value_for_audit(response_payload or {})" in content
+    assert "safe_error, error_redactions = _redact_value_for_audit(error or \"\")" in content
+
+
 def test_internal_proxy_applies_policy_timeout_to_transport_client() -> None:
     content = SOURCE.read_text(encoding="utf-8")
     assert "timeout_seconds=effective_timeout_seconds" in content

@@ -22,11 +22,15 @@ def test_requires_confirmation_for_issue_comment_write_tools() -> None:
     assert requires_write_confirmation("linear_update_issue") is True
     assert requires_write_confirmation("jira_create_issue") is True
     assert requires_write_confirmation("jira_update_issue") is True
+    assert requires_write_confirmation("notion_create_page") is True
+    assert requires_write_confirmation("calendar_update_event") is True
+    assert requires_write_confirmation("filesystem_create_directory") is True
+    assert requires_write_confirmation("github_comment_issue") is True
 
     assert requires_write_confirmation("github_list_issues") is False
     assert requires_write_confirmation("jira_list_projects") is False
-    assert requires_write_confirmation("notion_create_page") is False
-    assert requires_write_confirmation("calendar_update_event") is False
+    assert requires_write_confirmation("github_list_issue_comments") is False
+    assert requires_write_confirmation("github_get_issue_comment") is False
 
 
 def test_pending_plan_can_be_confirmed_with_exact_same_call() -> None:

@@ -54,9 +54,21 @@ httpx.post("http://localhost:8000/v1/feedback", json={
     "response": "Model's incorrect response",
     "model": "deepseek-r1-distill-qwen-7b",
     "rating": -1,  # 👎
+    "category": "missing_citation",  # hallucination | wrong_tool | missing_citation | policy_denial
+    "reason": "The answer makes a factual claim without any source",
+    "expected_answer": "The answer should cite a source and avoid unsupported claims.",
     "intent": "reasoning"
 })
 ```
+
+### Feedback Taxonomy (for negative feedback)
+
+Use one of these categories:
+
+- `hallucination`
+- `wrong_tool`
+- `missing_citation`
+- `policy_denial`
 
 ### Get Model Accuracy
 ```bash
@@ -128,6 +140,7 @@ python feedback_dashboard.py --interval 5
 # - Overall statistics
 # - Accuracy by model
 # - Accuracy by intent
+# - Taxonomy breakdown (hallucination/wrong_tool/missing_citation/policy_denial)
 # - Visual progress bars
 ```
 

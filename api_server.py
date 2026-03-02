@@ -16,7 +16,7 @@ import logging
 import asyncio
 import re
 from contextvars import ContextVar
-from typing import List, Dict, Optional, Any, Tuple
+from typing import List, Dict, Optional, Any, Tuple, Union
 from datetime import datetime
 import uvicorn
 import signal
@@ -41,6 +41,7 @@ from internal_mcp_client import InternalMCPGatewayClient
 from tool_policy_engine import ToolPolicyEngine, load_default_tool_policy_engine
 from security_heuristics import detect_prompt_injection_patterns
 from workspace_context import (
+    build_rag_retrieval_filters,
     ensure_workspace_filter,
     ensure_workspace_metadata,
     get_valid_workspace_ids,
@@ -84,6 +85,14 @@ MCP_GATEWAY_API_KEY = os.getenv("MCP_GATEWAY_API_KEY", "")
 WORKSPACE_ID_RESPONSE_HEADER = "X-Workspace-Id"
 AUDIT_CAPTURE_BODY_LIMIT = int(os.getenv("AUDIT_CAPTURE_BODY_LIMIT", "32768"))
 AUDIT_EXPORT_MAX_LIMIT = int(os.getenv("AUDIT_EXPORT_MAX_LIMIT", "10000"))
+AUDIT_EVENT_TYPE_ALIASES = {
+    "request": "request_event",
+    "request_event": "request_event",
+    "tool_call": "tool_event",
+    "tool_event": "tool_event",
+    "mcp_tool_call": "tool_event",
+}
+AUDIT_EVENT_TYPE_QUERY_PATTERN = "^(request_event|tool_event|request|tool_call|mcp_tool_call)$"
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY", "").strip()
 DEFAULT_MCP_POLICY_ROLE = "viewer"
 SUPPORTED_MCP_POLICY_ROLES = {"admin", "developer", "viewer"}
@@ -124,6 +133,11 @@ DEFAULT_SAFETY_BLOCK_TERMS = [
     "bypass school firewall",
     "steal password",
 ]
+SAFETY_DECISION_VERSION = "v2"
+SAFETY_REASON_SAFE = "input.clean"
+SAFETY_REASON_PAYLOAD_TOO_LARGE = "input.payload_too_large"
+SAFETY_REASON_BLOCKED_TERMS = "input.blocked_terms_detected"
+SAFETY_REASON_WARNING_TERMS = "input.warning_terms_detected"
 # Create FastAPI app
 app = FastAPI(
     title="OpenAI-Compatible API for MAX Serve with Agent Router",
@@ -154,6 +168,7 @@ AUTH_OPTIONAL_PATHS = WORKSPACE_OPTIONAL_PATHS
 AUTH_OPTIONAL_PREFIXES = WORKSPACE_OPTIONAL_PREFIXES
 AUTH_REQUIRED_PREFIXES = WORKSPACE_REQUIRED_PREFIXES
 AUTH_REQUIRED_EXACT_PATHS = WORKSPACE_REQUIRED_EXACT_PATHS | {"/audit"}
+AUTH_REQUIRED_EXACT_PATHS.update({"/audit/query", "/audit/export"})
 AUTH_USER_CONTEXT: ContextVar[Optional[str]] = ContextVar("auth_user_id", default=None)
 AUTH_ROLE_CONTEXT: ContextVar[Optional[str]] = ContextVar("auth_role", default=None)
 AUTH_METHOD_CONTEXT: ContextVar[Optional[str]] = ContextVar("auth_method", default=None)
@@ -664,6 +679,11 @@ class ChatMessage(BaseModel):
     role: str = Field(..., description="Role of the message author (system, user, assistant)")
     content: str = Field(..., description="Content of the message")
     name: Optional[str] = Field(None, description="Optional name of the participant")
+
+
+RetrievalFilterValue = Union[str, List[str], Dict[str, List[str]]]
+
+
 class ChatRAGOptions(BaseModel):
     enabled: bool = Field(False, description="Enable retrieval-augmented generation for this request")
     query: Optional[str] = Field(
@@ -674,9 +694,21 @@ class ChatRAGOptions(BaseModel):
     filters: Optional[Dict[str, Any]] = Field(
         None,
         description=(
-            "Optional metadata filters. workspace_id is required for strict "
-            "multi-workspace isolation."
+            "Optional metadata filters. workspace_id is enforced from the request "
+            "context for strict multi-workspace isolation."
         ),
+    )
+    repo: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional repository selector(s) for retrieval filtering.",
+    )
+    path: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional file path selector(s) for retrieval filtering.",
+    )
+    lang: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional language selector(s) for retrieval filtering.",
     )
     min_score: Optional[float] = Field(
         None,
@@ -746,6 +778,18 @@ class UnifiedChatRequest(BaseModel):
     use_temporal_decay: bool = Field(True, description="Apply temporal decay for memory scoring")
     rag_k: int = Field(5, ge=1, le=20, description="Number of chunks to retrieve from RAG")
     rag_filters: Optional[Dict[str, Any]] = Field(None, description="Optional metadata filters for RAG")
+    rag_repo: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional repository selector(s) for RAG retrieval.",
+    )
+    rag_path: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional file path selector(s) for RAG retrieval.",
+    )
+    rag_lang: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional language selector(s) for RAG retrieval.",
+    )
     rag_min_score: Optional[float] = Field(
         None,
         ge=0.0,
@@ -847,7 +891,19 @@ class RAGSearchRequest(BaseModel):
     limit: int = Field(10, ge=1, le=100, description="Maximum number of results")
     filters: Optional[Dict[str, Any]] = Field(
         None,
-        description="Optional metadata filters (must include workspace_id).",
+        description="Optional metadata filters (workspace_id is enforced automatically).",
+    )
+    repo: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional repository selector(s) for retrieval filtering.",
+    )
+    path: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional file path selector(s) for retrieval filtering.",
+    )
+    lang: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional language selector(s) for retrieval filtering.",
     )
 class RAGSearchResponse(BaseModel):
     results: List[Dict[str, Any]]
@@ -858,7 +914,19 @@ class RAGSemanticSearchRequest(BaseModel):
     top_k: int = Field(10, ge=1, le=100, description="Top-k nearest neighbors to return")
     filters: Optional[Dict[str, Any]] = Field(
         None,
-        description="Optional metadata filters (must include workspace_id).",
+        description="Optional metadata filters (workspace_id is enforced automatically).",
+    )
+    repo: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional repository selector(s) for retrieval filtering.",
+    )
+    path: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional file path selector(s) for retrieval filtering.",
+    )
+    lang: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional language selector(s) for retrieval filtering.",
     )
     collection_name: Optional[str] = Field(None, description="Optional Qdrant collection override")
 class RAGSemanticSearchResponse(BaseModel):
@@ -874,7 +942,19 @@ class RAGQueryRequest(BaseModel):
     k: int = Field(5, ge=1, le=20, description="Number of top results to retrieve (top-k)")
     filters: Optional[Dict[str, Any]] = Field(
         None,
-        description="Optional metadata filters (must include workspace_id).",
+        description="Optional metadata filters (workspace_id is enforced automatically).",
+    )
+    repo: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional repository selector(s) for retrieval filtering.",
+    )
+    path: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional file path selector(s) for retrieval filtering.",
+    )
+    lang: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional language selector(s) for retrieval filtering.",
     )
     temperature: Optional[float] = Field(0.7, ge=0.0, le=2.0, description="Sampling temperature")
     top_p: Optional[float] = Field(0.9, ge=0.0, le=1.0, description="Nucleus sampling parameter")
@@ -909,7 +989,19 @@ class RAGGraphSearchRequest(BaseModel):
     limit: int = Field(10, ge=1, le=100, description="Maximum number of vector search results")
     filters: Optional[Dict[str, Any]] = Field(
         None,
-        description="Optional metadata filters (must include workspace_id).",
+        description="Optional metadata filters (workspace_id is enforced automatically).",
+    )
+    repo: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional repository selector(s) for retrieval filtering.",
+    )
+    path: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional file path selector(s) for retrieval filtering.",
+    )
+    lang: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional language selector(s) for retrieval filtering.",
     )
     graph_depth: int = Field(1, ge=1, le=3, description="Maximum depth for graph traversal")
     graph_limit: int = Field(10, ge=1, le=50, description="Maximum number of graph neighbors per entity")
@@ -926,7 +1018,19 @@ class RAGGraphQueryRequest(BaseModel):
     k: int = Field(5, ge=1, le=20, description="Number of top results to retrieve (top-k)")
     filters: Optional[Dict[str, Any]] = Field(
         None,
-        description="Optional metadata filters (must include workspace_id).",
+        description="Optional metadata filters (workspace_id is enforced automatically).",
+    )
+    repo: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional repository selector(s) for retrieval filtering.",
+    )
+    path: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional file path selector(s) for retrieval filtering.",
+    )
+    lang: Optional[RetrievalFilterValue] = Field(
+        None,
+        description="Optional language selector(s) for retrieval filtering.",
     )
     graph_depth: int = Field(1, ge=1, le=3, description="Maximum depth for graph traversal")
     graph_limit: int = Field(10, ge=1, le=50, description="Maximum number of graph neighbors per entity")
@@ -1018,6 +1122,17 @@ class FeedbackRequest(BaseModel):
     model: str = Field(..., description="Model identifier")
     rating: int = Field(..., description="Feedback rating: 1 (thumbs-up) or -1 (thumbs-down)")
     reason: Optional[str] = Field(None, description="Optional reason for thumbs-up/down feedback")
+    category: Optional[str] = Field(
+        None,
+        description=(
+            "Optional feedback category for negative feedback. "
+            "Accepted values: hallucination, wrong_tool, missing_citation, policy_denial."
+        ),
+    )
+    expected_answer: Optional[str] = Field(
+        None,
+        description="Optional expected/correct answer provided by the user",
+    )
     memory_used: int = Field(0, description="Memory used in bytes")
     tools_called: Optional[List[str]] = Field(None, description="List of tools/functions called")
     user_id: Optional[str] = Field(None, description="User identifier")
@@ -1034,6 +1149,18 @@ class FeedbackResponse(BaseModel):
     model: str
 class FeedbackUpdateRequest(BaseModel):
     rating: Optional[int] = Field(None, description="Updated rating (1 or -1)")
+    reason: Optional[str] = Field(None, description="Updated reason for thumbs-up/down feedback")
+    category: Optional[str] = Field(
+        None,
+        description=(
+            "Updated feedback category. "
+            "Accepted values: hallucination, wrong_tool, missing_citation, policy_denial."
+        ),
+    )
+    expected_answer: Optional[str] = Field(
+        None,
+        description="Updated expected/correct answer",
+    )
     intent: Optional[str] = Field(None, description="Updated intent")
     project: Optional[str] = Field(None, description="Updated project")
     metadata: Optional[Dict[str, Any]] = Field(None, description="Additional metadata to merge")
@@ -1054,6 +1181,7 @@ class FeedbackStatsResponse(BaseModel):
     avg_memory_used: int
     unique_users: int
     unique_sessions: int
+    category_counts: Dict[str, int]
     days: int
     filters: Dict[str, Optional[str]]
 class FinetuningExportRequest(BaseModel):
@@ -1130,10 +1258,19 @@ class MeteringSummaryResponse(BaseModel):
 class SafetyVerdictResponse(BaseModel):
     verdict: str
     reason: str
+    reason_code: str = Field(..., description="Primary machine-readable safety reason code")
+    reason_codes: List[str] = Field(
+        default_factory=list,
+        description="All matched machine-readable safety reason codes",
+    )
     endpoint: str
     blocked_terms: List[str] = Field(default_factory=list)
     warning_terms: List[str] = Field(default_factory=list)
     text_length: int
+    decision_version: str = Field(
+        SAFETY_DECISION_VERSION,
+        description="Safety gateway decision schema version",
+    )
 class MCPToolProxyRequest(BaseModel):
     server_id: str = Field(..., description="Target MCP server ID")
     tool_name: str = Field(..., description="MCP tool name")
@@ -1362,6 +1499,7 @@ class MetricsStore:
         self.memory_context_items_total = 0
         self.memory_scores = []
         self.safety_verdict_counts = {"safe": 0, "warn": 0, "block": 0}
+        self.safety_reason_code_counts: Dict[str, int] = {}
         self.user_metering: Dict[str, Dict[str, int]] = {}
 
     @staticmethod
@@ -1428,12 +1566,19 @@ class MetricsStore:
     @staticmethod
     def _tokens_per_second(tokens: int, total_latency_ms: float) -> float:
         return round(tokens / (total_latency_ms / 1000), 2) if total_latency_ms > 0 else 0.0
-    def record_safety_verdict(self, verdict: str):
-        """Track safety verdict distribution for chat endpoints."""
+    def record_safety_verdict(self, verdict: str, reason_codes: Optional[List[str]] = None):
+        """Track safety verdict distribution and reason-code telemetry."""
         normalized = (verdict or "safe").lower()
         if normalized not in self.safety_verdict_counts:
             normalized = "safe"
         self.safety_verdict_counts[normalized] += 1
+        for reason_code in reason_codes or []:
+            normalized_reason = str(reason_code).strip().lower()
+            if not normalized_reason:
+                continue
+            self.safety_reason_code_counts[normalized_reason] = (
+                self.safety_reason_code_counts.get(normalized_reason, 0) + 1
+            )
     def record_memory_telemetry(
         self,
         memory_metadata: Optional[Dict[str, Any]],
@@ -1523,6 +1668,11 @@ class MetricsStore:
         if not self.latencies:
             return {
                 "request_count": self.request_count,
+                "safety": {
+                    "enabled": SAFETY_GATEWAY_ENABLED,
+                    "verdict_counts": dict(self.safety_verdict_counts),
+                    "reason_code_counts": dict(sorted(self.safety_reason_code_counts.items())),
+                },
                 "errors": self.errors,
                 "error_rate_percent": self._rate(self.errors, self.request_count),
                 "avg_latency_ms": 0,
@@ -1543,6 +1693,7 @@ class MetricsStore:
             "safety": {
                 "enabled": SAFETY_GATEWAY_ENABLED,
                 "verdict_counts": dict(self.safety_verdict_counts),
+                "reason_code_counts": dict(sorted(self.safety_reason_code_counts.items())),
             },
             "errors": self.errors,
             "error_rate_percent": self._rate(self.errors, self.request_count),
@@ -2300,9 +2451,41 @@ def _extract_text_from_messages(messages: List[ChatMessage]) -> str:
     return "\n".join(msg.content for msg in messages if getattr(msg, "content", None))
 
 
+def _dedupe_reason_codes(reason_codes: List[str]) -> List[str]:
+    """Return stable de-duplicated reason codes preserving insertion order."""
+    deduped: List[str] = []
+    seen = set()
+    for reason_code in reason_codes:
+        normalized = str(reason_code).strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        deduped.append(normalized)
+    return deduped
+
+
 def _redact_value_for_audit(value: Any) -> Tuple[Any, int]:
     """Redact secret-like values before logging/audit emission."""
     return redact_secrets(value)
+
+
+def _normalize_audit_event_type(value: Optional[str]) -> Optional[str]:
+    """Normalize event type aliases to canonical audit schema names."""
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return None
+    canonical = AUDIT_EVENT_TYPE_ALIASES.get(normalized)
+    if canonical:
+        return canonical
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "event_type must be one of: request_event, tool_event "
+            "(aliases accepted: request, tool_call, mcp_tool_call)"
+        ),
+    )
 
 
 def evaluate_safety_text(text: str, endpoint: str) -> SafetyVerdictResponse:
@@ -2312,32 +2495,58 @@ def evaluate_safety_text(text: str, endpoint: str) -> SafetyVerdictResponse:
     warn_terms = _load_safety_terms("SAFETY_WARN_TERMS", DEFAULT_SAFETY_WARN_TERMS)
     matched_block_terms = sorted({term for term in block_terms if term in normalized_text})
     matched_warn_terms = sorted({term for term in warn_terms if term in normalized_text})
+    text_length = len(text or "")
+    reason_codes: List[str] = []
+
+    if text_length > SAFETY_MAX_TEXT_CHARS:
+        reason_codes.append(SAFETY_REASON_PAYLOAD_TOO_LARGE)
+    if matched_block_terms:
+        reason_codes.append(SAFETY_REASON_BLOCKED_TERMS)
+    if matched_warn_terms:
+        reason_codes.append(SAFETY_REASON_WARNING_TERMS)
+    reason_codes = _dedupe_reason_codes(reason_codes)
+
     verdict = "safe"
     reason = "No safety concerns detected"
-    if len(text or "") > SAFETY_MAX_TEXT_CHARS:
+    reason_code = SAFETY_REASON_SAFE
+    if SAFETY_REASON_PAYLOAD_TOO_LARGE in reason_codes:
         verdict = "block"
         reason = f"Request payload too large for safety policy (>{SAFETY_MAX_TEXT_CHARS} chars)"
-    elif matched_block_terms:
+        reason_code = SAFETY_REASON_PAYLOAD_TOO_LARGE
+    elif SAFETY_REASON_BLOCKED_TERMS in reason_codes:
         verdict = "block"
         reason = "Detected blocked safety patterns"
-    elif matched_warn_terms:
+        reason_code = SAFETY_REASON_BLOCKED_TERMS
+    elif SAFETY_REASON_WARNING_TERMS in reason_codes:
         verdict = "warn"
         reason = "Detected warning-level safety patterns"
+        reason_code = SAFETY_REASON_WARNING_TERMS
+    else:
+        reason_codes = [SAFETY_REASON_SAFE]
+
+    if reason_code not in reason_codes:
+        reason_codes = [reason_code, *reason_codes]
+
     return SafetyVerdictResponse(
         verdict=verdict,
         reason=reason,
+        reason_code=reason_code,
+        reason_codes=reason_codes,
         endpoint=endpoint,
         blocked_terms=matched_block_terms,
         warning_terms=matched_warn_terms,
-        text_length=len(text or ""),
+        text_length=text_length,
+        decision_version=SAFETY_DECISION_VERSION,
     )
 def enforce_safety_gateway(verdict: SafetyVerdictResponse):
     """Apply verdict to request handling and persist telemetry/logs."""
-    metrics.record_safety_verdict(verdict.verdict)
+    metrics.record_safety_verdict(verdict.verdict, verdict.reason_codes)
     logger.info(
-        "Safety gateway verdict endpoint=%s verdict=%s blocked=%s warnings=%s reason=%s",
+        "Safety gateway verdict endpoint=%s verdict=%s reason_code=%s reason_codes=%s blocked=%s warnings=%s reason=%s",
         verdict.endpoint,
         verdict.verdict,
+        verdict.reason_code,
+        verdict.reason_codes,
         verdict.blocked_terms,
         verdict.warning_terms,
         verdict.reason,
@@ -2460,6 +2669,59 @@ def _extract_tool_name(payload: Optional[Dict[str, Any]]) -> Optional[str]:
     return None
 
 
+def _extract_model_name(payload: Optional[Dict[str, Any]]) -> Optional[str]:
+    """Extract model identifier from payload conventions."""
+    if not isinstance(payload, dict):
+        return None
+
+    for key in ("model", "model_name", "preferred_model"):
+        value = payload.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+
+    metadata = payload.get("metadata")
+    if isinstance(metadata, dict):
+        for key in ("model", "model_name", "preferred_model"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+
+    return None
+
+
+def _extract_tool_calls(payload: Optional[Dict[str, Any]], fallback_tool_name: Optional[str] = None) -> List[str]:
+    """Extract an ordered set of tool calls from an audit payload."""
+    resolved_tools: List[str] = []
+    seen = set()
+
+    def _append(tool_value: Any):
+        if isinstance(tool_value, str):
+            cleaned = tool_value.strip()
+            if cleaned and cleaned not in seen:
+                seen.add(cleaned)
+                resolved_tools.append(cleaned)
+
+    if isinstance(payload, dict):
+        for key in ("tool_calls", "tools_called"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                for item in value:
+                    _append(item)
+
+    _append(fallback_tool_name)
+    return resolved_tools
+
+
+def _extract_redacted_arguments(payload: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Extract already-redacted tool arguments from payload when present."""
+    if not isinstance(payload, dict):
+        return {}
+    arguments = payload.get("arguments")
+    if isinstance(arguments, dict):
+        return arguments
+    return {}
+
+
 def _record_tool_call_audit(
     raw_request: Request,
     server_id: Optional[str],
@@ -2476,6 +2738,15 @@ def _record_tool_call_audit(
     safe_request_payload, request_redactions = _redact_value_for_audit(request_payload or {})
     safe_response_payload, response_redactions = _redact_value_for_audit(response_payload or {})
     safe_error, error_redactions = _redact_value_for_audit(error or "")
+    redacted_arguments = _extract_redacted_arguments(safe_request_payload)
+    model_name = _extract_model_name(safe_request_payload) or _extract_model_name(safe_response_payload)
+    tool_calls = _extract_tool_calls(safe_request_payload, fallback_tool_name=tool_name)
+    if status_code in {401, 403}:
+        event_status = "denied"
+    elif ok and status_code < 400:
+        event_status = "success"
+    else:
+        event_status = "error"
     workspace_id_candidate = (
         raw_request.headers.get("x-workspace-id")
         or raw_request.headers.get("x-project-id")
@@ -2497,6 +2768,8 @@ def _record_tool_call_audit(
         "request_redactions": request_redactions,
         "response_redactions": response_redactions,
         "error_redactions": error_redactions,
+        "redacted_arguments": redacted_arguments,
+        "event_schema": "tool_event.v1",
         "role": auth_role,
         "auth_method": auth_method,
     }
@@ -2515,7 +2788,7 @@ def _record_tool_call_audit(
 
     try:
         get_audit_service().add_event(
-            event_type="tool_call",
+            event_type="tool_event",
             request_id=request_id,
             endpoint=raw_request.url.path,
             method=raw_request.method,
@@ -2523,8 +2796,13 @@ def _record_tool_call_audit(
             workspace_id=workspace_id,
             user_id=user_id,
             role=auth_role,
+            model=model_name,
+            status=event_status,
             tool_name=tool_name,
+            tool_calls=tool_calls,
+            latency_ms=duration_ms,
             duration_ms=duration_ms,
+            redacted_arguments=redacted_arguments,
             request_payload=safe_request_payload,
             response_payload=safe_response_payload,
             metadata=metadata,
@@ -2609,18 +2887,29 @@ async def audit_request_middleware(request: Request, call_next):
                 logger.warning("Failed to record usage request metric: %s", metrics_exc)
         safe_request_payload, request_redactions = _redact_value_for_audit(request_payload)
         safe_audit_error, error_redactions = _redact_value_for_audit(audit_error or "")
+        request_model = _extract_model_name(safe_request_payload)
+        tool_calls = _extract_tool_calls(safe_request_payload, fallback_tool_name=tool_name)
+        redacted_arguments = _extract_redacted_arguments(safe_request_payload)
+        if status_code in {401, 403}:
+            request_status = "denied"
+        elif status_code < 400:
+            request_status = "success"
+        else:
+            request_status = "error"
         metadata = {
             "query_params": dict(request.query_params),
             "client_host": request.client.host if request.client else None,
             "error": safe_audit_error or None,
             "request_redactions": request_redactions,
             "error_redactions": error_redactions,
+            "redacted_arguments": redacted_arguments,
+            "event_schema": "request_event.v1",
             "role": auth_role,
             "auth_method": auth_method,
         }
         try:
             get_audit_service().add_event(
-                event_type="request",
+                event_type="request_event",
                 request_id=request_id,
                 endpoint=endpoint,
                 method=method,
@@ -2628,8 +2917,13 @@ async def audit_request_middleware(request: Request, call_next):
                 workspace_id=workspace_id,
                 user_id=user_id,
                 role=auth_role,
+                model=request_model,
+                status=request_status,
                 tool_name=tool_name,
+                tool_calls=tool_calls,
+                latency_ms=duration_ms,
                 duration_ms=duration_ms,
+                redacted_arguments=redacted_arguments,
                 request_payload=safe_request_payload,
                 metadata=metadata,
             )
@@ -2772,7 +3066,8 @@ async def root():
             "feedback_accuracy": "GET /v1/feedback/accuracy",
             "feedback_stats": "GET /v1/feedback/stats",
             "feedback_export": "POST /v1/feedback/export/finetuning",
-            "audit_export": "GET /audit?format=json|csv",
+            "audit_query": "GET /audit/query",
+            "audit_export": "GET /audit/export?format=json|csv (alias: /audit)",
             "mcp_tool_proxy": "POST /internal/mcp/tools/call"
         },
         "prometheus_metrics": "http://localhost:8000/metrics"
@@ -3006,6 +3301,7 @@ async def get_circuit_breakers():
     }
 
 
+@app.get("/audit/export", response_model=AuditExportResponse)
 @app.get("/audit", response_model=AuditExportResponse)
 async def export_audit_events(
     raw_request: Request,
@@ -3013,8 +3309,14 @@ async def export_audit_events(
     workspace_id: Optional[str] = Query(None, description="Filter by workspace identifier"),
     user_id: Optional[str] = Query(None, description="Filter by user identifier"),
     role: Optional[str] = Query(None, description="Filter by resolved role"),
+    model: Optional[str] = Query(None, description="Filter by model identifier"),
+    status: Optional[str] = Query(None, description="Filter by event status"),
     tool_name: Optional[str] = Query(None, description="Filter by tool name"),
-    event_type: Optional[str] = Query(None, pattern="^(request|tool_call)$", description="Filter by event type"),
+    event_type: Optional[str] = Query(
+        None,
+        pattern=AUDIT_EVENT_TYPE_QUERY_PATTERN,
+        description="Filter by event type",
+    ),
     start_date: Optional[str] = Query(None, description="Start date (ISO-8601)"),
     end_date: Optional[str] = Query(None, description="End date (ISO-8601)"),
     limit: int = Query(1000, ge=1, le=AUDIT_EXPORT_MAX_LIMIT),
@@ -3023,7 +3325,7 @@ async def export_audit_events(
     """
     Export structured audit events as JSON or CSV.
 
-    Supported filters include workspace/user/date range/tool name.
+    Supported filters include workspace/user/model/status/date range/tool name.
     """
     query_params = raw_request.query_params
     admin_request = _is_admin_request(raw_request)
@@ -3041,11 +3343,10 @@ async def export_audit_events(
 
     user_filter = user_id or query_params.get("user")
     role_filter = role or query_params.get("role")
+    model_filter = model or query_params.get("model")
+    status_filter = status or query_params.get("status")
     tool_filter = tool_name or query_params.get("tool")
-    event_filter = event_type or query_params.get("type")
-
-    if event_filter and event_filter not in {"request", "tool_call"}:
-        raise HTTPException(status_code=400, detail="event_type must be 'request' or 'tool_call'")
+    event_filter = _normalize_audit_event_type(event_type or query_params.get("type"))
 
     start_filter = _safe_iso_datetime(
         start_date or query_params.get("from") or query_params.get("start"),
@@ -3065,6 +3366,8 @@ async def export_audit_events(
             workspace_id=workspace_filter,
             user_id=user_filter,
             role=role_filter,
+            model=model_filter,
+            status=status_filter,
             tool_name=tool_filter,
             event_type=event_filter,
             start_date=start_filter,
@@ -3103,6 +3406,39 @@ async def export_audit_events(
     except Exception as exc:
         logger.error("Error exporting audit events: %s", exc, exc_info=True)
         raise HTTPException(status_code=500, detail=f"Audit export error: {exc}")
+
+
+@app.get("/audit/query", response_model=AuditExportResponse)
+async def query_audit_events(
+    raw_request: Request,
+    workspace_id: Optional[str] = Query(None, description="Filter by workspace identifier"),
+    user_id: Optional[str] = Query(None, description="Filter by user identifier"),
+    role: Optional[str] = Query(None, description="Filter by resolved role"),
+    tool_name: Optional[str] = Query(None, description="Filter by tool name"),
+    event_type: Optional[str] = Query(None, pattern="^(request|tool_call)$", description="Filter by event type"),
+    start_date: Optional[str] = Query(None, description="Start date (ISO-8601)"),
+    end_date: Optional[str] = Query(None, description="End date (ISO-8601)"),
+    limit: int = Query(1000, ge=1, le=AUDIT_EXPORT_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+):
+    """
+    Query structured audit events as JSON.
+
+    This endpoint is a convenience wrapper over /audit/export with format=json.
+    """
+    return await export_audit_events(
+        raw_request=raw_request,
+        format="json",
+        workspace_id=workspace_id,
+        user_id=user_id,
+        role=role,
+        tool_name=tool_name,
+        event_type=event_type,
+        start_date=start_date,
+        end_date=end_date,
+        limit=limit,
+        offset=offset,
+    )
 
 
 @app.post("/admin/workspaces", response_model=WorkspaceResponse)
@@ -3394,6 +3730,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
     start_time = time.time()
     effective_user_id: Optional[str] = None
     metering_workspace_id: Optional[str] = None
+    safety_verdict: Optional[SafetyVerdictResponse] = None
     
     try:
         workspace_id = get_current_workspace_id()
@@ -3521,7 +3858,13 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     detail="RAG requires at least one user message or rag.query"
                 )
             retrieval_start = time.time()
-            rag_filters = ensure_workspace_filter(request.rag.filters, workspace_id)
+            rag_filters = build_rag_retrieval_filters(
+                request.rag.filters,
+                workspace_id,
+                repo=request.rag.repo,
+                path=request.rag.path,
+                lang=request.rag.lang,
+            )
             rag_results = service.search_documents(
                 query=retrieval_query,
                 limit=request.rag.k,
@@ -3609,6 +3952,8 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         routing_metadata["workspace_id"] = workspace_id
         routing_metadata["user_id"] = effective_user_id
         routing_metadata["role"] = get_authenticated_role(raw_request)
+        if safety_verdict is not None:
+            routing_metadata["safety"] = safety_verdict.model_dump()
         
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
         created = int(time.time())
@@ -3678,6 +4023,13 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                 memory_metadata["storage_error"] = str(exc)
         if request.stream:
             logger.info("Streaming response requested; returning SSE-compatible output")
+            stream_headers = {
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+            }
+            if safety_verdict is not None:
+                stream_headers["X-Safety-Verdict"] = safety_verdict.verdict
+                stream_headers["X-Safety-Reason-Codes"] = ",".join(safety_verdict.reason_codes)
             return StreamingResponse(
                 stream_chat_completion_response(
                     completion_id=completion_id,
@@ -3687,10 +4039,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     finish_reason="stop"
                 ),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive"
-                }
+                headers=stream_headers
             )
         # Build response with routing metadata
         response_data = {
@@ -3716,6 +4065,8 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             },
             "x-routing-metadata": routing_metadata
         }
+        if safety_verdict is not None:
+            response_data["x-safety-metadata"] = safety_verdict.model_dump()
         if rag_metadata:
             response_data["x-rag-metadata"] = rag_metadata
             if rag_context_data is not None:
@@ -3798,6 +4149,9 @@ async def unified_chat(request: UnifiedChatRequest, raw_request: Request):
             enabled=request.use_rag,
             k=request.rag_k,
             filters=request.rag_filters,
+            repo=request.rag_repo,
+            path=request.rag_path,
+            lang=request.rag_lang,
             min_score=request.rag_min_score,
             include_context=request.include_context
         ) if request.use_rag else None,
@@ -4035,7 +4389,13 @@ async def rag_search(request: RAGSearchRequest):
     try:
         workspace_id = get_current_workspace_id()
         workspace_id = _ensure_workspace_active(workspace_id, context="/v1/rag/search")
-        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
+        rag_filters = build_rag_retrieval_filters(
+            request.filters,
+            workspace_id,
+            repo=request.repo,
+            path=request.path,
+            lang=request.lang,
+        )
         service = get_rag_service()
         results = service.search_documents(
             query=request.query,
@@ -4083,7 +4443,13 @@ async def rag_semantic_search(request: RAGSemanticSearchRequest):
     try:
         workspace_id = get_current_workspace_id()
         workspace_id = _ensure_workspace_active(workspace_id, context="/v1/rag/semantic-search")
-        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
+        rag_filters = build_rag_retrieval_filters(
+            request.filters,
+            workspace_id,
+            repo=request.repo,
+            path=request.path,
+            lang=request.lang,
+        )
         service = get_rag_service()
         results = service.semantic_search(
             query=request.query,
@@ -4204,6 +4570,7 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
     """
     start_time = time.time()
     metering_user_id = get_authenticated_user_id(raw_request)
+    safety_verdict: Optional[SafetyVerdictResponse] = None
     
     try:
         workspace_id = get_current_workspace_id()
@@ -4211,7 +4578,13 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
             workspace_id,
             context="/v1/rag/query",
         )
-        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
+        rag_filters = build_rag_retrieval_filters(
+            request.filters,
+            workspace_id,
+            repo=request.repo,
+            path=request.path,
+            lang=request.lang,
+        )
         if SAFETY_GATEWAY_ENABLED:
             rag_messages = request.messages or []
             rag_payload_text = "\n".join([
@@ -4360,6 +4733,8 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
         
         retrieval_stats["generation_time_ms"] = round(generation_time_ms, 2)
         retrieval_stats["total_time_ms"] = round((time.time() - start_time) * 1000, 2)
+        if safety_verdict is not None:
+            retrieval_stats["safety"] = safety_verdict.model_dump()
         
         logger.info(
             f"RAG query completed: {len(results)} chunks retrieved, "
@@ -4461,7 +4836,13 @@ async def rag_graph_search(request: RAGGraphSearchRequest):
             workspace_id,
             context="/v1/rag/search/graph-enriched",
         )
-        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
+        rag_filters = build_rag_retrieval_filters(
+            request.filters,
+            workspace_id,
+            repo=request.repo,
+            path=request.path,
+            lang=request.lang,
+        )
         service = get_rag_service()
         
         if not service.graph_service:
@@ -4551,6 +4932,7 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
     """
     start_time = time.time()
     metering_user_id = get_authenticated_user_id(raw_request)
+    safety_verdict: Optional[SafetyVerdictResponse] = None
     
     try:
         workspace_id = get_current_workspace_id()
@@ -4558,7 +4940,13 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
             workspace_id,
             context="/v1/rag/query/graph-enriched",
         )
-        rag_filters = ensure_workspace_filter(request.filters, workspace_id)
+        rag_filters = build_rag_retrieval_filters(
+            request.filters,
+            workspace_id,
+            repo=request.repo,
+            path=request.path,
+            lang=request.lang,
+        )
         if SAFETY_GATEWAY_ENABLED:
             rag_messages = request.messages or []
             rag_payload_text = "\n".join([
@@ -4698,6 +5086,8 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
         
         retrieval_stats["generation_time_ms"] = round(generation_time_ms, 2)
         retrieval_stats["total_time_ms"] = round((time.time() - start_time) * 1000, 2)
+        if safety_verdict is not None:
+            retrieval_stats["safety"] = safety_verdict.model_dump()
         
         logger.info(
             f"Graph-enriched RAG query completed: {len(vector_results)} chunks, "
@@ -5165,6 +5555,8 @@ async def add_feedback(request: FeedbackRequest):
         model: Model identifier (e.g., "llama-3.3-8b-instruct")
         rating: Feedback rating (1 or -1)
         reason: Optional textual reason for the rating
+        category: Optional taxonomy value (hallucination, wrong_tool, missing_citation, policy_denial)
+        expected_answer: Optional expected/correct answer to store for future training
         memory_used: Memory usage in bytes (optional)
         tools_called: List of tools/functions used (optional)
         user_id: User identifier (optional)
@@ -5185,6 +5577,8 @@ async def add_feedback(request: FeedbackRequest):
             model=request.model,
             rating=request.rating,
             reason=request.reason,
+            category=request.category,
+            expected_answer=request.expected_answer,
             memory_used=request.memory_used,
             tools_called=request.tools_called,
             user_id=request.user_id,
@@ -5193,7 +5587,10 @@ async def add_feedback(request: FeedbackRequest):
             project=request.project,
             metadata=ensure_workspace_metadata(request.metadata, workspace_id),
         )
-        logger.info(f"Feedback added: {result['feedback_id']} [rating={request.rating}]")
+        logger.info(
+            f"Feedback added: {result['feedback_id']} "
+            f"[rating={request.rating}, category={request.category}]"
+        )
         return FeedbackResponse(**result)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -5233,6 +5630,9 @@ async def update_feedback(feedback_id: str, request: FeedbackUpdateRequest):
     Args:
         feedback_id: Feedback identifier
         rating: Updated rating (1 or -1)
+        reason: Updated textual reason
+        category: Updated taxonomy value for negative feedback
+        expected_answer: Updated expected/correct answer
         intent: Updated intent
         project: Updated project
         metadata: Additional metadata to merge
@@ -5246,6 +5646,9 @@ async def update_feedback(feedback_id: str, request: FeedbackUpdateRequest):
         result = service.update_feedback(
             feedback_id=feedback_id,
             rating=request.rating,
+            reason=request.reason,
+            category=request.category,
+            expected_answer=request.expected_answer,
             intent=request.intent,
             project=request.project,
             metadata=ensure_workspace_metadata(request.metadata, workspace_id)
