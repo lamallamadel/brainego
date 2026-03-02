@@ -504,10 +504,7 @@ class ToolPolicyEngine:
             return True, None
 
         for arg_name, patterns in constraints.items():
-            if arg_name not in arguments:
-                continue
-
-            values = _extract_argument_values(arguments[arg_name])
+            values = _collect_allowlist_values(arguments=arguments, arg_name=arg_name)
             if not values:
                 continue
 
@@ -909,6 +906,115 @@ def _extract_argument_values(value: Any) -> List[str]:
             collected.extend(_extract_argument_values(item))
         return collected
     return []
+
+
+def _collect_allowlist_values(*, arguments: Dict[str, Any], arg_name: str) -> List[str]:
+    """Collect argument values for generic, nested, and semantic allowlist keys."""
+    normalized_arg = (arg_name or "").strip()
+    if not normalized_arg:
+        return []
+
+    semantic_collectors = {
+        "github_org": _extract_github_org_values,
+        "github_repo": _extract_github_repo_values,
+        "tracker_project": _extract_tracker_project_values,
+    }
+    semantic_collector = semantic_collectors.get(normalized_arg)
+    if semantic_collector:
+        return semantic_collector(arguments)
+
+    if normalized_arg in arguments:
+        return _extract_argument_values(arguments[normalized_arg])
+
+    return _extract_nested_argument_values(arguments, normalized_arg)
+
+
+def _extract_nested_argument_values(arguments: Dict[str, Any], path: str) -> List[str]:
+    """Resolve a dotted path (e.g. repository.owner) inside arguments."""
+    parts = [part.strip() for part in path.split(".") if part.strip()]
+    if not parts:
+        return []
+
+    current_values: List[Any] = [arguments]
+    for part in parts:
+        next_values: List[Any] = []
+        for current in current_values:
+            if isinstance(current, dict) and part in current:
+                next_values.append(current[part])
+            elif isinstance(current, (list, tuple, set)):
+                for item in current:
+                    if isinstance(item, dict) and part in item:
+                        next_values.append(item[part])
+        if not next_values:
+            return []
+        current_values = next_values
+
+    collected: List[str] = []
+    for value in current_values:
+        collected.extend(_extract_argument_values(value))
+    return collected
+
+
+def _extract_github_org_values(arguments: Dict[str, Any]) -> List[str]:
+    collected: List[str] = []
+    for key in ("org", "owner", "organization"):
+        collected.extend(_extract_argument_values(arguments.get(key)))
+
+    for repo_key in ("repo", "repository"):
+        for repo_value in _extract_argument_values(arguments.get(repo_key)):
+            if "/" in repo_value:
+                collected.append(repo_value.split("/", 1)[0])
+
+    repository_payload = arguments.get("repository")
+    if isinstance(repository_payload, dict):
+        collected.extend(
+            _extract_argument_values(
+                repository_payload.get("owner")
+                or repository_payload.get("organization")
+                or repository_payload.get("login")
+            )
+        )
+        for full_name in _extract_argument_values(repository_payload.get("full_name")):
+            if "/" in full_name:
+                collected.append(full_name.split("/", 1)[0])
+
+    return [value for value in collected if value]
+
+
+def _extract_github_repo_values(arguments: Dict[str, Any]) -> List[str]:
+    collected: List[str] = []
+    for key in ("repo", "repository", "name"):
+        for repo_value in _extract_argument_values(arguments.get(key)):
+            collected.append(repo_value)
+            if "/" in repo_value:
+                collected.append(repo_value.split("/", 1)[1])
+
+    repository_payload = arguments.get("repository")
+    if isinstance(repository_payload, dict):
+        full_name_values = _extract_argument_values(repository_payload.get("full_name"))
+        for full_name in full_name_values:
+            collected.append(full_name)
+            if "/" in full_name:
+                collected.append(full_name.split("/", 1)[1])
+        repo_name_values = _extract_argument_values(repository_payload.get("name"))
+        if repo_name_values:
+            collected.extend(repo_name_values)
+        else:
+            owner_values = _extract_argument_values(repository_payload.get("owner"))
+            name_values = _extract_argument_values(repository_payload.get("repo"))
+            for owner in owner_values:
+                for name in name_values:
+                    collected.append(f"{owner}/{name}")
+                    collected.append(name)
+
+    return [value for value in collected if value]
+
+
+def _extract_tracker_project_values(arguments: Dict[str, Any]) -> List[str]:
+    collected: List[str] = []
+    for key in ("project", "project_key", "projectKey", "project_id", "projectId"):
+        collected.extend(_extract_argument_values(arguments.get(key)))
+    return [value for value in collected if value]
 
 
 def _normalize_action(action: str) -> str:
