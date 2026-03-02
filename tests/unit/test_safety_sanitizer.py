@@ -4,6 +4,7 @@
 from safety_sanitizer import (
     INJECTION_REMOVAL_TOKEN,
     REDACTION_TOKEN,
+    redact_sensitive,
     redact_secrets,
     sanitize_retrieved_context_chunks,
     sanitize_untrusted_context_text,
@@ -76,6 +77,26 @@ def test_sanitize_retrieved_context_chunks_returns_aggregate_stats() -> None:
     assert stats["secret_redactions"] >= 2
     assert "AKIAABCDEFGHIJKLMNOP" not in sanitized[0]["text"]
     assert "sk-secretvalue12345" not in str(sanitized[0]["metadata"])
+
+
+def test_redact_sensitive_masks_pii_and_secrets() -> None:
+    payload = {
+        "email": "alice@example.com",
+        "phone": "+1 415-555-1212",
+        "ssn": "123-45-6789",
+        "ip": "203.0.113.10",
+        "token": "sk-secretvalue12345",
+    }
+
+    redacted, redaction_count = redact_sensitive(payload)
+
+    assert redaction_count >= 5
+    assert "alice@example.com" not in str(redacted)
+    assert "415-555-1212" not in str(redacted)
+    assert "123-45-6789" not in str(redacted)
+    assert "203.0.113.10" not in str(redacted)
+    assert "sk-secretvalue12345" not in str(redacted)
+    assert REDACTION_TOKEN in str(redacted)
 
 
 def test_redact_secrets_redacts_sensitive_key_names_even_without_known_prefixes() -> None:

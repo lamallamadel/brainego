@@ -16,6 +16,8 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from safety_sanitizer import redact_sensitive
+
 logger = logging.getLogger(__name__)
 
 _EVENT_TYPE_ALIASES = {
@@ -195,6 +197,17 @@ class AuditService:
         return value
 
     @staticmethod
+    def _sanitize_text(value: Optional[Any]) -> Optional[str]:
+        if value is None:
+            return None
+        sanitized, _ = redact_sensitive(str(value))
+        if isinstance(sanitized, str):
+            normalized = sanitized.strip()
+            if normalized:
+                return normalized
+        return None
+
+    @staticmethod
     def _normalize_status(status: Optional[str], status_code: Optional[int]) -> Optional[str]:
         normalized = str(status).strip().lower() if status is not None else ""
         if normalized:
@@ -275,7 +288,6 @@ class AuditService:
         if isinstance(request_args, dict):
             return request_args
         return {}
-
     def add_event(
         self,
         event_type: str,
@@ -309,24 +321,32 @@ class AuditService:
         resolved_event_id = event_id or str(uuid.uuid4())
         resolved_timestamp = timestamp or datetime.utcnow()
         resolved_workspace_id = self._normalize_workspace_id(workspace_id)
-        req_payload = self._coerce_json(request_payload)
-        resp_payload = self._coerce_json(response_payload)
-        meta_payload = self._coerce_json(metadata)
-        resolved_model = self._extract_model(model, req_payload, resp_payload, meta_payload)
-        resolved_status = self._normalize_status(status, status_code)
+        req_payload, _ = redact_sensitive(self._coerce_json(request_payload))
+        resp_payload, _ = redact_sensitive(self._coerce_json(response_payload))
+        meta_payload, _ = redact_sensitive(self._coerce_json(metadata))
+        safe_request_id = self._sanitize_text(request_id)
+        safe_user_id = self._sanitize_text(user_id)
+        safe_role = self._sanitize_text(role)
+        safe_tool_name = self._sanitize_text(tool_name)
+        safe_endpoint = self._sanitize_text(endpoint)
+        safe_method = self._sanitize_text(method)
+        resolved_model = self._sanitize_text(self._extract_model(model, req_payload, resp_payload, meta_payload))
+        resolved_status = self._sanitize_text(self._normalize_status(status, status_code))
         resolved_latency_ms = latency_ms if latency_ms is not None else duration_ms
         resolved_duration_ms = duration_ms if duration_ms is not None else latency_ms
         resolved_tool_calls = self._extract_tool_calls(
             explicit_tool_calls=tool_calls,
-            tool_name=tool_name,
+            tool_name=safe_tool_name,
             request_payload=req_payload,
             metadata=meta_payload,
         )
+        resolved_tool_calls, _ = redact_sensitive(resolved_tool_calls)
         resolved_redacted_arguments = self._extract_redacted_arguments(
             explicit_redacted_arguments=redacted_arguments,
             request_payload=req_payload,
             metadata=meta_payload,
         )
+        resolved_redacted_arguments, _ = redact_sensitive(resolved_redacted_arguments)
 
         conn = self._get_connection()
         try:
@@ -350,16 +370,16 @@ class AuditService:
                         resolved_event_id,
                         resolved_event_type,
                         resolved_timestamp,
-                        request_id,
+                        safe_request_id,
                         resolved_workspace_id,
-                        user_id,
-                        role,
+                        safe_user_id,
+                        safe_role,
                         resolved_model,
                         resolved_status,
-                        tool_name,
+                        safe_tool_name,
                         json.dumps(resolved_tool_calls),
-                        endpoint,
-                        method,
+                        safe_endpoint,
+                        safe_method,
                         status_code,
                         resolved_latency_ms,
                         resolved_duration_ms,

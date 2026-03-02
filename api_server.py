@@ -49,6 +49,8 @@ from workspace_context import (
 )
 from safety_sanitizer import (
     redact_secrets,
+    redact_sensitive,
+    redact_sensitive_in_text,
     redact_secrets_in_text,
     sanitize_retrieved_context_chunks,
     sanitize_untrusted_context_text,
@@ -1488,11 +1490,15 @@ def _record_metering_event(
     metadata: Optional[Dict[str, Any]] = None,
 ) -> None:
     """Best-effort metering event persistence."""
+    safe_request_id, _ = _redact_value_for_audit(request_id or "")
+    safe_metadata, _ = _redact_value_for_audit(metadata or {})
     try:
         get_metering_service().add_event(
             workspace_id=workspace_id,
             meter_key=meter_key,
             quantity=quantity,
+            request_id=safe_request_id or None,
+            metadata=safe_metadata,
             user_id=user_id,
             request_id=request_id,
             metadata=metadata,
@@ -1521,7 +1527,10 @@ class MetricsStore:
     @staticmethod
     def _normalize_user_id(value: Optional[str]) -> Optional[str]:
         if isinstance(value, str) and value.strip():
-            return value.strip()
+            redacted_value, _ = redact_sensitive_in_text(value.strip())
+            normalized = redacted_value.strip()
+            if normalized:
+                return normalized
         return None
 
     def record_request(
@@ -1778,7 +1787,10 @@ class UsageMeteringMetrics:
         if isinstance(value, str):
             normalized = value.strip()
             if normalized:
-                return normalized[:120]
+                redacted_value, _ = redact_sensitive_in_text(normalized)
+                safe_value = redacted_value.strip()
+                if safe_value:
+                    return safe_value[:120]
         return fallback
 
     def record_request(
@@ -2573,8 +2585,8 @@ def _dedupe_reason_codes(reason_codes: List[str]) -> List[str]:
 
 
 def _redact_value_for_audit(value: Any) -> Tuple[Any, int]:
-    """Redact secret-like values before logging/audit emission."""
-    return redact_secrets(value)
+    """Redact secret-like and PII-like values before audit/telemetry persistence."""
+    return redact_sensitive(value)
 
 
 def _redacted_log_preview(value: Any, limit: int = 100) -> str:
@@ -3003,6 +3015,7 @@ async def audit_request_middleware(request: Request, call_next):
                 logger.warning("Failed to record usage request metric: %s", metrics_exc)
         safe_request_payload, request_redactions = _redact_value_for_audit(request_payload)
         safe_audit_error, error_redactions = _redact_value_for_audit(audit_error or "")
+        safe_query_params, query_redactions = _redact_value_for_audit(dict(request.query_params))
         safe_query_params, query_param_redactions = _redact_value_for_audit(dict(request.query_params))
         request_model = _extract_model_name(safe_request_payload)
         tool_calls = _extract_tool_calls(safe_request_payload, fallback_tool_name=tool_name)
@@ -3020,6 +3033,7 @@ async def audit_request_middleware(request: Request, call_next):
             "request_redactions": request_redactions,
             "query_params_redactions": query_param_redactions,
             "error_redactions": error_redactions,
+            "query_redactions": query_redactions,
             "redacted_arguments": redacted_arguments,
             "event_schema": "request_event.v1",
             "role": auth_role,

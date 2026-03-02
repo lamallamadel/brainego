@@ -14,6 +14,8 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
+from safety_sanitizer import redact_sensitive
+
 logger = logging.getLogger(__name__)
 
 
@@ -85,6 +87,15 @@ class MeteringService:
         return {}
 
     @staticmethod
+    def _sanitize_text(value: Optional[Any]) -> Optional[str]:
+        if value is None:
+            return None
+        sanitized, _ = redact_sensitive(str(value))
+        if isinstance(sanitized, str):
+            normalized = sanitized.strip()
+            if normalized:
+                return normalized
+        return None
     def _normalize_optional_user_id(user_id: Any) -> Optional[str]:
         if user_id is None:
             return None
@@ -161,6 +172,7 @@ class MeteringService:
         """Persist one metering event."""
         normalized_workspace_id = self._normalize_workspace_id(workspace_id)
         normalized_meter_key = self._normalize_meter_key(meter_key)
+        safe_meter_key = self._sanitize_text(normalized_meter_key) or normalized_meter_key
         normalized_user_id = self._normalize_optional_user_id(user_id)
         quantity_value = float(quantity)
         if quantity_value < 0:
@@ -168,7 +180,8 @@ class MeteringService:
 
         resolved_event_id = event_id or str(uuid.uuid4())
         resolved_created_at = created_at or datetime.utcnow()
-        metadata_payload = self._coerce_json(metadata)
+        metadata_payload, _ = redact_sensitive(self._coerce_json(metadata))
+        safe_request_id = self._sanitize_text(request_id)
 
         conn = self._get_connection()
         try:
@@ -191,10 +204,11 @@ class MeteringService:
                     (
                         resolved_event_id,
                         normalized_workspace_id,
+                        safe_meter_key,
                         normalized_user_id,
                         normalized_meter_key,
                         quantity_value,
-                        request_id,
+                        safe_request_id,
                         json.dumps(metadata_payload),
                         resolved_created_at,
                     ),
@@ -205,6 +219,7 @@ class MeteringService:
                     "status": "success",
                     "event_id": row[0],
                     "workspace_id": normalized_workspace_id,
+                    "meter_key": safe_meter_key,
                     "user_id": normalized_user_id,
                     "meter_key": normalized_meter_key,
                     "quantity": quantity_value,

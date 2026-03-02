@@ -2,6 +2,7 @@
 
 """Unit tests for audit_service.py logic that does not require a real database."""
 
+import json
 from datetime import datetime
 
 import pytest
@@ -201,3 +202,76 @@ def test_export_events_rejects_unknown_format():
     service = AuditService.__new__(AuditService)
     with pytest.raises(ValueError, match="export_format must be one of: json, csv"):
         service.export_events(export_format="xml")
+
+
+@pytest.mark.unit
+def test_add_event_redacts_sensitive_values_before_insert() -> None:
+    service = AuditService.__new__(AuditService)
+    captured = {}
+
+    class _FakeCursor:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, query, params):
+            if "INSERT INTO audit_events" in query:
+                captured["params"] = params
+
+        def fetchone(self):
+            return ("evt-redacted", datetime(2026, 3, 1, 0, 0, 0))
+
+    class _FakeConnection:
+        def cursor(self):
+            return _FakeCursor()
+
+        def commit(self):
+            captured["committed"] = True
+
+        def rollback(self):
+            captured["rolled_back"] = True
+
+    service._get_connection = lambda: _FakeConnection()
+    service._return_connection = lambda conn: captured.setdefault("returned", True)
+
+    result = service.add_event(
+        event_type="request",
+        request_id="trace-alice@example.com",
+        endpoint="/v1/rag/query",
+        method="POST",
+        status_code=200,
+        workspace_id="ws-redaction",
+        user_id="alice@example.com",
+        role="viewer",
+        tool_name="contacts.lookup",
+        duration_ms=12.5,
+        request_payload={
+            "email": "alice@example.com",
+            "token": "sk-secretvalue12345",
+        },
+        response_payload={"client_ip": "203.0.113.10"},
+        metadata={"phone": "+1 415-555-1212"},
+        event_id="evt-fixed",
+        timestamp=datetime(2026, 3, 1, 0, 0, 0),
+    )
+
+    assert result["status"] == "success"
+    assert captured.get("committed") is True
+    params = captured["params"]
+
+    assert "alice@example.com" not in str(params)
+    assert "sk-secretvalue12345" not in str(params)
+    assert "203.0.113.10" not in str(params)
+    assert "415-555-1212" not in str(params)
+
+    request_payload = json.loads(params[17])
+    response_payload = json.loads(params[18])
+    metadata = json.loads(params[19])
+
+    assert request_payload["email"] == "[REDACTED_SECRET]"
+    assert request_payload["token"] == "[REDACTED_SECRET]"
+    assert response_payload["client_ip"] == "[REDACTED_SECRET]"
+    assert "415-555-1212" not in metadata["phone"]
+    assert "[REDACTED_SECRET]" in metadata["phone"]
