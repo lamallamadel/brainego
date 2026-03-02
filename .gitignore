@@ -205,6 +205,13 @@ backup_restore_report.json
 production_validation_report.json
 *_validation_report.json
 
+# K6 Load Test Results
+load_test_results/
+k6_results_*.json
+k6_summary_*.txt
+grafana_metrics_*.json
+k6_test_archive_*.tar.gz
+
 # EXCEPTION: Allow vendor/wheels/ for offline CI/CD (commit wheels!)
 !vendor/
 !vendor/wheels/
