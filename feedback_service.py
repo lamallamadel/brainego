@@ -28,6 +28,19 @@ class FeedbackService:
     - Per-model accuracy calculation by intent and project
     - Weekly fine-tuning dataset export with weighted samples
     """
+
+    VALID_FEEDBACK_CATEGORIES: Tuple[str, ...] = (
+        "hallucination",
+        "wrong_tool",
+        "missing_citation",
+        "policy_denial",
+    )
+    FEEDBACK_CATEGORY_ALIASES: Dict[str, str] = {
+        "hallucination": "hallucination",
+        "wrong tool": "wrong_tool",
+        "missing citation": "missing_citation",
+        "policy denial": "policy_denial",
+    }
     
     def __init__(
         self,
@@ -90,14 +103,15 @@ class FeedbackService:
         model: str,
         rating: int,
         reason: Optional[str] = None,
+        category: Optional[str] = None,
+        expected_answer: Optional[str] = None,
         memory_used: int = 0,
         tools_called: Optional[List[str]] = None,
         user_id: Optional[str] = None,
         session_id: Optional[str] = None,
         intent: Optional[str] = None,
         project: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        reason: Optional[str] = None
+        metadata: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
         Add feedback for a model response.
@@ -108,6 +122,8 @@ class FeedbackService:
             model: Model identifier
             rating: Feedback rating (1 for thumbs-up, -1 for thumbs-down)
             reason: Optional textual reason provided by the user
+            category: Optional feedback category for negative signals
+            expected_answer: Optional expected/corrected answer provided by user
             memory_used: Memory usage in bytes
             tools_called: List of tools/functions called during response
             user_id: Optional user identifier
@@ -115,7 +131,6 @@ class FeedbackService:
             intent: Detected intent (e.g., "code", "reasoning", "general")
             project: Project identifier
             metadata: Additional metadata as JSON
-            reason: Optional textual reason for the rating
         
         Returns:
             Dictionary with feedback_id and status
@@ -126,6 +141,9 @@ class FeedbackService:
         feedback_id = str(uuid.uuid4())
         tools = tools_called or []
         meta = metadata or {}
+        normalized_reason = self._normalize_optional_text(reason)
+        normalized_category = self._normalize_feedback_category(category)
+        normalized_expected_answer = self._normalize_optional_text(expected_answer)
         
         conn = self._get_connection()
         try:
@@ -135,16 +153,17 @@ class FeedbackService:
                     INSERT INTO feedback (
                         feedback_id, query, response, model, memory_used,
                         tools_called, rating, user_id, session_id,
-                        intent, project, metadata, reason
+                        intent, project, metadata, reason, category, expected_answer
                     ) VALUES (
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
                     )
                     RETURNING id, timestamp
                     """,
                     (
                         feedback_id, query, response, model, memory_used,
                         tools, rating, user_id, session_id,
-                        intent, project, json.dumps(meta), reason
+                        intent, project, json.dumps(meta), normalized_reason,
+                        normalized_category, normalized_expected_answer
                     )
                 )
                 result = cur.fetchone()
@@ -152,7 +171,7 @@ class FeedbackService:
                 
                 logger.info(
                     f"Feedback added: {feedback_id} "
-                    f"[model={model}, rating={rating}, intent={intent}]"
+                    f"[model={model}, rating={rating}, intent={intent}, category={normalized_category}]"
                 )
                 
                 return {
@@ -188,7 +207,8 @@ class FeedbackService:
                     SELECT 
                         feedback_id, query, response, model, memory_used,
                         tools_called, rating, timestamp, user_id, session_id,
-                        intent, project, metadata, reason, created_at, updated_at                      
+                        intent, project, metadata, reason, category, expected_answer,
+                        created_at, updated_at
                     FROM feedback
                     WHERE feedback_id = %s
                     """,
@@ -209,7 +229,9 @@ class FeedbackService:
         intent: Optional[str] = None,
         project: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
-        reason: Optional[str] = None
+        reason: Optional[str] = None,
+        category: Optional[str] = None,
+        expected_answer: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Update existing feedback.
@@ -220,6 +242,9 @@ class FeedbackService:
             intent: Updated intent
             project: Updated project
             metadata: Updated metadata (will be merged with existing)
+            reason: Updated textual reason
+            category: Updated feedback category
+            expected_answer: Updated expected/corrected answer
         
         Returns:
             Update status
@@ -246,6 +271,18 @@ class FeedbackService:
             if metadata is not None:
                 updates.append("metadata = metadata || %s::jsonb")
                 params.append(json.dumps(metadata))
+
+            if reason is not None:
+                updates.append("reason = %s")
+                params.append(self._normalize_optional_text(reason))
+
+            if category is not None:
+                updates.append("category = %s")
+                params.append(self._normalize_feedback_category(category))
+
+            if expected_answer is not None:
+                updates.append("expected_answer = %s")
+                params.append(self._normalize_optional_text(expected_answer))
             
             if not updates:
                 raise ValueError("No updates provided")
@@ -411,6 +448,9 @@ class FeedbackService:
                         "response": row["response"],
                         "model": row["model"],
                         "rating": row["rating"],
+                        "reason": row.get("reason"),
+                        "category": row.get("category"),
+                        "expected_answer": row.get("expected_answer"),
                         "weight": float(row["weight"]),
                         "timestamp": row["timestamp"].isoformat(),
                         "intent": row["intent"],
@@ -503,17 +543,23 @@ class FeedbackService:
         if format == "jsonl":
             with open(output_path, "w") as f:
                 for sample in dataset:
+                    preferred_output = self._normalize_training_text(
+                        sample.get("expected_answer")
+                    )
                     training_sample = {
                         "instruction": "Respond to the user input accurately and helpfully.",
                         "input": sample["query"],
-                        "output": sample["response"],
+                        "output": preferred_output or sample["response"],
                         "weight": sample["weight"],
                         "metadata": {
                             "model": sample["model"],
                             "rating": sample["rating"],
                             "timestamp": sample["timestamp"],
                             "intent": sample["intent"],
-                            "project": sample["project"]
+                            "project": sample["project"],
+                            "reason": sample.get("reason"),
+                            "category": sample.get("category"),
+                            "expected_answer": sample.get("expected_answer"),
                         }
                     }
                     f.write(json.dumps(training_sample) + "\n")
@@ -598,6 +644,25 @@ class FeedbackService:
                     params
                 )
                 stats = cur.fetchone()
+
+                cur.execute(
+                    f"""
+                    SELECT
+                        COALESCE(category, 'uncategorized') AS category,
+                        COUNT(*) AS count
+                    FROM feedback
+                    WHERE {where_sql}
+                    GROUP BY COALESCE(category, 'uncategorized')
+                    ORDER BY count DESC
+                    """,
+                    params,
+                )
+                category_counts = {
+                    row["category"]: row["count"] for row in cur.fetchall()
+                }
+
+                for category_name in self.VALID_FEEDBACK_CATEGORIES:
+                    category_counts.setdefault(category_name, 0)
                 
                 return {
                     "total_feedback": stats["total_feedback"],
@@ -607,6 +672,7 @@ class FeedbackService:
                     "avg_memory_used": int(stats["avg_memory_used"] or 0),
                     "unique_users": stats["unique_users"],
                     "unique_sessions": stats["unique_sessions"],
+                    "category_counts": category_counts,
                     "days": days,
                     "filters": {
                         "model": model,
@@ -637,3 +703,45 @@ class FeedbackService:
         if hasattr(self, 'pool'):
             self.pool.closeall()
             logger.info("Feedback Service connection pool closed")
+
+    @classmethod
+    def _normalize_feedback_category(cls, category: Optional[str]) -> Optional[str]:
+        """
+        Normalize feedback taxonomy labels to canonical snake_case values.
+
+        Accepted user inputs include:
+        - "hallucination"
+        - "wrong tool" / "wrong_tool"
+        - "missing citation" / "missing_citation"
+        - "policy denial" / "policy_denial"
+        """
+        if category is None:
+            return None
+
+        normalized = " ".join(
+            str(category)
+            .strip()
+            .lower()
+            .replace("_", " ")
+            .replace("-", " ")
+            .split()
+        )
+        if not normalized:
+            return None
+
+        canonical = cls.FEEDBACK_CATEGORY_ALIASES.get(normalized)
+        if canonical is None:
+            allowed = ", ".join(cls.VALID_FEEDBACK_CATEGORIES)
+            raise ValueError(
+                "Invalid feedback category. "
+                f"Allowed values: {allowed}"
+            )
+        return canonical
+
+    @staticmethod
+    def _normalize_optional_text(value: Optional[str]) -> Optional[str]:
+        """Normalize optional free-text fields and collapse empty strings to None."""
+        if value is None:
+            return None
+        normalized = " ".join(str(value).split()).strip()
+        return normalized or None

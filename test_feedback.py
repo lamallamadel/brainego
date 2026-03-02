@@ -46,6 +46,9 @@ def test_add_feedback():
             "response": "The answer is incorrect calculation...",
             "model": "deepseek-r1-distill-qwen-7b",
             "rating": -1,
+            "reason": "The model hallucinated a non-existent theorem.",
+            "category": "hallucination",
+            "expected_answer": "Use linear scaling: 5*12 = 60 worker-days, so 8 workers need 7.5 days.",
             "memory_used": 2048000,
             "intent": "reasoning",
             "project": "test-project-1",
@@ -97,6 +100,8 @@ def test_get_feedback(feedback_id):
         print(f"  Model: {result['model']}")
         print(f"  Rating: {'👍' if result['rating'] == 1 else '👎'}")
         print(f"  Intent: {result['intent']}")
+        print(f"  Category: {result.get('category')}")
+        print(f"  Expected Answer: {result.get('expected_answer')}")
         print(f"  Memory Used: {result['memory_used']} bytes")
         print(f"  Tools Called: {result['tools_called']}")
     except Exception as e:
@@ -109,6 +114,9 @@ def test_update_feedback(feedback_id):
     
     try:
         update_data = {
+            "reason": "Updating taxonomy after manual review",
+            "category": "wrong_tool",
+            "expected_answer": "Use a code execution tool to validate the final numeric result.",
             "intent": "code_review",
             "metadata": {"updated": True, "reviewer": "test-user"}
         }
