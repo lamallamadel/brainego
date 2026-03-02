@@ -1,22 +1,3 @@
--- ============================================================================
--- DEPRECATED: This file is kept for backward compatibility only
--- ============================================================================
---
--- The database schema has been moved to the migration system in migrations/
---
--- For new deployments, use: ./scripts/deploy/run_migrations.sh
---
--- Migration files:
---   - migrations/000_bootstrap.sql      (creates schema_migrations table)
---   - migrations/001_initial_schema.sql (content from this file)
---   - migrations/002_add_workspaces.sql (workspace and metering tables)
---
--- This file remains to support existing Docker Compose setups that use
--- docker-entrypoint-initdb.d. For production deployments, switch to the
--- migration runner for better control and tracking.
---
--- ============================================================================
-
 -- PostgreSQL initialization script for feedback collection system
 -- Database: ai_platform
 
@@ -52,11 +33,6 @@ CREATE INDEX IF NOT EXISTS idx_feedback_project ON feedback(project);
 CREATE INDEX IF NOT EXISTS idx_feedback_category ON feedback(category);
 CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON feedback(user_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_session_id ON feedback(session_id);
-
--- Backward-compatible schema migration for existing databases
-ALTER TABLE feedback ADD COLUMN IF NOT EXISTS reason TEXT;
-ALTER TABLE feedback ADD COLUMN IF NOT EXISTS category VARCHAR(64);
-ALTER TABLE feedback ADD COLUMN IF NOT EXISTS expected_answer TEXT;
 
 -- Create accuracy tracking materialized view
 CREATE MATERIALIZED VIEW IF NOT EXISTS model_accuracy_by_intent AS
@@ -190,21 +166,6 @@ CREATE TABLE IF NOT EXISTS audit_events (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
-ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS role VARCHAR(64);
-ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS model VARCHAR(255);
-ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS status VARCHAR(32);
-ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS tool_calls JSONB DEFAULT '[]'::JSONB;
-ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS latency_ms DOUBLE PRECISION;
-ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS redacted_arguments JSONB DEFAULT '{}'::JSONB;
-ALTER TABLE audit_events DROP CONSTRAINT IF EXISTS audit_events_event_type_check;
-ALTER TABLE audit_events
-    ADD CONSTRAINT audit_events_event_type_check
-    CHECK (event_type IN ('request_event', 'tool_event', 'request', 'tool_call', 'mcp_tool_call'));
-UPDATE audit_events
-SET latency_ms = duration_ms
-WHERE latency_ms IS NULL
-  AND duration_ms IS NOT NULL;
-
 CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_audit_events_workspace_id ON audit_events(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_user_id ON audit_events(user_id);
@@ -217,58 +178,6 @@ CREATE INDEX IF NOT EXISTS idx_audit_events_request_id ON audit_events(request_i
 
 GRANT ALL PRIVILEGES ON TABLE audit_events TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE audit_events_id_seq TO ai_user;
-
--- Workspace registry (tenant lifecycle)
-CREATE TABLE IF NOT EXISTS workspaces (
-    id SERIAL PRIMARY KEY,
-    workspace_id VARCHAR(255) UNIQUE NOT NULL,
-    display_name VARCHAR(255),
-    status VARCHAR(16) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'disabled')),
-    metadata JSONB DEFAULT '{}'::JSONB,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
-    disabled_at TIMESTAMP WITH TIME ZONE
-);
-
-CREATE INDEX IF NOT EXISTS idx_workspaces_workspace_id ON workspaces(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_workspaces_status ON workspaces(status);
-
-DROP TRIGGER IF EXISTS trigger_update_workspaces_timestamp ON workspaces;
-CREATE TRIGGER trigger_update_workspaces_timestamp
-    BEFORE UPDATE ON workspaces
-    FOR EACH ROW
-    EXECUTE FUNCTION update_updated_at_column();
-
-GRANT ALL PRIVILEGES ON TABLE workspaces TO ai_user;
-GRANT ALL PRIVILEGES ON SEQUENCE workspaces_id_seq TO ai_user;
-
--- Workspace/user-scoped metering events
-CREATE TABLE IF NOT EXISTS workspace_metering_events (
-    id SERIAL PRIMARY KEY,
-    event_id VARCHAR(255) UNIQUE NOT NULL,
-    workspace_id VARCHAR(255) NOT NULL,
-    user_id VARCHAR(255),
-    meter_key VARCHAR(128) NOT NULL,
-    quantity DOUBLE PRECISION NOT NULL DEFAULT 1,
-    request_id VARCHAR(255),
-    metadata JSONB DEFAULT '{}'::JSONB,
-    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
-);
-
-ALTER TABLE workspace_metering_events
-    ADD COLUMN IF NOT EXISTS user_id VARCHAR(255);
-
-CREATE INDEX IF NOT EXISTS idx_metering_workspace_id ON workspace_metering_events(workspace_id);
-CREATE INDEX IF NOT EXISTS idx_metering_user_id ON workspace_metering_events(user_id);
-CREATE INDEX IF NOT EXISTS idx_metering_meter_key ON workspace_metering_events(meter_key);
-CREATE INDEX IF NOT EXISTS idx_metering_created_at ON workspace_metering_events(created_at);
-CREATE INDEX IF NOT EXISTS idx_metering_workspace_meter_key
-    ON workspace_metering_events(workspace_id, meter_key);
-CREATE INDEX IF NOT EXISTS idx_metering_workspace_user_meter_key
-    ON workspace_metering_events(workspace_id, user_id, meter_key);
-
-GRANT ALL PRIVILEGES ON TABLE workspace_metering_events TO ai_user;
-GRANT ALL PRIVILEGES ON SEQUENCE workspace_metering_events_id_seq TO ai_user;
 
 -- Drift monitoring tables
 -- Create drift_metrics table for tracking drift detection results
@@ -285,10 +194,6 @@ CREATE TABLE IF NOT EXISTS drift_metrics (
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
-
--- Backward-compatible schema migration for existing databases
-ALTER TABLE drift_metrics ADD COLUMN IF NOT EXISTS scope_type VARCHAR(50);
-ALTER TABLE drift_metrics ADD COLUMN IF NOT EXISTS scope_value VARCHAR(255);
 
 -- Create indexes for drift_metrics
 CREATE INDEX IF NOT EXISTS idx_drift_metrics_timestamp ON drift_metrics(timestamp);

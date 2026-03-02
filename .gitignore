@@ -126,6 +126,9 @@ migration_work/
 migration_*.log
 migration_metadata.json
 
+# Database Migration System (run_migrations.sh)
+/opt/brainego/releases/*/migration.log
+
 # Kong JWT Keys and Secrets (NEVER COMMIT!)
 kong-jwt-keys/
 *.pem

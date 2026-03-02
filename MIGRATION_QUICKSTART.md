@@ -1,158 +1,179 @@
-# Docker to Kubernetes Migration - Quick Start
+# Database Migration System - Quick Start
 
-Fast-track guide for migrating AI Platform from Docker Compose to Kubernetes.
-
-## Prerequisites ✓
+## TL;DR
 
 ```bash
-# Run pre-flight check
-chmod +x preflight_check.sh
-./preflight_check.sh
-```
+# Run migrations
+./scripts/deploy/run_migrations.sh
 
-## Migration Steps
-
-### 1. Prepare Environment
-
-```bash
-# Stop Docker Compose services
-docker compose down
-
-# Create namespace
-kubectl create namespace ai-platform
-
-# Verify connection
-kubectl cluster-info
-docker volume ls
-```
-
-### 2. Run Migration
-
-**Option A: Full Automated Migration (Recommended)**
-
-```bash
-# Complete migration in one command
-python migrate_to_k8s.py full
-```
-
-**Option B: Step-by-Step Migration**
-
-```bash
-# Step 1: Export volumes
-python migrate_to_k8s.py export
-
-# Step 2: Validate exports
-python migrate_to_k8s.py validate
-
-# Step 3: Import to Kubernetes
-python migrate_to_k8s.py import
-
-# Check status
-python migrate_to_k8s.py report
-```
-
-### 3. Deploy Applications
-
-```bash
-# Deploy with Helm
-cd helm/ai-platform
-helm install ai-platform . -n ai-platform
-
-# Wait for pods
-kubectl wait --for=condition=ready pod -l app.kubernetes.io/component=database -n ai-platform --timeout=300s
-```
-
-### 4. Verify Migration
-
-```bash
-# Run verification script
-chmod +x verify_migration.sh
-./verify_migration.sh
-
-# Check PVCs
-kubectl get pvc -n ai-platform
-
-# Check pods
-kubectl get pods -n ai-platform
-```
-
-## Rollback (if needed)
-
-```bash
-# Automated rollback
-chmod +x rollback_migration.sh
-./rollback_migration.sh
-
-# Or use Python script
-python migrate_to_k8s.py rollback
-```
-
-## Quick Commands
-
-```bash
 # Check migration status
-python migrate_to_k8s.py report
-
-# View logs
-tail -f migration_*.log
-
-# Check Kubernetes events
-kubectl get events -n ai-platform --sort-by='.lastTimestamp'
-
-# Port forward services
-kubectl port-forward -n ai-platform svc/api-server 8000:8000
-kubectl port-forward -n ai-platform svc/grafana 3000:3000
+psql -h localhost -U ai_user -d ai_platform -c "SELECT * FROM schema_migrations ORDER BY version;"
 ```
 
-## Common Issues
+## Structure
 
-### Export fails
+```
+migrations/
+├── 000_bootstrap.sql          # Creates schema_migrations table
+├── 001_initial_schema.sql     # Initial schema (feedback, audit, drift, LoRA, jailbreak)
+├── 002_add_workspaces.sql     # Workspace and metering tables
+└── README.md                  # Full documentation
+```
+
+## Running Migrations
+
+### Default (local development)
+
 ```bash
-# Check Docker daemon
-docker info
-
-# Check volume exists
-docker volume inspect VOLUME_NAME
+./scripts/deploy/run_migrations.sh
 ```
 
-### Import fails
+### Custom database
+
 ```bash
-# Check PVC status
-kubectl describe pvc PVC_NAME -n ai-platform
+export PGHOST=db.example.com
+export PGPORT=5432
+export PGDATABASE=ai_platform
+export PGUSER=ai_user
+export PGPASSWORD=your_password
 
-# Check storage class
-kubectl get storageclass
+./scripts/deploy/run_migrations.sh
 ```
 
-### Pods not starting
+### Production deployment
+
 ```bash
-# Check logs
-kubectl logs POD_NAME -n ai-platform
-
-# Check events
-kubectl describe pod POD_NAME -n ai-platform
+export GIT_SHA=$(git rev-parse HEAD)
+./scripts/deploy/run_migrations.sh || exit 1
 ```
 
-## Timeline
+## Creating New Migrations
 
-- **Small env (<10GB)**: 20-35 minutes
-- **Medium env (10-50GB)**: 50-100 minutes  
-- **Large env (50-200GB)**: 100-200 minutes
-- **XL env (>200GB)**: 3-7 hours
+### Step 1: Create file
 
-## Support
+```bash
+# Naming: <version>_<description>.sql
+touch migrations/003_add_user_settings.sql
+```
 
-See detailed guide: [MIGRATION_GUIDE.md](MIGRATION_GUIDE.md)
+### Step 2: Write SQL
 
----
+```sql
+-- migrations/003_add_user_settings.sql
+CREATE TABLE IF NOT EXISTS user_settings (
+    id SERIAL PRIMARY KEY,
+    user_id VARCHAR(255) NOT NULL,
+    settings JSONB DEFAULT '{}'::JSONB,
+    created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
 
-**Quick Reference Card**
+CREATE INDEX IF NOT EXISTS idx_user_settings_user_id ON user_settings(user_id);
 
-| Phase | Command | Time |
-|-------|---------|------|
-| Pre-check | `./preflight_check.sh` | 2 min |
-| Export | `python migrate_to_k8s.py export` | 15-60 min |
-| Validate | `python migrate_to_k8s.py validate` | 5-20 min |
-| Import | `python migrate_to_k8s.py import` | 30-120 min |
-| Verify | `./verify_migration.sh` | 2 min |
-| Rollback | `./rollback_migration.sh` | 10 min |
+GRANT ALL PRIVILEGES ON TABLE user_settings TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE user_settings_id_seq TO ai_user;
+```
+
+### Step 3: Test locally
+
+```bash
+./scripts/deploy/run_migrations.sh
+```
+
+### Step 4: Commit
+
+```bash
+git add migrations/003_add_user_settings.sql
+git commit -m "feat: add user_settings table migration"
+```
+
+## Migration Status
+
+### Check applied migrations
+
+```sql
+SELECT version, applied_at, LEFT(checksum, 8) as checksum_preview
+FROM schema_migrations
+ORDER BY version;
+```
+
+### Check if table exists
+
+```sql
+SELECT EXISTS (
+    SELECT FROM information_schema.tables 
+    WHERE table_schema = 'public' 
+    AND table_name = 'your_table_name'
+);
+```
+
+## Logs
+
+```bash
+# View latest migration log
+tail -f /opt/brainego/releases/$(git rev-parse HEAD)/migration.log
+
+# View all logs
+find /opt/brainego/releases -name migration.log -exec cat {} \;
+```
+
+## Troubleshooting
+
+### Checksum mismatch
+
+**Error**: Migration file modified after being applied
+
+**Fix**: Revert changes, create new migration instead
+
+### Connection refused
+
+**Error**: Cannot connect to database
+
+**Fix**: Check `PGHOST`, `PGPORT`, verify database is running
+
+### psql not found
+
+**Error**: Command not found
+
+**Fix**: 
+```bash
+# Ubuntu/Debian
+apt-get install postgresql-client
+
+# macOS
+brew install postgresql
+```
+
+## Best Practices
+
+✅ **DO**:
+- Use `IF NOT EXISTS` for tables and indexes
+- Test migrations locally before committing
+- Keep migrations small and focused
+- Add comments explaining complex logic
+- Grant permissions to `ai_user`
+
+❌ **DON'T**:
+- Modify applied migrations (create new one instead)
+- Use `DROP TABLE` in production migrations
+- Skip version numbers
+- Put multiple unrelated changes in one migration
+
+## Environment Variables
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PGHOST` | `localhost` | PostgreSQL host |
+| `PGPORT` | `5432` | PostgreSQL port |
+| `PGDATABASE` | `ai_platform` | Database name |
+| `PGUSER` | `ai_user` | Database user |
+| `PGPASSWORD` | `ai_password` | Database password |
+| `GIT_SHA` | `git rev-parse HEAD` | Release SHA (for logs) |
+
+## Exit Codes
+
+- **0**: Success
+- **1**: Failure (check logs)
+
+## Full Documentation
+
+See `migrations/README.md` and `MIGRATION_SYSTEM.md` for complete details.
