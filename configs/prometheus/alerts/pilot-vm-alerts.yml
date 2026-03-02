@@ -1,0 +1,107 @@
+groups:
+  - name: pilot_vm_critical_alerts
+    interval: 30s
+    rules:
+      # Kong rate limit exceeded (if Kong metrics available)
+      - alert: KongRateLimitExceeded
+        expr: |
+          sum by (route, consumer) (rate(kong_http_requests_total{code="429"}[5m])) > 10
+        for: 2m
+        labels:
+          severity: warning
+          component: kong
+          pilot_critical: "true"
+        annotations:
+          summary: "Kong rate limit exceeded on route {{ $labels.route }}"
+          description: "Kong route {{ $labels.route }} is experiencing rate limit rejections (HTTP 429) for consumer {{ $labels.consumer }} at {{ $value }} requests/sec (threshold: 10 req/s)"
+          runbook_url: "docs/runbooks/PILOT_KONG_RATE_LIMIT.md"
+      
+      # High 5xx rate (spike in 5xx responses)
+      - alert: High5xxRate
+        expr: |
+          (
+            sum by (job, instance) (rate(http_requests_total{status=~"5.."}[5m])) /
+            sum by (job, instance) (rate(http_requests_total[5m]))
+          ) * 100 > 5
+        for: 3m
+        labels:
+          severity: critical
+          component: api
+          pilot_critical: "true"
+        annotations:
+          summary: "High 5xx error rate detected on {{ $labels.job }}"
+          description: "Service {{ $labels.job }} (instance {{ $labels.instance }}) has 5xx error rate of {{ $value | humanize }}% over the last 5 minutes (threshold: 5%)"
+          runbook_url: "docs/runbooks/PILOT_HIGH_5XX_RATE.md"
+      
+      # Container restart rate high (using rate of container_last_seen from cAdvisor)
+      - alert: ContainerRestartRateHigh
+        expr: |
+          rate(container_last_seen{name!=""}[15m]) > 0.01
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+          pilot_critical: "true"
+        annotations:
+          summary: "High container restart rate for {{ $labels.name }}"
+          description: "Container {{ $labels.name }} on {{ $labels.instance }} is restarting at {{ $value | humanize }} per second (threshold: 0.01/s)"
+          runbook_url: "docs/runbooks/PILOT_CONTAINER_RESTARTS.md"
+      
+      # Alternative: Container restart count increase (using increase in restart count if available)
+      - alert: ContainerRestartCountHigh
+        expr: |
+          increase(container_restarts_total{name!=""}[15m]) > 3
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+          pilot_critical: "true"
+        annotations:
+          summary: "Multiple container restarts detected for {{ $labels.name }}"
+          description: "Container {{ $labels.name }} on {{ $labels.instance }} has restarted {{ $value }} times in the last 15 minutes (threshold: 3)"
+          runbook_url: "docs/runbooks/PILOT_CONTAINER_RESTARTS.md"
+      
+      # Memory pressure detected (using container memory metrics from cAdvisor)
+      - alert: MemoryPressureDetected
+        expr: |
+          (
+            container_memory_working_set_bytes{name!=""} /
+            container_spec_memory_limit_bytes{name!=""} > 0.9
+          )
+        for: 5m
+        labels:
+          severity: critical
+          component: infrastructure
+          pilot_critical: "true"
+        annotations:
+          summary: "Memory pressure detected on container {{ $labels.name }}"
+          description: "Container {{ $labels.name }} on {{ $labels.instance }} is using {{ $value | humanizePercentage }} of its memory limit (threshold: 90%)"
+          runbook_url: "docs/runbooks/PILOT_MEMORY_PRESSURE.md"
+      
+      # Drift detected (if drift_score metric exists)
+      - alert: DriftDetected
+        expr: drift_score > 0.15
+        for: 1m
+        labels:
+          severity: warning
+          component: drift-monitor
+          pilot_critical: "true"
+        annotations:
+          summary: "Model drift detected for {{ $labels.model }}"
+          description: "Model {{ $labels.model }} drift score is {{ $value | humanize }} (threshold: 0.15) - model performance may be degrading"
+          runbook_url: "docs/runbooks/PILOT_DRIFT_DETECTED.md"
+      
+      # Drift detected placeholder (warning-only if drift_score metric doesn't exist)
+      # This rule will not fire if drift_score exists, but provides visibility
+      - alert: DriftMetricUnavailable
+        expr: |
+          absent(drift_score) == 1
+        for: 10m
+        labels:
+          severity: info
+          component: drift-monitor
+          pilot_critical: "false"
+        annotations:
+          summary: "Drift monitoring metric unavailable"
+          description: "The drift_score metric is not being reported. Drift detection may be disabled or the drift-monitor service may be down."
+          runbook_url: "docs/runbooks/PILOT_DRIFT_DETECTED.md"
