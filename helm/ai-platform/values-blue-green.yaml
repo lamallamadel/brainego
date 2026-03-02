@@ -1,0 +1,179 @@
+# Example values file for Blue-Green deployments
+# Override the main values.yaml for blue-green deployment strategy
+#
+# Usage:
+#   helm install ai-platform ./helm/ai-platform \
+#     -f values.yaml \
+#     -f values-blue-green.yaml \
+#     --namespace ai-platform-prod
+
+# Enable blue-green deployment
+blueGreen:
+  enabled: true
+  serviceName: agent-router
+  replicaCount: 3
+  port: 8000
+  targetPort: 8000
+  
+  image:
+    repository: ai-platform/api-server
+    blueTag: v1.2.3
+    greenTag: v1.2.4
+    pullPolicy: IfNotPresent
+  
+  serviceAccountName: agent-router-sa
+  configMapName: agent-router-config
+  
+  trafficSplit:
+    blue: 90
+    green: 10
+  
+  ingress:
+    enabled: true
+    className: nginx
+    host: api.production.example.com
+    enableCors: true
+    corsAllowOrigin: "https://app.example.com"
+    tls:
+      enabled: true
+    paths:
+      - path: /v1/chat/completions
+        pathType: Prefix
+      - path: /v1/embeddings
+        pathType: Prefix
+      - path: /v1/models
+        pathType: Prefix
+  
+  env:
+    - name: AGENT_ROUTER_CONFIG
+      value: /app/configs/agent-router.yaml
+    - name: QDRANT_HOST
+      value: qdrant
+    - name: QDRANT_PORT
+      value: "6333"
+    - name: QDRANT_COLLECTION
+      value: documents
+    - name: REDIS_HOST
+      value: redis
+    - name: REDIS_PORT
+      value: "6379"
+    - name: REDIS_DB
+      value: "0"
+    - name: NEO4J_URI
+      value: bolt://neo4j:7687
+    - name: NEO4J_USER
+      value: neo4j
+    - name: NEO4J_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: neo4j-credentials
+          key: password
+    - name: POSTGRES_HOST
+      value: postgres
+    - name: POSTGRES_PORT
+      value: "5432"
+    - name: POSTGRES_DB
+      value: ai_platform
+    - name: POSTGRES_USER
+      value: ai_user
+    - name: POSTGRES_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: postgres-credentials
+          key: password
+    - name: LOG_LEVEL
+      value: "INFO"
+    - name: ENABLE_TELEMETRY
+      value: "true"
+  
+  resources:
+    limits:
+      memory: 4Gi
+      cpu: 2
+    requests:
+      memory: 2Gi
+      cpu: 1
+  
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  
+  readinessProbe:
+    httpGet:
+      path: /ready
+      port: 8000
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 3
+    successThreshold: 1
+  
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - agent-router
+                - key: app.kubernetes.io/environment
+                  operator: In
+                  values:
+                    - blue
+                    - green
+            topologyKey: kubernetes.io/hostname
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - agent-router
+              - key: app.kubernetes.io/environment
+                operator: In
+                values:
+                  - blue
+                  - green
+          topologyKey: failure-domain.beta.kubernetes.io/zone
+
+# Disable standard agent-router deployment (replaced by blue-green)
+agentRouter:
+  enabled: false
+
+# Prometheus monitoring (ensure it's enabled)
+prometheus:
+  enabled: true
+
+# Grafana dashboards (ensure it's enabled)
+grafana:
+  enabled: true
+
+# RBAC for blue-green deployments
+rbac:
+  enabled: true
+  serviceAccounts:
+    agentRouter:
+      create: true
+      automountServiceAccountToken: true
+      annotations:
+        description: "Service account for blue-green agent-router deployments"
+
+# Network policies
+networkPolicies:
+  enabled: true
+  defaultDeny: false
+  allowDNS: true
+
+# Cert-manager for TLS
+certManager:
+  enabled: true
+  email: platform-team@example.com
+  issuer: letsencrypt-prod

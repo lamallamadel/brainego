@@ -1593,3 +1593,87 @@ loraControl:
     requests:
       memory: 128Mi
       cpu: 100m
+
+# Blue-Green Deployment Configuration
+blueGreen:
+  enabled: false
+  serviceName: agent-router
+  replicaCount: 2
+  port: 8000
+  targetPort: 8000
+  
+  image:
+    repository: ai-platform/api-server
+    blueTag: stable
+    greenTag: canary
+    pullPolicy: IfNotPresent
+  
+  serviceAccountName: agent-router-sa
+  configMapName: agent-router-config
+  
+  trafficSplit:
+    blue: 90
+    green: 10
+  
+  ingress:
+    enabled: true
+    className: nginx
+    host: api.your-domain.com
+    enableCors: true
+    corsAllowOrigin: "*"
+    tls:
+      enabled: true
+    paths:
+      - path: /v1/chat/completions
+        pathType: Prefix
+      - path: /v1/embeddings
+        pathType: Prefix
+  
+  env:
+    - name: AGENT_ROUTER_CONFIG
+      value: /app/configs/agent-router.yaml
+    - name: QDRANT_HOST
+      value: qdrant
+    - name: QDRANT_PORT
+      value: "6333"
+    - name: REDIS_HOST
+      value: redis
+    - name: REDIS_PORT
+      value: "6379"
+  
+  resources:
+    limits:
+      memory: 4Gi
+      cpu: 2
+    requests:
+      memory: 2Gi
+      cpu: 1
+  
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 10
+  
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+  
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - agent-router
+            topologyKey: kubernetes.io/hostname

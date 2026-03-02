@@ -1,0 +1,293 @@
+{{- if .Values.blueGreen.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.blueGreen.serviceName }}-blue
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.blueGreen.serviceName }}
+    app.kubernetes.io/component: api
+    app.kubernetes.io/environment: blue
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.blueGreen.port }}
+      targetPort: {{ .Values.blueGreen.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: {{ .Values.blueGreen.serviceName }}
+    app.kubernetes.io/environment: blue
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Values.blueGreen.serviceName }}-green
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.blueGreen.serviceName }}
+    app.kubernetes.io/component: api
+    app.kubernetes.io/environment: green
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  type: ClusterIP
+  ports:
+    - port: {{ .Values.blueGreen.port }}
+      targetPort: {{ .Values.blueGreen.targetPort }}
+      protocol: TCP
+      name: http
+  selector:
+    app.kubernetes.io/name: {{ .Values.blueGreen.serviceName }}
+    app.kubernetes.io/environment: green
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.blueGreen.serviceName }}-blue-green
+  namespace: {{ .Values.namespace.name }}
+  annotations:
+    kubernetes.io/ingress.class: {{ .Values.blueGreen.ingress.className }}
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "{{ .Values.blueGreen.trafficSplit.green }}"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    {{- if .Values.blueGreen.ingress.enableCors }}
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "{{ .Values.blueGreen.ingress.corsAllowOrigin }}"
+    nginx.ingress.kubernetes.io/cors-allow-methods: "GET, POST, PUT, DELETE, OPTIONS"
+    nginx.ingress.kubernetes.io/cors-allow-headers: "DNT,X-CustomHeader,Keep-Alive,User-Agent,X-Requested-With,If-Modified-Since,Cache-Control,Content-Type,Authorization"
+    {{- end }}
+    {{- if .Values.certManager.enabled }}
+    cert-manager.io/cluster-issuer: {{ .Values.certManager.issuer }}
+    {{- end }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.blueGreen.serviceName }}
+    app.kubernetes.io/component: ingress
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  {{- if .Values.blueGreen.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.blueGreen.ingress.host }}
+    secretName: {{ .Values.blueGreen.serviceName }}-tls
+  {{- end }}
+  rules:
+  - host: {{ .Values.blueGreen.ingress.host }}
+    http:
+      paths:
+      {{- range .Values.blueGreen.ingress.paths }}
+      - path: {{ .path }}
+        pathType: {{ .pathType }}
+        backend:
+          service:
+            name: {{ $.Values.blueGreen.serviceName }}-blue
+            port:
+              number: {{ $.Values.blueGreen.port }}
+      {{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Values.blueGreen.serviceName }}-green-canary
+  namespace: {{ .Values.namespace.name }}
+  annotations:
+    kubernetes.io/ingress.class: {{ .Values.blueGreen.ingress.className }}
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "{{ .Values.blueGreen.trafficSplit.green }}"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    {{- if .Values.blueGreen.ingress.enableCors }}
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+    nginx.ingress.kubernetes.io/cors-allow-origin: "{{ .Values.blueGreen.ingress.corsAllowOrigin }}"
+    {{- end }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.blueGreen.serviceName }}
+    app.kubernetes.io/component: ingress-canary
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  {{- if .Values.blueGreen.ingress.tls.enabled }}
+  tls:
+  - hosts:
+    - {{ .Values.blueGreen.ingress.host }}
+    secretName: {{ .Values.blueGreen.serviceName }}-tls
+  {{- end }}
+  rules:
+  - host: {{ .Values.blueGreen.ingress.host }}
+    http:
+      paths:
+      {{- range .Values.blueGreen.ingress.paths }}
+      - path: {{ .path }}
+        pathType: {{ .pathType }}
+        backend:
+          service:
+            name: {{ $.Values.blueGreen.serviceName }}-green
+            port:
+              number: {{ $.Values.blueGreen.port }}
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.blueGreen.serviceName }}-blue
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.blueGreen.serviceName }}
+    app.kubernetes.io/component: api
+    app.kubernetes.io/environment: blue
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.blueGreen.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Values.blueGreen.serviceName }}
+      app.kubernetes.io/environment: blue
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Values.blueGreen.serviceName }}
+        app.kubernetes.io/component: api
+        app.kubernetes.io/environment: blue
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.blueGreen.targetPort }}"
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- if .Values.rbac.enabled }}
+      serviceAccountName: {{ .Values.blueGreen.serviceAccountName }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.blueGreen.affinity }}
+      affinity:
+        {{- toYaml .Values.blueGreen.affinity | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Values.blueGreen.serviceName }}
+          image: "{{ .Values.blueGreen.image.repository }}:{{ .Values.blueGreen.image.blueTag }}"
+          imagePullPolicy: {{ .Values.blueGreen.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: {{ .Values.blueGreen.targetPort }}
+              protocol: TCP
+          env:
+            {{- toYaml .Values.blueGreen.env | nindent 12 }}
+            - name: DEPLOYMENT_ENV
+              value: "blue"
+          {{- if .Values.blueGreen.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.blueGreen.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.blueGreen.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.blueGreen.readinessProbe | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.blueGreen.resources | nindent 12 }}
+          volumeMounts:
+            - name: configs
+              mountPath: /app/configs
+              readOnly: true
+      volumes:
+        - name: configs
+          configMap:
+            name: {{ .Values.blueGreen.configMapName }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Values.blueGreen.serviceName }}-green
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: {{ .Values.blueGreen.serviceName }}
+    app.kubernetes.io/component: api
+    app.kubernetes.io/environment: green
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+spec:
+  replicas: {{ .Values.blueGreen.replicaCount }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: {{ .Values.blueGreen.serviceName }}
+      app.kubernetes.io/environment: green
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ .Values.blueGreen.serviceName }}
+        app.kubernetes.io/component: api
+        app.kubernetes.io/environment: green
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "{{ .Values.blueGreen.targetPort }}"
+        prometheus.io/path: "/metrics"
+    spec:
+      {{- if .Values.rbac.enabled }}
+      serviceAccountName: {{ .Values.blueGreen.serviceAccountName }}
+      {{- end }}
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if .Values.blueGreen.affinity }}
+      affinity:
+        {{- toYaml .Values.blueGreen.affinity | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: {{ .Values.blueGreen.serviceName }}
+          image: "{{ .Values.blueGreen.image.repository }}:{{ .Values.blueGreen.image.greenTag }}"
+          imagePullPolicy: {{ .Values.blueGreen.image.pullPolicy }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            runAsUser: 1000
+            capabilities:
+              drop:
+                - ALL
+          ports:
+            - name: http
+              containerPort: {{ .Values.blueGreen.targetPort }}
+              protocol: TCP
+          env:
+            {{- toYaml .Values.blueGreen.env | nindent 12 }}
+            - name: DEPLOYMENT_ENV
+              value: "green"
+          {{- if .Values.blueGreen.livenessProbe }}
+          livenessProbe:
+            {{- toYaml .Values.blueGreen.livenessProbe | nindent 12 }}
+          {{- end }}
+          {{- if .Values.blueGreen.readinessProbe }}
+          readinessProbe:
+            {{- toYaml .Values.blueGreen.readinessProbe | nindent 12 }}
+          {{- end }}
+          resources:
+            {{- toYaml .Values.blueGreen.resources | nindent 12 }}
+          volumeMounts:
+            - name: configs
+              mountPath: /app/configs
+              readOnly: true
+      volumes:
+        - name: configs
+          configMap:
+            name: {{ .Values.blueGreen.configMapName }}
+{{- end }}
