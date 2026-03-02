@@ -1,0 +1,170 @@
+name: Disaster Recovery Drill
+
+on:
+  schedule:
+    # Run quarterly on the first day of Jan, Apr, Jul, Oct at 2 AM UTC
+    - cron: '0 2 1 1,4,7,10 *'
+  workflow_dispatch:
+    inputs:
+      cluster_config:
+        description: 'Path to DR cluster config JSON'
+        required: false
+        default: ''
+
+jobs:
+  dr-drill:
+    name: Execute DR Drill
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+      
+      - name: Install dependencies
+        run: |
+          pip install --no-index --find-links=vendor/wheels \
+            boto3 \
+            botocore \
+            psycopg2-binary \
+            httpx \
+            qdrant-client
+      
+      - name: Setup MinIO for testing
+        run: |
+          docker run -d \
+            -p 9000:9000 \
+            -p 9001:9001 \
+            --name minio \
+            -e "MINIO_ROOT_USER=minioadmin" \
+            -e "MINIO_ROOT_PASSWORD=minioadmin123" \
+            minio/minio server /data --console-address ":9001"
+          
+          # Wait for MinIO to be ready
+          sleep 10
+      
+      - name: Setup test databases
+        run: |
+          # PostgreSQL
+          docker run -d \
+            -p 5432:5432 \
+            --name postgres \
+            -e POSTGRES_USER=ai_user \
+            -e POSTGRES_PASSWORD=ai_password \
+            -e POSTGRES_DB=ai_platform \
+            postgres:15
+          
+          # Qdrant
+          docker run -d \
+            -p 6333:6333 \
+            --name qdrant \
+            qdrant/qdrant:latest
+          
+          # Wait for services to be ready
+          sleep 15
+      
+      - name: Create test backups
+        run: |
+          export MINIO_ENDPOINT=localhost:9000
+          export MINIO_ACCESS_KEY=minioadmin
+          export MINIO_SECRET_KEY=minioadmin123
+          
+          # Run backup service once to create test backups
+          python backup_service.py --run-once || true
+      
+      - name: Run DR drill
+        id: dr_drill
+        env:
+          MINIO_ENDPOINT: localhost:9000
+          MINIO_ACCESS_KEY: minioadmin
+          MINIO_SECRET_KEY: minioadmin123
+          BACKUP_BUCKET: backups
+          DR_POSTGRES_HOST: localhost
+          DR_POSTGRES_PORT: 5432
+          DR_POSTGRES_DB: ai_platform_dr
+          DR_POSTGRES_USER: ai_user
+          DR_POSTGRES_PASSWORD: ai_password
+          DR_QDRANT_HOST: localhost
+          DR_QDRANT_PORT: 6333
+        run: |
+          python scripts/backup/dr_drill.py
+      
+      - name: Upload DR drill report
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: dr-drill-report
+          path: dr_drill_report_*.json
+          retention-days: 90
+      
+      - name: Parse and display results
+        if: always()
+        run: |
+          LATEST_REPORT=$(ls -t dr_drill_report_*.json 2>/dev/null | head -n1)
+          if [ -n "$LATEST_REPORT" ]; then
+            echo "## DR Drill Report" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            RTO_MET=$(python -c "import json; print('✅' if json.load(open('$LATEST_REPORT'))['rto_met'] else '❌')")
+            DATA_INTEGRITY=$(python -c "import json; print('✅' if json.load(open('$LATEST_REPORT'))['data_integrity_verified'] else '❌')")
+            DURATION=$(python -c "import json; print(f\"{json.load(open('$LATEST_REPORT'))['total_duration_seconds']:.2f}\")")
+            
+            echo "| Metric | Status |" >> $GITHUB_STEP_SUMMARY
+            echo "|--------|--------|" >> $GITHUB_STEP_SUMMARY
+            echo "| RTO Met (< 1 hour) | $RTO_MET |" >> $GITHUB_STEP_SUMMARY
+            echo "| Data Integrity | $DATA_INTEGRITY |" >> $GITHUB_STEP_SUMMARY
+            echo "| Total Duration | ${DURATION}s |" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # Show gaps if any
+            GAPS=$(python -c "import json; gaps = json.load(open('$LATEST_REPORT'))['identified_gaps']; print('\\n'.join(f'- {g}' for g in gaps) if gaps else 'None')")
+            echo "### Identified Gaps" >> $GITHUB_STEP_SUMMARY
+            echo "$GAPS" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # Show top recommendations
+            RECS=$(python -c "import json; recs = json.load(open('$LATEST_REPORT'))['recommendations']; print('\\n'.join(f'- {r}' for r in recs[:5]))")
+            echo "### Recommendations" >> $GITHUB_STEP_SUMMARY
+            echo "$RECS" >> $GITHUB_STEP_SUMMARY
+          fi
+      
+      - name: Cleanup
+        if: always()
+        run: |
+          docker stop minio postgres qdrant || true
+          docker rm minio postgres qdrant || true
+      
+      - name: Notify on failure
+        if: failure()
+        uses: actions/github-script@v6
+        with:
+          script: |
+            const issue_body = `## ⚠️ DR Drill Failed
+            
+            The automated disaster recovery drill has failed.
+            
+            **Workflow:** ${context.workflow}
+            **Run ID:** ${context.runId}
+            **Run URL:** ${context.payload.repository.html_url}/actions/runs/${context.runId}
+            
+            Please investigate the failure and take corrective action.
+            
+            ### Next Steps
+            1. Review the DR drill report artifact
+            2. Investigate identified gaps
+            3. Update disaster recovery procedures
+            4. Re-run the drill after fixes
+            `;
+            
+            github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: 'DR Drill Failed - Action Required',
+              body: issue_body,
+              labels: ['disaster-recovery', 'critical']
+            });

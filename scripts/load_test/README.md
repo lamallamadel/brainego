@@ -1,13 +1,34 @@
 # K6 Load Test Suite
 
-This directory contains the k6 load test execution pipeline for brainego, designed to validate performance SLOs in staging and production environments.
+This directory contains the k6 load test execution pipeline for brainego, designed to validate performance SLOs in staging and production environments with full CI/CD integration.
 
 ## Overview
 
-The load test suite validates the following SLOs:
+The load test suite validates the following SLOs (defined in `slo_definitions.yaml`):
 - **Error Rate**: < 0.5%
 - **P99 Latency**: < 2000ms (2 seconds)
 - **Availability**: > 99.5%
+
+## CI/CD Integration
+
+The load test suite is fully integrated into the GitHub Actions CI/CD pipeline via `.github/workflows/load-test.yml`.
+
+### Automatic Triggers
+
+The load tests run automatically on:
+1. **Every merge to master/main branch** - Validates production readiness
+2. **Daily at 2 AM UTC** - Continuous monitoring of staging environment
+3. **Manual dispatch** - On-demand testing via GitHub Actions UI
+
+### CI Pipeline Features
+
+- ✅ **Automated SLO validation** - Tests fail if any SLO is violated
+- ✅ **Prometheus integration** - Metrics exported to pushgateway for monitoring
+- ✅ **Detailed failure reports** - Comprehensive analysis of SLO violations
+- ✅ **GitHub issue creation** - Automatic incident tracking for master branch failures
+- ✅ **PR comments** - Test results posted to pull requests
+- ✅ **Artifact upload** - Full test results archived for 30 days
+- ✅ **Health checks** - Pre-flight validation of target environment
 
 ## Test Scenarios
 
@@ -132,50 +153,76 @@ Metrics pushed to Prometheus Pushgateway:
 - `1`: SLO violations detected
 - `>1`: k6 test execution failure
 
-## CI/CD Integration
+### Workflow Configuration
 
-The test suite is designed for CI/CD integration:
+The GitHub Actions workflow (`.github/workflows/load-test.yml`) requires the following secrets:
 
-### GitHub Actions Example
-
-```yaml
-name: Load Tests
-
-on:
-  schedule:
-    - cron: '0 2 * * *'  # Daily at 2 AM
-  workflow_dispatch:
-
-jobs:
-  load-test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v3
-      
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y k6 jq bc
-      
-      - name: Run k6 load tests
-        env:
-          STAGING_BASE_URL: ${{ secrets.STAGING_BASE_URL }}
-          STAGING_GATEWAY_URL: ${{ secrets.STAGING_GATEWAY_URL }}
-          STAGING_MCP_URL: ${{ secrets.STAGING_MCP_URL }}
-          PROMETHEUS_PUSHGATEWAY: ${{ secrets.PROMETHEUS_PUSHGATEWAY }}
-        run: |
-          chmod +x ./scripts/load_test/run_k6_suite.sh
-          ./scripts/load_test/run_k6_suite.sh
-      
-      - name: Upload test results
-        if: always()
-        uses: actions/upload-artifact@v3
-        with:
-          name: load-test-results
-          path: load_test_results/
+```bash
+# GitHub Secrets (configure in repository settings)
+STAGING_BASE_URL           # API server URL (e.g., https://api-staging.brainego.io)
+STAGING_GATEWAY_URL        # Gateway URL (e.g., https://gateway-staging.brainego.io)
+STAGING_MCP_URL            # MCP server URL (e.g., https://mcp-staging.brainego.io)
+PROMETHEUS_PUSHGATEWAY     # Pushgateway URL (e.g., http://pushgateway.brainego.io:9091)
 ```
 
-### GitLab CI Example
+### SLO Validation and CI Behavior
+
+The CI pipeline enforces SLO compliance and will **fail the build** if any SLO is violated:
+
+**CI Failure Conditions:**
+1. **Error Rate > 0.5%** - Too many failed requests
+2. **P99 Latency > 2000ms** - Unacceptable tail latency
+3. **Availability < 99.5%** - System reliability too low
+
+**When SLOs are violated on master branch:**
+- ❌ CI job fails with detailed error message
+- 📊 Comprehensive failure report generated (`slo_failure_report.md`)
+- 📁 All test artifacts uploaded (retained 30 days)
+- 🐛 GitHub issue automatically created with `slo-violation` label
+- 🚨 Deployment pipeline blocked
+
+**When SLOs are violated on pull requests:**
+- ❌ CI job fails, blocking merge
+- 💬 PR comment posted with test results
+- 📊 Failure details available in artifacts
+- ⚠️ Developer must fix issues before merge
+
+**Workflow Outputs:**
+
+Success:
+```
+✅ ALL SLOs PASSED - CI SUCCESSFUL
+   ✓ Error Rate:   0.123% ≤ 0.5%
+   ✓ P99 Latency:  1567ms ≤ 2000ms
+   ✓ Availability: 99.877% ≥ 99.5%
+```
+
+Failure:
+```
+❌ CI FAILED: 2 SLO violation(s) detected
+   Error Rate:   1.234% (threshold: < 0.5%)
+   P99 Latency:  2345ms (threshold: < 2000ms)
+   Availability: 98.766% (threshold: > 99.5%)
+```
+
+### Test Artifacts
+
+All test runs produce artifacts uploaded to GitHub Actions:
+
+**Always Generated:**
+- `k6_results_<timestamp>.json` - Complete k6 metrics and results
+- `k6_summary_<timestamp>.txt` - Human-readable summary
+- `grafana_metrics_<timestamp>.json` - Metrics for Grafana dashboards
+- `k6_test_archive_<timestamp>.tar.gz` - Compressed archive
+
+**Generated on Failure:**
+- `slo_failure_report.md` - Detailed failure analysis with remediation steps
+
+**Retention:** 30 days
+
+### Alternative CI Systems
+
+#### GitLab CI Example
 
 ```yaml
 load-test:
@@ -194,6 +241,29 @@ load-test:
   only:
     - schedules
     - web
+```
+
+#### Jenkins Pipeline Example
+
+```groovy
+pipeline {
+    agent any
+    stages {
+        stage('Load Test') {
+            steps {
+                sh '''
+                    chmod +x ./scripts/load_test/run_k6_suite.sh
+                    ./scripts/load_test/run_k6_suite.sh
+                '''
+            }
+        }
+    }
+    post {
+        always {
+            archiveArtifacts artifacts: 'load_test_results/**/*', fingerprint: true
+        }
+    }
+}
 ```
 
 ## Grafana Visualization

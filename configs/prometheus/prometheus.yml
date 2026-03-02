@@ -15,6 +15,7 @@ alerting:
 # Load alerting rules
 rule_files:
   - '/etc/prometheus/rules/*.yml'
+  - '/etc/prometheus/alerts/*.yml'
 
 scrape_configs:
   # Gateway Service Metrics
@@ -144,4 +145,11 @@ scrape_configs:
   - job_name: 'prometheus'
     static_configs:
       - targets: ['localhost:9090']
+    scrape_interval: 15s
+
+  # Pushgateway for k6 load test metrics
+  - job_name: 'pushgateway'
+    honor_labels: true
+    static_configs:
+      - targets: ['pushgateway:9091']
     scrape_interval: 15s

@@ -1,0 +1,115 @@
+groups:
+  - name: drift_detection_alerts
+    interval: 30s
+    rules:
+      # Model drift detected (enhanced from main alerts.yml)
+      - alert: DriftDetected
+        expr: drift_score > 0.15
+        for: 1m
+        labels:
+          severity: warning
+          component: drift-monitor
+        annotations:
+          summary: "Model drift detected"
+          description: "Model {{ $labels.model }} drift score is {{ $value }} (threshold: 0.15) - model performance may be degrading"
+          runbook_url: "https://docs.ai-platform.local/runbooks/drift-detected"
+      
+      # High drift score
+      - alert: HighDriftScore
+        expr: drift_score > 0.25
+        for: 1m
+        labels:
+          severity: critical
+          component: drift-monitor
+        annotations:
+          summary: "High model drift detected"
+          description: "Model {{ $labels.model }} drift score is {{ $value }} (threshold: 0.25) - immediate action required, consider emergency retraining"
+          runbook_url: "https://docs.ai-platform.local/runbooks/drift-critical"
+      
+      # Drift event spike
+      - alert: DriftEventSpike
+        expr: sum(increase(drift_detected_total[1h])) > 5
+        for: 5m
+        labels:
+          severity: warning
+          component: drift-monitor
+        annotations:
+          summary: "Drift event spike detected"
+          description: "Drift detections reached {{ $value }} over the last hour (threshold: 5) - multiple models may be affected"
+          runbook_url: "https://docs.ai-platform.local/runbooks/drift-spike"
+      
+      # Feature drift detected
+      - alert: FeatureDriftDetected
+        expr: feature_drift_score > 0.20
+        for: 5m
+        labels:
+          severity: warning
+          component: drift-monitor
+        annotations:
+          summary: "Feature drift detected"
+          description: "Feature {{ $labels.feature_name }} for model {{ $labels.model }} has drift score {{ $value }} - input distribution has changed"
+          runbook_url: "https://docs.ai-platform.local/runbooks/feature-drift"
+      
+      # Prediction drift (output distribution change)
+      - alert: PredictionDriftDetected
+        expr: prediction_drift_score > 0.18
+        for: 5m
+        labels:
+          severity: warning
+          component: drift-monitor
+        annotations:
+          summary: "Prediction drift detected"
+          description: "Model {{ $labels.model }} prediction distribution drift score is {{ $value }} - output patterns have changed"
+          runbook_url: "https://docs.ai-platform.local/runbooks/prediction-drift"
+      
+      # Data quality degradation
+      - alert: DataQualityDegradation
+        expr: |
+          (data_quality_null_rate > 0.05) or (data_quality_outlier_rate > 0.10)
+        for: 10m
+        labels:
+          severity: warning
+          component: drift-monitor
+        annotations:
+          summary: "Data quality degradation detected"
+          description: "Model {{ $labels.model }} input data quality has degraded (null_rate: {{ data_quality_null_rate }}, outlier_rate: {{ data_quality_outlier_rate }})"
+          runbook_url: "https://docs.ai-platform.local/runbooks/data-quality"
+      
+      # Retraining missing after drift
+      - alert: RetrainingMissingAfterDrift
+        expr: |
+          (sum(increase(drift_detected_total[6h])) > 0)
+          and on()
+          (sum(increase(finetuning_triggers_total{trigger_type="automatic"}[24h])) == 0)
+        for: 15m
+        labels:
+          severity: warning
+          component: drift-monitor
+        annotations:
+          summary: "Retraining missing after drift detections"
+          description: "Drift events were detected in the last 6h, but no automatic retraining trigger was observed in 24h - verify learning engine"
+          runbook_url: "https://docs.ai-platform.local/runbooks/retraining-missing"
+      
+      # Eval score drop warning
+      - alert: EvalScoreDropWarning
+        expr: (drift_baseline_accuracy - drift_current_accuracy) > 0.08
+        for: 10m
+        labels:
+          severity: warning
+          component: drift-monitor
+        annotations:
+          summary: "Eval score drop detected"
+          description: "Model {{ $labels.model }} current eval score dropped by {{ $value }} from baseline (warning threshold: 0.08)"
+          runbook_url: "https://docs.ai-platform.local/runbooks/eval-score-drop"
+      
+      # Eval score drop critical
+      - alert: EvalScoreDropCritical
+        expr: (drift_baseline_accuracy - drift_current_accuracy) > 0.12
+        for: 10m
+        labels:
+          severity: critical
+          component: drift-monitor
+        annotations:
+          summary: "Critical eval score regression"
+          description: "Model {{ $labels.model }} current eval score dropped by {{ $value }} from baseline (critical threshold: 0.12) - emergency intervention required"
+          runbook_url: "https://docs.ai-platform.local/runbooks/eval-score-critical"

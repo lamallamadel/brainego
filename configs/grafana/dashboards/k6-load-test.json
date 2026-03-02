@@ -1,0 +1,431 @@
+{
+  "dashboard": {
+    "title": "K6 Load Test - SLO Monitoring",
+    "tags": ["k6", "load-testing", "slo", "performance"],
+    "timezone": "browser",
+    "schemaVersion": 16,
+    "version": 1,
+    "refresh": "30s",
+    "panels": [
+      {
+        "title": "SLO Compliance Overview",
+        "type": "stat",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 4
+        },
+        "targets": [
+          {
+            "expr": "k6_slo_violations_total{environment=\"staging\"}",
+            "legendFormat": "SLO Violations",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "background",
+          "graphMode": "none",
+          "justifyMode": "auto",
+          "orientation": "auto",
+          "reduceOptions": {
+            "values": false,
+            "calcs": ["lastNotNull"],
+            "fields": ""
+          },
+          "textMode": "value"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": 0,
+                  "color": "green"
+                },
+                {
+                  "value": 1,
+                  "color": "red"
+                }
+              ]
+            },
+            "unit": "short"
+          }
+        }
+      },
+      {
+        "title": "Error Rate (SLO: < 0.5%)",
+        "type": "gauge",
+        "gridPos": {
+          "x": 0,
+          "y": 4,
+          "w": 8,
+          "h": 6
+        },
+        "targets": [
+          {
+            "expr": "k6_error_rate{environment=\"staging\"} * 100",
+            "legendFormat": "Error Rate %",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "orientation": "auto",
+          "showThresholdLabels": true,
+          "showThresholdMarkers": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": 0,
+                  "color": "green"
+                },
+                {
+                  "value": 0.3,
+                  "color": "yellow"
+                },
+                {
+                  "value": 0.5,
+                  "color": "red"
+                }
+              ]
+            },
+            "min": 0,
+            "max": 1,
+            "unit": "percent"
+          }
+        }
+      },
+      {
+        "title": "P99 Latency (SLO: < 2000ms)",
+        "type": "gauge",
+        "gridPos": {
+          "x": 8,
+          "y": 4,
+          "w": 8,
+          "h": 6
+        },
+        "targets": [
+          {
+            "expr": "k6_http_req_duration_p99{environment=\"staging\"}",
+            "legendFormat": "P99 Latency",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "orientation": "auto",
+          "showThresholdLabels": true,
+          "showThresholdMarkers": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": 0,
+                  "color": "green"
+                },
+                {
+                  "value": 1500,
+                  "color": "yellow"
+                },
+                {
+                  "value": 2000,
+                  "color": "red"
+                }
+              ]
+            },
+            "min": 0,
+            "max": 3000,
+            "unit": "ms"
+          }
+        }
+      },
+      {
+        "title": "Availability (SLO: > 99.5%)",
+        "type": "gauge",
+        "gridPos": {
+          "x": 16,
+          "y": 4,
+          "w": 8,
+          "h": 6
+        },
+        "targets": [
+          {
+            "expr": "k6_availability_percent{environment=\"staging\"}",
+            "legendFormat": "Availability",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "orientation": "auto",
+          "showThresholdLabels": true,
+          "showThresholdMarkers": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {
+                  "value": 0,
+                  "color": "red"
+                },
+                {
+                  "value": 99.0,
+                  "color": "yellow"
+                },
+                {
+                  "value": 99.5,
+                  "color": "green"
+                }
+              ]
+            },
+            "min": 98,
+            "max": 100,
+            "unit": "percent"
+          }
+        }
+      },
+      {
+        "title": "Total Requests Over Time",
+        "type": "graph",
+        "gridPos": {
+          "x": 0,
+          "y": 10,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "k6_http_reqs_total{environment=\"staging\"}",
+            "legendFormat": "Total Requests",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "short",
+            "label": "Requests",
+            "logBase": 1,
+            "min": 0
+          },
+          {
+            "format": "short",
+            "logBase": 1
+          }
+        ]
+      },
+      {
+        "title": "Failed Requests Over Time",
+        "type": "graph",
+        "gridPos": {
+          "x": 12,
+          "y": 10,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "k6_http_req_failed_total{environment=\"staging\"}",
+            "legendFormat": "Failed Requests",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "short",
+            "label": "Failed Requests",
+            "logBase": 1,
+            "min": 0
+          },
+          {
+            "format": "short",
+            "logBase": 1
+          }
+        ]
+      },
+      {
+        "title": "Error Rate Trend",
+        "type": "graph",
+        "gridPos": {
+          "x": 0,
+          "y": 18,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "k6_error_rate{environment=\"staging\"} * 100",
+            "legendFormat": "Error Rate %",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "percent",
+            "label": "Error Rate",
+            "logBase": 1,
+            "min": 0,
+            "max": 1
+          },
+          {
+            "format": "short",
+            "logBase": 1
+          }
+        ],
+        "alert": {
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [0.5],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": ["A", "5m", "now"]
+              },
+              "reducer": {
+                "params": [],
+                "type": "avg"
+              },
+              "type": "query"
+            }
+          ],
+          "executionErrorState": "alerting",
+          "frequency": "1m",
+          "handler": 1,
+          "name": "Error Rate SLO Violation",
+          "noDataState": "no_data",
+          "notifications": []
+        }
+      },
+      {
+        "title": "P99 Latency Trend",
+        "type": "graph",
+        "gridPos": {
+          "x": 12,
+          "y": 18,
+          "w": 12,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "k6_http_req_duration_p99{environment=\"staging\"}",
+            "legendFormat": "P99 Latency",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "ms",
+            "label": "Latency",
+            "logBase": 1,
+            "min": 0
+          },
+          {
+            "format": "short",
+            "logBase": 1
+          }
+        ],
+        "alert": {
+          "conditions": [
+            {
+              "evaluator": {
+                "params": [2000],
+                "type": "gt"
+              },
+              "operator": {
+                "type": "and"
+              },
+              "query": {
+                "params": ["A", "5m", "now"]
+              },
+              "reducer": {
+                "params": [],
+                "type": "avg"
+              },
+              "type": "query"
+            }
+          ],
+          "executionErrorState": "alerting",
+          "frequency": "1m",
+          "handler": 1,
+          "name": "P99 Latency SLO Violation",
+          "noDataState": "no_data",
+          "notifications": []
+        }
+      },
+      {
+        "title": "Test Execution History",
+        "type": "table",
+        "gridPos": {
+          "x": 0,
+          "y": 26,
+          "w": 24,
+          "h": 8
+        },
+        "targets": [
+          {
+            "expr": "k6_test_timestamp{environment=\"staging\"}",
+            "legendFormat": "Last Test",
+            "refId": "A",
+            "format": "table",
+            "instant": true
+          },
+          {
+            "expr": "k6_http_reqs_total{environment=\"staging\"}",
+            "legendFormat": "Total Requests",
+            "refId": "B",
+            "format": "table",
+            "instant": true
+          },
+          {
+            "expr": "k6_error_rate{environment=\"staging\"} * 100",
+            "legendFormat": "Error Rate %",
+            "refId": "C",
+            "format": "table",
+            "instant": true
+          },
+          {
+            "expr": "k6_http_req_duration_p99{environment=\"staging\"}",
+            "legendFormat": "P99 Latency",
+            "refId": "D",
+            "format": "table",
+            "instant": true
+          },
+          {
+            "expr": "k6_availability_percent{environment=\"staging\"}",
+            "legendFormat": "Availability %",
+            "refId": "E",
+            "format": "table",
+            "instant": true
+          },
+          {
+            "expr": "k6_slo_violations_total{environment=\"staging\"}",
+            "legendFormat": "SLO Violations",
+            "refId": "F",
+            "format": "table",
+            "instant": true
+          }
+        ],
+        "transformations": [
+          {
+            "id": "merge",
+            "options": {}
+          }
+        ],
+        "options": {
+          "showHeader": true
+        }
+      }
+    ]
+  }
+}

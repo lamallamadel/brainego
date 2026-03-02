@@ -1,6 +1,11 @@
 global:
   resolve_timeout: 5m
   slack_api_url: '${SLACK_WEBHOOK_URL}'
+  smtp_smarthost: '${SMTP_HOST}:${SMTP_PORT}'
+  smtp_from: 'alertmanager@ai-platform.local'
+  smtp_auth_username: '${SMTP_USERNAME}'
+  smtp_auth_password: '${SMTP_PASSWORD}'
+  smtp_require_tls: true
 
 # Templates for notifications
 templates:
@@ -15,11 +20,34 @@ route:
   repeat_interval: 4h
   
   routes:
-    # Critical alerts - immediate notification
+    # Critical alerts - immediate notification to on-call and Slack
     - match:
         severity: critical
-      receiver: 'slack-critical'
+      receiver: 'on-call-critical'
       group_wait: 5s
+      repeat_interval: 30m
+      continue: true
+    
+    # Kong gateway alerts (rate limiting, circuit breaker)
+    - match:
+        component: kong
+      receiver: 'slack-kong'
+      group_wait: 10s
+      repeat_interval: 30m
+    
+    # Circuit breaker alerts
+    - match:
+        component: circuit-breaker
+      receiver: 'slack-circuit-breaker'
+      group_wait: 10s
+      repeat_interval: 30m
+      continue: true
+    
+    # Kubernetes infrastructure alerts (pod restarts, memory pressure)
+    - match:
+        component: kubernetes
+      receiver: 'slack-kubernetes'
+      group_wait: 30s
       repeat_interval: 30m
     
     # GPU alerts
@@ -210,3 +238,154 @@ receivers:
           {{ end }}
         send_resolved: true
         color: 'danger'
+  
+  # Kong gateway alerts
+  - name: 'slack-kong'
+    slack_configs:
+      - channel: '#ai-platform-gateway'
+        title: '🚪 Kong Gateway Alert: {{ .GroupLabels.alertname }}'
+        text: |
+          *Kong Gateway Alert*
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Severity:* {{ .CommonLabels.severity }}
+          *Summary:* {{ .CommonAnnotations.summary }}
+          *Description:* {{ .CommonAnnotations.description }}
+          
+          *Gateway Status:*
+          {{ range .Alerts }}
+            • {{ .Labels.route }}: {{ .Annotations.description }}
+          {{ end }}
+        send_resolved: true
+        color: '{{ if eq .CommonLabels.severity "critical" }}danger{{ else }}warning{{ end }}'
+  
+  # Circuit breaker alerts
+  - name: 'slack-circuit-breaker'
+    slack_configs:
+      - channel: '#ai-platform-circuit-breaker'
+        title: '⚡ Circuit Breaker Alert: {{ .GroupLabels.alertname }}'
+        text: |
+          *Circuit Breaker Alert*
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Severity:* {{ .CommonLabels.severity }}
+          *Component:* {{ .CommonLabels.component }}
+          *Summary:* {{ .CommonAnnotations.summary }}
+          *Description:* {{ .CommonAnnotations.description }}
+          
+          *Circuit Status:*
+          {{ range .Alerts }}
+            • {{ .Labels.name }} ({{ .Labels.service }}): {{ .Annotations.description }}
+          {{ end }}
+        send_resolved: true
+        color: '{{ if eq .CommonLabels.severity "critical" }}danger{{ else }}warning{{ end }}'
+  
+  # Kubernetes infrastructure alerts
+  - name: 'slack-kubernetes'
+    slack_configs:
+      - channel: '#ai-platform-k8s'
+        title: '☸️ Kubernetes Alert: {{ .GroupLabels.alertname }}'
+        text: |
+          *Kubernetes Infrastructure Alert*
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Severity:* {{ .CommonLabels.severity }}
+          *Summary:* {{ .CommonAnnotations.summary }}
+          *Description:* {{ .CommonAnnotations.description }}
+          
+          *Affected Resources:*
+          {{ range .Alerts }}
+            • {{ .Labels.namespace }}/{{ .Labels.pod }}: {{ .Annotations.description }}
+          {{ end }}
+        send_resolved: true
+        color: '{{ if eq .CommonLabels.severity "critical" }}danger{{ else }}warning{{ end }}'
+  
+  # On-call critical alerts (Slack + Email + PagerDuty-style)
+  - name: 'on-call-critical'
+    slack_configs:
+      - channel: '#ai-platform-oncall'
+        title: '🚨 CRITICAL ON-CALL ALERT: {{ .GroupLabels.alertname }}'
+        text: |
+          *🚨 CRITICAL ALERT - IMMEDIATE ATTENTION REQUIRED*
+          
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Component:* {{ .CommonLabels.component }}
+          *Severity:* CRITICAL
+          *Summary:* {{ .CommonAnnotations.summary }}
+          *Description:* {{ .CommonAnnotations.description }}
+          
+          @channel @here - On-call engineer please respond!
+          
+          *Affected Services:*
+          {{ range .Alerts }}
+            • {{ .Labels.job }}: {{ .Annotations.description }}
+          {{ end }}
+          
+          *Runbook:* {{ .CommonAnnotations.runbook_url }}
+        send_resolved: true
+        color: 'danger'
+    email_configs:
+      - to: '${ONCALL_EMAIL_PRIMARY},${ONCALL_EMAIL_SECONDARY}'
+        from: 'alertmanager@ai-platform.local'
+        smarthost: '${SMTP_HOST}:${SMTP_PORT}'
+        auth_username: '${SMTP_USERNAME}'
+        auth_password: '${SMTP_PASSWORD}'
+        require_tls: true
+        headers:
+          Subject: '🚨 CRITICAL: {{ .GroupLabels.alertname }} - {{ .CommonLabels.component }}'
+          X-Priority: '1'
+        html: |
+          <html>
+          <head>
+            <style>
+              body { font-family: Arial, sans-serif; }
+              .critical { background-color: #d32f2f; color: white; padding: 10px; border-radius: 5px; }
+              .alert-details { background-color: #f5f5f5; padding: 15px; margin: 10px 0; border-left: 4px solid #d32f2f; }
+              .label { font-weight: bold; }
+            </style>
+          </head>
+          <body>
+            <div class="critical">
+              <h2>🚨 CRITICAL ON-CALL ALERT</h2>
+            </div>
+            <div class="alert-details">
+              <p><span class="label">Alert:</span> {{ .GroupLabels.alertname }}</p>
+              <p><span class="label">Component:</span> {{ .CommonLabels.component }}</p>
+              <p><span class="label">Severity:</span> CRITICAL</p>
+              <p><span class="label">Summary:</span> {{ .CommonAnnotations.summary }}</p>
+              <p><span class="label">Description:</span> {{ .CommonAnnotations.description }}</p>
+              <p><span class="label">Timestamp:</span> {{ .CommonAnnotations.timestamp }}</p>
+            </div>
+            <h3>Affected Services:</h3>
+            <ul>
+              {{ range .Alerts }}
+              <li>{{ .Labels.job }}: {{ .Annotations.description }}</li>
+              {{ end }}
+            </ul>
+            {{ if .CommonAnnotations.runbook_url }}
+            <p><span class="label">Runbook:</span> <a href="{{ .CommonAnnotations.runbook_url }}">{{ .CommonAnnotations.runbook_url }}</a></p>
+            {{ end }}
+          </body>
+          </html>
+        send_resolved: true
+  
+  # Email alerts for management/stakeholders
+  - name: 'email-management'
+    email_configs:
+      - to: '${MANAGEMENT_EMAIL_LIST}'
+        from: 'alertmanager@ai-platform.local'
+        smarthost: '${SMTP_HOST}:${SMTP_PORT}'
+        auth_username: '${SMTP_USERNAME}'
+        auth_password: '${SMTP_PASSWORD}'
+        require_tls: true
+        headers:
+          Subject: 'AI Platform Alert: {{ .GroupLabels.alertname }}'
+        html: |
+          <html>
+          <body style="font-family: Arial, sans-serif;">
+            <h2>AI Platform Alert Summary</h2>
+            <p><strong>Alert:</strong> {{ .GroupLabels.alertname }}</p>
+            <p><strong>Component:</strong> {{ .CommonLabels.component }}</p>
+            <p><strong>Severity:</strong> {{ .CommonLabels.severity }}</p>
+            <p><strong>Summary:</strong> {{ .CommonAnnotations.summary }}</p>
+            <p><strong>Count:</strong> {{ .Alerts | len }} alert(s)</p>
+          </body>
+          </html>
+        send_resolved: true

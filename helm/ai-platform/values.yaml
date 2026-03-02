@@ -94,6 +94,10 @@ rbac:
       create: true
       automountServiceAccountToken: false
       annotations: {}
+    alertmanager:
+      create: true
+      automountServiceAccountToken: true
+      annotations: {}
 
 # MAX Serve - Llama 3.3 8B (General Purpose)
 maxServeLlama:
@@ -1269,6 +1273,55 @@ prometheus:
     periodSeconds: 10
     timeoutSeconds: 5
 
+# AlertManager - Alert Routing and Notification
+alertmanager:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: prom/alertmanager
+    tag: v0.27.0
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 9093
+  resources:
+    limits:
+      memory: 1Gi
+      cpu: 500m
+    requests:
+      memory: 512Mi
+      cpu: 250m
+  retention: 120h
+  externalUrl: ""
+  extraArgs: []
+  extraEnv: []
+  persistence:
+    enabled: true
+    storageClass: ""
+    size: 10Gi
+  templates:
+    enabled: false
+  email:
+    enabled: true
+    smtp_host: "smtp.example.com"
+    smtp_port: "587"
+  livenessProbe:
+    httpGet:
+      path: /-/healthy
+      port: 9093
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /-/ready
+      port: 9093
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+  affinity: {}
+  tolerations: []
+
 # Grafana Dashboards
 grafana:
   enabled: true
@@ -1423,6 +1476,15 @@ secrets:
     postgresUsername: a29uZw==  # kong
     postgresPassword: a29uZ19wYXNzd29yZA==  # kong_password (CHANGE IN PRODUCTION)
     postgresDatabase: a29uZw==  # kong
+  
+  # AlertManager credentials and configuration
+  alertmanager:
+    slackWebhookUrl: ""  # Base64 encoded Slack webhook URL (REQUIRED)
+    smtpUsername: ""  # Base64 encoded SMTP username (optional)
+    smtpPassword: ""  # Base64 encoded SMTP password (optional)
+    oncallEmailPrimary: ""  # Base64 encoded primary on-call email
+    oncallEmailSecondary: ""  # Base64 encoded secondary on-call email
+    managementEmailList: ""  # Base64 encoded comma-separated management emails
 
 # TLS Configuration
 tls:
@@ -1679,12 +1741,15 @@ blueGreen:
             topologyKey: kubernetes.io/hostname
 
 # Vertical Pod Autoscaler (VPA) Configuration
+# Auto-generated VPA manifests are in templates/vpa.yaml
+# To regenerate: python scripts/observability/apply_vpa_recommendations.py
 vpa:
   enabled: false
   updateMode: Auto  # Options: Off, Initial, Recreate, Auto
   
-  # Gateway VPA limits
-  gateway:
+  # API Server VPA limits (updateMode: Auto)
+  apiServer:
+    updateMode: Auto
     minAllowed:
       cpu: 100m
       memory: 256Mi
@@ -1692,8 +1757,19 @@ vpa:
       cpu: 2
       memory: 4Gi
   
-  # MCPJungle VPA limits
+  # Gateway VPA limits (updateMode: Auto)
+  gateway:
+    updateMode: Auto
+    minAllowed:
+      cpu: 100m
+      memory: 256Mi
+    maxAllowed:
+      cpu: 2
+      memory: 4Gi
+  
+  # MCPJungle VPA limits (updateMode: Auto)
   mcpjungle:
+    updateMode: Auto
     minAllowed:
       cpu: 200m
       memory: 512Mi
@@ -1701,8 +1777,9 @@ vpa:
       cpu: 4
       memory: 8Gi
   
-  # Mem0 VPA limits
+  # Mem0 VPA limits (updateMode: Auto)
   mem0:
+    updateMode: Auto
     minAllowed:
       cpu: 100m
       memory: 256Mi
@@ -1710,8 +1787,9 @@ vpa:
       cpu: 2
       memory: 4Gi
   
-  # Grafana VPA limits
+  # Grafana VPA limits (updateMode: Auto)
   grafana:
+    updateMode: Auto
     minAllowed:
       cpu: 100m
       memory: 256Mi
@@ -1719,14 +1797,75 @@ vpa:
       cpu: 2
       memory: 4Gi
   
-  # Jaeger VPA limits
+  # Jaeger VPA limits (updateMode: Auto)
   jaeger:
+    updateMode: Auto
     minAllowed:
       cpu: 100m
       memory: 256Mi
     maxAllowed:
       cpu: 2
       memory: 4Gi
+  
+  # Prometheus VPA limits (updateMode: Auto)
+  prometheus:
+    updateMode: Auto
+    minAllowed:
+      cpu: 200m
+      memory: 512Mi
+    maxAllowed:
+      cpu: 4
+      memory: 8Gi
+  
+  # Redis VPA limits (updateMode: Initial - StatefulSet)
+  redis:
+    updateMode: Initial
+    minAllowed:
+      cpu: 100m
+      memory: 256Mi
+    maxAllowed:
+      cpu: 2
+      memory: 4Gi
+  
+  # Qdrant VPA limits (updateMode: Initial - StatefulSet)
+  qdrant:
+    updateMode: Initial
+    minAllowed:
+      cpu: 200m
+      memory: 512Mi
+    maxAllowed:
+      cpu: 4
+      memory: 8Gi
+  
+  # Postgres VPA limits (updateMode: Initial - StatefulSet)
+  postgres:
+    updateMode: Initial
+    minAllowed:
+      cpu: 200m
+      memory: 512Mi
+    maxAllowed:
+      cpu: 4
+      memory: 16Gi
+  
+  # Neo4j VPA limits (updateMode: Initial - StatefulSet)
+  neo4j:
+    updateMode: Initial
+    minAllowed:
+      cpu: 200m
+      memory: 512Mi
+    maxAllowed:
+      cpu: 4
+      memory: 16Gi
+  
+  # Minio VPA limits (updateMode: Initial - StatefulSet)
+  minio:
+    updateMode: Initial
+    minAllowed:
+      cpu: 100m
+      memory: 256Mi
+    maxAllowed:
+      cpu: 4
+      memory: 8Gi
 
 # API Server configuration (for resource right-sizing)
 apiServer:

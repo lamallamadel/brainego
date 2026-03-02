@@ -28,10 +28,8 @@ The `prod_deploy.py` script orchestrates the complete production deployment work
 ## Prerequisites
 
 ```bash
-# Python packages (add to requirements-deploy.txt)
-pip install pyyaml>=6.0.1
-pip install kubernetes>=28.1.0
-pip install requests>=2.31.0
+# Install Python dependencies
+pip install -r scripts/deploy/requirements-deploy.txt
 
 # Required tools
 - helm (v3.x)
@@ -358,7 +356,54 @@ After deployment, monitor:
 - Jaeger traces: `https://jaeger.example.com`
 - Kubernetes events: `kubectl get events -n ai-platform-prod`
 
+## Production Smoke Tests
+
+For comprehensive post-deployment validation with automatic rollback, see:
+
+- **[Production Smoke Test Suite](./PROD_SMOKE_TESTS_README.md)** - Complete documentation
+- **[Smoke Test Examples](./SMOKE_TEST_EXAMPLES.md)** - Practical usage examples
+
+### Quick Start
+
+```bash
+# Generate authentication token
+export AUTH_TOKEN=$(python scripts/deploy/generate_smoke_test_token.py \
+  --method rs256 \
+  --private-key kong-jwt-keys/kong-jwt-private.pem \
+  --key-id admin-key \
+  --subject smoke-test-user \
+  --workspace-id prod-workspace)
+
+# Run comprehensive smoke tests
+python scripts/deploy/prod_smoke_tests.py \
+  --base-url https://api.your-domain.com \
+  --workspace-id prod-workspace \
+  --auth-token $AUTH_TOKEN \
+  --prometheus-url http://prometheus:9090 \
+  --enable-rollback \
+  --namespace ai-platform-prod \
+  --release-name ai-platform
+```
+
+### Integrated Deployment with Smoke Tests
+
+```bash
+# Deploy with automatic smoke tests and rollback
+bash scripts/deploy/deploy_with_smoke_tests.sh
+```
+
+The smoke test suite validates:
+- Kong authentication enforcement
+- Kong rate limiting configuration
+- Chat completion API with workspace quota
+- RAG query API with citation validation
+- MCP tools API with RBAC enforcement
+- Prometheus metrics (zero errors in last 5 minutes)
+- Pod readiness status
+
 ## Rollback
+
+### Manual Rollback
 
 If deployment fails:
 
@@ -368,4 +413,28 @@ helm rollback ai-platform -n ai-platform-prod
 
 # Or rollback to specific revision
 helm rollback ai-platform 1 -n ai-platform-prod
+
+# Using rollback script
+bash scripts/deploy/rollback.sh
 ```
+
+### Automatic Rollback
+
+The smoke test suite provides one-click rollback:
+
+```bash
+# Enable automatic rollback on smoke test failure
+python scripts/deploy/prod_smoke_tests.py \
+  --base-url https://api.your-domain.com \
+  --workspace-id prod-workspace \
+  --auth-token $AUTH_TOKEN \
+  --enable-rollback \
+  --namespace ai-platform-prod \
+  --release-name ai-platform
+```
+
+Exit codes:
+- `0`: Tests passed
+- `1`: Tests failed (no rollback)
+- `2`: Tests failed, rollback completed
+- `3`: Tests failed, rollback failed (manual intervention required)

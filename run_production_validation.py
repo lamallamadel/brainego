@@ -24,9 +24,10 @@ logger = logging.getLogger(__name__)
 class ProductionValidator:
     """Orchestrate production validation tests"""
 
-    def __init__(self, skip_tests: List[str] = None, chaos_advanced: bool = False):
+    def __init__(self, skip_tests: List[str] = None, chaos_advanced: bool = False, chaos_suite: str = None):
         self.skip_tests = skip_tests or []
         self.chaos_advanced = chaos_advanced
+        self.chaos_suite = chaos_suite
         self.results = {
             'timestamp': datetime.now().isoformat(),
             'tests': {},
@@ -164,22 +165,26 @@ class ProductionValidator:
             logger.error(f'✗ k6 load test failed: {result["stderr"]}')
             return False
 
-    def run_chaos_engineering(self, advanced: bool = False) -> bool:
+    def run_chaos_engineering(self, advanced: bool = False, chaos_suite: str = None) -> bool:
         """Run chaos engineering tests"""
         if 'chaos' in self.skip_tests:
             logger.info('Skipping chaos engineering')
             return True
 
         logger.info('=' * 60)
-        if advanced:
+        if chaos_suite:
+            logger.info(f'Running Chaos Engineering Tests - Suite: {chaos_suite.upper()}')
+        elif advanced:
             logger.info('Running Advanced Chaos Engineering Tests')
         else:
             logger.info('Running Chaos Engineering Tests')
         logger.info('=' * 60)
 
-        # Run Python script directly with advanced flag if needed
+        # Run Python script directly with flags
         cmd = ['python', 'chaos_engineering.py']
-        if advanced:
+        if chaos_suite:
+            cmd.extend(['--chaos-suite', chaos_suite])
+        elif advanced:
             cmd.append('--advanced')
         
         result = self.run_command(cmd, timeout=2400)
@@ -188,6 +193,7 @@ class ProductionValidator:
             'status': 'passed' if result['success'] else 'failed',
             'output': result['stdout'][-1000:],
             'advanced': advanced,
+            'chaos_suite': chaos_suite,
         }
 
         if result['success']:
@@ -199,11 +205,21 @@ class ProductionValidator:
                     chaos_results = json.load(f)
                 self.results['tests']['chaos_engineering']['report'] = chaos_results
                 
-                resilience_score = chaos_results.get('resilience_score', 0)
+                # Log overall resilience score
+                resilience_score = chaos_results.get('overall_resilience_score', 0)
                 if resilience_score >= 90:
                     logger.info(f'✓ Excellent resilience score: {resilience_score}%')
                 else:
                     logger.warning(f'⚠ Resilience score needs improvement: {resilience_score}%')
+                
+                # Log per-service resilience scores
+                service_scores = chaos_results.get('service_resilience_scores', {})
+                if service_scores:
+                    logger.info('Per-Service Resilience Scores:')
+                    for service, score in service_scores.items():
+                        status = '✓' if score >= 90 else '⚠' if score >= 75 else '✗'
+                        logger.info(f'  {status} {service}: {score}%')
+                        
             except Exception as e:
                 logger.warning(f'Could not read chaos report: {e}')
                 
@@ -411,7 +427,7 @@ class ProductionValidator:
         self.run_k6_load_test()
         time.sleep(5)
 
-        self.run_chaos_engineering(advanced=self.chaos_advanced)
+        self.run_chaos_engineering(advanced=self.chaos_advanced, chaos_suite=self.chaos_suite)
         time.sleep(10)
 
         self.run_security_audit()
@@ -455,6 +471,11 @@ def main():
         action='store_true',
         help='Run advanced chaos engineering tests (network partition, memory pressure, database failover)'
     )
+    parser.add_argument(
+        '--chaos-suite',
+        choices=['basic', 'advanced'],
+        help='Chaos test suite: basic (pod kills + CPU saturation) or advanced (+ network partitions + memory pressure + DB failover)'
+    )
 
     args = parser.parse_args()
 
@@ -462,7 +483,11 @@ def main():
     if args.quick:
         skip_tests.extend(['chaos', 'k6'])
 
-    validator = ProductionValidator(skip_tests=skip_tests, chaos_advanced=args.chaos)
+    validator = ProductionValidator(
+        skip_tests=skip_tests, 
+        chaos_advanced=args.chaos, 
+        chaos_suite=args.chaos_suite
+    )
     exit_code = validator.run_validation()
     sys.exit(exit_code)
 
