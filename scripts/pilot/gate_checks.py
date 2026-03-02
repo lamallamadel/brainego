@@ -1904,12 +1904,12 @@ def main() -> int:
     parser.add_argument(
         "--smoke-staging",
         action="store_true",
-        help="Run smoke tests (API calls, metrics/health, log scrubbing)",
+        help="Run smoke tests sequentially (API calls, metrics/health, log scrubbing)",
     )
     parser.add_argument(
         "--smoke-only",
         action="store_true",
-        help="Run smoke tests only (alias for --smoke-staging, skips pytest)",
+        help="Alias for --smoke-staging",
     )
     parser.add_argument(
         "--smoke-api",
@@ -1939,13 +1939,17 @@ def main() -> int:
     if args.smoke_api and not args.smoke_staging and not args.smoke_only:
         return smoke_test_real_api_calls()
     
-    # Handle --smoke-staging or --smoke-only mode
-    if args.smoke_staging or args.smoke_only:
-        # Determine if we should run pytest first
-        run_pytest_first = args.run_pytest and not args.smoke_only
+    # Treat --smoke-only as an alias for --smoke-staging
+    if args.smoke_only:
+        args.smoke_staging = True
+    
+    # Handle --smoke-staging mode
+    if args.smoke_staging:
+        # Determine if we should run pytest first (can be chained)
+        run_pytest_first = args.run_pytest
         overall_exit_code = 0
         
-        # Run pytest first if requested and not --smoke-only
+        # Run pytest first if requested (can be chained with --smoke-staging)
         if run_pytest_first:
             print("=" * 60)
             print("Running Integration Tests via pytest")
