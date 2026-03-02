@@ -126,6 +126,8 @@ jobs:
             --mode policy \
             --fail-on critical \
             --output artifacts/adversarial_report.json
+            --candidate-output artifacts/lora_candidate_outputs.json \
+            --max-mean-score-drop-pct 0.05
       
       # Upload test results
       - name: Upload test results
