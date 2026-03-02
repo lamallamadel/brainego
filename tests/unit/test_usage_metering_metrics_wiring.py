@@ -47,6 +47,10 @@ def test_usage_metering_dashboard_exists_and_references_new_metrics() -> None:
     assert "api_usage_latency_seconds_bucket" in USAGE_DASHBOARD_SOURCE
     assert "workspace_id" in USAGE_DASHBOARD_SOURCE
     assert "user_id" in USAGE_DASHBOARD_SOURCE
+    assert "Latency Percentiles (p50/p95/p99) by Workspace" in USAGE_DASHBOARD_SOURCE
+    assert "histogram_quantile(0.50" in USAGE_DASHBOARD_SOURCE
+    assert "histogram_quantile(0.95" in USAGE_DASHBOARD_SOURCE
+    assert "histogram_quantile(0.99" in USAGE_DASHBOARD_SOURCE
 
 
 def test_metering_summary_endpoint_supports_user_scope_filter() -> None:
