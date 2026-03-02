@@ -1,0 +1,1170 @@
+# Multi-Region Deployment Values for AI Platform
+# Optimized for geo-distributed deployments with cross-region replication
+
+# Global settings
+global:
+  namespace: ai-platform
+  region: us-west-1  # Override per region deployment
+  multiRegion:
+    enabled: true
+    primaryRegion: us-west-1
+    regions:
+      - us-west-1
+      - us-east-1
+      - eu-west-1
+      - ap-southeast-1
+    replicationStrategy: async  # async or sync
+
+# Namespace configuration
+namespace:
+  create: true
+  name: ai-platform
+
+# Image pull secrets
+imagePullSecrets: []
+
+# Network Policies Configuration
+networkPolicies:
+  enabled: true
+  defaultDeny: true
+  allowDNS: true
+  allowCrossRegion: true  # Allow cross-region communication
+
+# RBAC Configuration
+rbac:
+  enabled: true
+  serviceAccounts:
+    gateway:
+      create: true
+      automountServiceAccountToken: true
+      annotations:
+        iam.gke.io/gcp-service-account: gateway-sa@project.iam.gserviceaccount.com
+    agentRouter:
+      create: true
+      automountServiceAccountToken: true
+    mcpjungle:
+      create: true
+      automountServiceAccountToken: true
+    maxServeLlama:
+      create: true
+      automountServiceAccountToken: false
+    maxServeQwen:
+      create: true
+      automountServiceAccountToken: false
+    maxServeDeepseek:
+      create: true
+      automountServiceAccountToken: false
+    learningEngine:
+      create: true
+      automountServiceAccountToken: true
+    mamlService:
+      create: true
+      automountServiceAccountToken: true
+    mem0:
+      create: true
+      automountServiceAccountToken: true
+    postgres:
+      create: true
+      automountServiceAccountToken: true
+    redis:
+      create: true
+      automountServiceAccountToken: false
+    qdrant:
+      create: true
+      automountServiceAccountToken: true
+    neo4j:
+      create: true
+      automountServiceAccountToken: false
+    minio:
+      create: true
+      automountServiceAccountToken: false
+    prometheus:
+      create: true
+      automountServiceAccountToken: true
+    grafana:
+      create: true
+      automountServiceAccountToken: true
+    jaeger:
+      create: true
+      automountServiceAccountToken: false
+
+# MAX Serve - Llama 3.3 8B (GPU node affinity)
+maxServeLlama:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: modular/max-serve
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8080
+    targetPort: 8080
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+      memory: 16Gi
+      cpu: 8
+    requests:
+      nvidia.com/gpu: 1
+      memory: 8Gi
+      cpu: 4
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    scaleUpStabilizationWindowSeconds: 60
+    scaleDownStabilizationWindowSeconds: 300
+    customMetrics:
+      enabled: true
+      inferenceQueueDepthThreshold: 10
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  # Regional GPU node affinity
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values:
+                  - gpu-accelerated
+                  - p3.2xlarge
+                  - g4dn.xlarge
+                  - n1-standard-4-nvidia-tesla-t4
+              - key: topology.kubernetes.io/region
+                operator: In
+                values:
+                  - "{{ .Values.global.region }}"
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - max-serve-llama
+            topologyKey: kubernetes.io/hostname
+  env:
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "all"
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"
+    - name: REGION
+      value: "{{ .Values.global.region }}"
+  args:
+    - max-serve
+    - --model-path
+    - /models/llama-3.3-8b-instruct-q4_k_m.gguf
+    - --host
+    - "0.0.0.0"
+    - --port
+    - "8080"
+    - --max-batch-size
+    - "32"
+    - --max-waiting-time
+    - "10"
+    - --max-tokens
+    - "2048"
+  persistence:
+    models:
+      enabled: true
+      existingClaim: ""
+      storageClass: "regional-ssd"  # Regional persistent disk
+      size: 50Gi
+      mountPath: /models
+    configs:
+      enabled: true
+      existingClaim: ""
+      storageClass: "regional-ssd"
+      size: 1Gi
+      mountPath: /configs
+    logs:
+      enabled: true
+      existingClaim: ""
+      storageClass: "regional-ssd"
+      size: 10Gi
+      mountPath: /logs
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8080
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# MAX Serve - Qwen 2.5 Coder 7B (GPU node affinity)
+maxServeQwen:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: modular/max-serve
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8081
+    targetPort: 8081
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+      memory: 16Gi
+      cpu: 8
+    requests:
+      nvidia.com/gpu: 1
+      memory: 8Gi
+      cpu: 4
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    scaleUpStabilizationWindowSeconds: 60
+    scaleDownStabilizationWindowSeconds: 300
+    customMetrics:
+      enabled: true
+      inferenceQueueDepthThreshold: 10
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  # Regional GPU node affinity
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values:
+                  - gpu-accelerated
+                  - p3.2xlarge
+                  - g4dn.xlarge
+                  - n1-standard-4-nvidia-tesla-t4
+              - key: topology.kubernetes.io/region
+                operator: In
+                values:
+                  - "{{ .Values.global.region }}"
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - max-serve-qwen
+            topologyKey: kubernetes.io/hostname
+  env:
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "all"
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"
+    - name: REGION
+      value: "{{ .Values.global.region }}"
+  args:
+    - max-serve
+    - --model-path
+    - /models/qwen2.5-coder-7b-instruct-q4_k_m.gguf
+    - --host
+    - "0.0.0.0"
+    - --port
+    - "8081"
+    - --max-batch-size
+    - "32"
+    - --max-waiting-time
+    - "10"
+    - --max-tokens
+    - "4096"
+  persistence:
+    models:
+      enabled: true
+      existingClaim: ""
+      storageClass: "regional-ssd"
+      size: 50Gi
+      mountPath: /models
+    configs:
+      enabled: true
+      existingClaim: ""
+      storageClass: "regional-ssd"
+      size: 1Gi
+      mountPath: /configs
+    logs:
+      enabled: true
+      existingClaim: ""
+      storageClass: "regional-ssd"
+      size: 10Gi
+      mountPath: /logs
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8081
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8081
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# MAX Serve - DeepSeek R1 7B (GPU node affinity)
+maxServeDeepseek:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: modular/max-serve
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8082
+    targetPort: 8082
+  resources:
+    limits:
+      nvidia.com/gpu: 1
+      memory: 16Gi
+      cpu: 8
+    requests:
+      nvidia.com/gpu: 1
+      memory: 8Gi
+      cpu: 4
+  autoscaling:
+    enabled: true
+    minReplicas: 2
+    maxReplicas: 10
+    targetCPUUtilizationPercentage: 70
+    scaleUpStabilizationWindowSeconds: 60
+    scaleDownStabilizationWindowSeconds: 300
+    customMetrics:
+      enabled: true
+      inferenceQueueDepthThreshold: 10
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+  # Regional GPU node affinity
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: node.kubernetes.io/instance-type
+                operator: In
+                values:
+                  - gpu-accelerated
+                  - p3.2xlarge
+                  - g4dn.xlarge
+                  - n1-standard-4-nvidia-tesla-t4
+              - key: topology.kubernetes.io/region
+                operator: In
+                values:
+                  - "{{ .Values.global.region }}"
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - max-serve-deepseek
+            topologyKey: kubernetes.io/hostname
+  env:
+    - name: NVIDIA_VISIBLE_DEVICES
+      value: "all"
+    - name: CUDA_VISIBLE_DEVICES
+      value: "0"
+    - name: REGION
+      value: "{{ .Values.global.region }}"
+  args:
+    - max-serve
+    - --model-path
+    - /models/deepseek-r1-distill-qwen-7b-q4_k_m.gguf
+    - --host
+    - "0.0.0.0"
+    - --port
+    - "8082"
+    - --max-batch-size
+    - "32"
+    - --max-waiting-time
+    - "10"
+    - --max-tokens
+    - "4096"
+  persistence:
+    models:
+      enabled: true
+      existingClaim: ""
+      storageClass: "regional-ssd"
+      size: 50Gi
+      mountPath: /models
+    configs:
+      enabled: true
+      existingClaim: ""
+      storageClass: "regional-ssd"
+      size: 1Gi
+      mountPath: /configs
+    logs:
+      enabled: true
+      existingClaim: ""
+      storageClass: "regional-ssd"
+      size: 10Gi
+      mountPath: /logs
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8082
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8082
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Agent Router API Server
+agentRouter:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: ai-platform/api-server
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 8000
+    targetPort: 8000
+    metricsPort: 8001
+  resources:
+    limits:
+      memory: 4Gi
+      cpu: 2
+    requests:
+      memory: 2Gi
+      cpu: 1
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - agent-router
+            topologyKey: kubernetes.io/hostname
+  env:
+    - name: AGENT_ROUTER_CONFIG
+      value: /app/configs/agent-router.yaml
+    - name: QDRANT_HOST
+      value: qdrant
+    - name: QDRANT_PORT
+      value: "6333"
+    - name: QDRANT_COLLECTION
+      value: documents
+    - name: REDIS_HOST
+      value: redis
+    - name: REDIS_PORT
+      value: "6379"
+    - name: REDIS_DB
+      value: "0"
+    - name: POSTGRES_HOST
+      value: postgres
+    - name: POSTGRES_PORT
+      value: "5432"
+    - name: POSTGRES_DB
+      value: ai_platform
+    - name: POSTGRES_USER
+      value: ai_user
+    - name: POSTGRES_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: postgres-credentials
+          key: password
+    - name: REGION
+      value: "{{ .Values.global.region }}"
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 8000
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Gateway Service
+gateway:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: ai-platform/gateway
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: LoadBalancer
+    port: 9002
+    targetPort: 9002
+    annotations:
+      service.beta.kubernetes.io/aws-load-balancer-type: nlb
+      service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+  resources:
+    limits:
+      memory: 2Gi
+      cpu: 1
+    requests:
+      memory: 1Gi
+      cpu: 500m
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchExpressions:
+                - key: app.kubernetes.io/name
+                  operator: In
+                  values:
+                    - gateway
+            topologyKey: kubernetes.io/hostname
+  env:
+    - name: AGENT_ROUTER_CONFIG
+      value: /app/configs/agent-router.yaml
+    - name: QDRANT_HOST
+      value: qdrant
+    - name: QDRANT_PORT
+      value: "6333"
+    - name: REDIS_HOST
+      value: redis
+    - name: REDIS_PORT
+      value: "6379"
+    - name: REGION
+      value: "{{ .Values.global.region }}"
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 9002
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 9002
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Qdrant Vector Database (StatefulSet with cross-region replication)
+qdrant:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: qdrant/qdrant
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 6333
+    grpcPort: 6334
+  resources:
+    limits:
+      memory: 16Gi
+      cpu: 8
+    requests:
+      memory: 8Gi
+      cpu: 4
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  # Regional storage affinity
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: topology.kubernetes.io/region
+                operator: In
+                values:
+                  - "{{ .Values.global.region }}"
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - qdrant
+          topologyKey: kubernetes.io/hostname
+  env:
+    - name: QDRANT__SERVICE__GRPC_PORT
+      value: "6334"
+    - name: QDRANT__CLUSTER__ENABLED
+      value: "true"
+    - name: QDRANT__CLUSTER__P2P__PORT
+      value: "6335"
+    - name: REGION
+      value: "{{ .Values.global.region }}"
+  persistence:
+    enabled: true
+    storageClass: "regional-pd-ssd"  # Regional persistent disk for stateful workloads
+    size: 200Gi
+    mountPath: /qdrant/storage
+  # Cross-region replication configuration
+  replication:
+    enabled: true
+    peers:
+      - region: us-west-1
+        endpoint: qdrant.us-west-1.ai-platform.svc.cluster.local:6334
+      - region: us-east-1
+        endpoint: qdrant.us-east-1.ai-platform.svc.cluster.local:6334
+      - region: eu-west-1
+        endpoint: qdrant.eu-west-1.ai-platform.svc.cluster.local:6334
+      - region: ap-southeast-1
+        endpoint: qdrant.ap-southeast-1.ai-platform.svc.cluster.local:6334
+  livenessProbe:
+    httpGet:
+      path: /health
+      port: 6333
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /health
+      port: 6333
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Redis Cache (StatefulSet)
+redis:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: redis
+    tag: 7-alpine
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 6379
+  resources:
+    limits:
+      memory: 8Gi
+      cpu: 4
+    requests:
+      memory: 4Gi
+      cpu: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - redis
+          topologyKey: kubernetes.io/hostname
+  args:
+    - redis-server
+    - --appendonly
+    - "yes"
+    - --maxmemory
+    - 4gb
+    - --maxmemory-policy
+    - allkeys-lru
+    - --save
+    - "900 1 300 10 60 10000"
+  persistence:
+    enabled: true
+    storageClass: "regional-pd-ssd"
+    size: 20Gi
+    mountPath: /data
+  livenessProbe:
+    exec:
+      command:
+        - redis-cli
+        - ping
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    exec:
+      command:
+        - redis-cli
+        - ping
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# PostgreSQL Database (StatefulSet with pglogical replication)
+postgres:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: postgres
+    tag: 15-alpine
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 5432
+  resources:
+    limits:
+      memory: 8Gi
+      cpu: 4
+    requests:
+      memory: 4Gi
+      cpu: 2
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  # Regional storage affinity for stateful workloads
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: topology.kubernetes.io/region
+                operator: In
+                values:
+                  - "{{ .Values.global.region }}"
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - postgres
+          topologyKey: kubernetes.io/hostname
+  env:
+    - name: POSTGRES_DB
+      value: ai_platform
+    - name: POSTGRES_USER
+      value: ai_user
+    - name: POSTGRES_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: postgres-credentials
+          key: password
+    - name: PGDATA
+      value: /var/lib/postgresql/data/pgdata
+    # pglogical configuration
+    - name: POSTGRES_INITDB_ARGS
+      value: "--encoding=UTF8 --locale=en_US.UTF-8"
+    - name: REGION
+      value: "{{ .Values.global.region }}"
+  persistence:
+    enabled: true
+    storageClass: "regional-pd-ssd"  # Regional persistent disk for database
+    size: 100Gi
+    mountPath: /var/lib/postgresql/data
+  initScripts:
+    enabled: true
+    mountPath: /docker-entrypoint-initdb.d
+  # Cross-region replication configuration
+  replication:
+    enabled: true
+    mode: pglogical  # pglogical or patroni
+    primaryRegion: us-west-1
+    replicaRegions:
+      - us-east-1
+      - eu-west-1
+      - ap-southeast-1
+    # pglogical specific settings
+    pglogical:
+      providerDsn: "host=postgres.us-west-1.ai-platform.svc.cluster.local port=5432 dbname=ai_platform user=replication_user password=replication_password"
+      subscriberDsn: "host=postgres port=5432 dbname=ai_platform user=ai_user"
+      replicationSets:
+        - default
+        - ai_platform_set
+  livenessProbe:
+    exec:
+      command:
+        - /bin/sh
+        - -c
+        - pg_isready -U ai_user -d ai_platform
+    initialDelaySeconds: 30
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    exec:
+      command:
+        - /bin/sh
+        - -c
+        - pg_isready -U ai_user -d ai_platform
+    initialDelaySeconds: 15
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Neo4j Knowledge Graph (StatefulSet)
+neo4j:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: neo4j
+    tag: 5.15-enterprise
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    httpPort: 7474
+    boltPort: 7687
+  resources:
+    limits:
+      memory: 16Gi
+      cpu: 8
+    requests:
+      memory: 8Gi
+      cpu: 4
+  # Regional storage affinity
+  affinity:
+    nodeAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+          - matchExpressions:
+              - key: topology.kubernetes.io/region
+                operator: In
+                values:
+                  - "{{ .Values.global.region }}"
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - neo4j
+          topologyKey: kubernetes.io/hostname
+  env:
+    - name: NEO4J_AUTH
+      value: neo4j/neo4j_password
+    - name: NEO4J_dbms_memory_pagecache_size
+      value: 2G
+    - name: NEO4J_dbms_memory_heap_initial__size
+      value: 2G
+    - name: NEO4J_dbms_memory_heap_max__size
+      value: 4G
+    - name: NEO4J_dbms_mode
+      value: CORE
+    - name: NEO4J_causal__clustering_minimum__core__cluster__size__at__formation
+      value: "3"
+    - name: NEO4J_causal__clustering_initial__discovery__members
+      value: neo4j-0.neo4j:5000,neo4j-1.neo4j:5000,neo4j-2.neo4j:5000
+    - name: REGION
+      value: "{{ .Values.global.region }}"
+  persistence:
+    data:
+      enabled: true
+      storageClass: "regional-pd-ssd"
+      size: 100Gi
+      mountPath: /data
+    logs:
+      enabled: true
+      storageClass: "regional-pd-ssd"
+      size: 10Gi
+      mountPath: /logs
+  livenessProbe:
+    httpGet:
+      path: /
+      port: 7474
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /
+      port: 7474
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# MinIO Object Storage (StatefulSet)
+minio:
+  enabled: true
+  replicaCount: 3
+  image:
+    repository: minio/minio
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    apiPort: 9000
+    consolePort: 9001
+  resources:
+    limits:
+      memory: 8Gi
+      cpu: 4
+    requests:
+      memory: 4Gi
+      cpu: 2
+  affinity:
+    podAntiAffinity:
+      requiredDuringSchedulingIgnoredDuringExecution:
+        - labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - minio
+          topologyKey: kubernetes.io/hostname
+  env:
+    - name: MINIO_ROOT_USER
+      valueFrom:
+        secretKeyRef:
+          name: minio-credentials
+          key: accessKey
+    - name: MINIO_ROOT_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: minio-credentials
+          key: secretKey
+    - name: REGION
+      value: "{{ .Values.global.region }}"
+  args:
+    - server
+    - /data
+    - --console-address
+    - ":9001"
+  persistence:
+    enabled: true
+    storageClass: "regional-pd-ssd"
+    size: 200Gi
+    mountPath: /data
+  livenessProbe:
+    httpGet:
+      path: /minio/health/live
+      port: 9000
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /minio/health/live
+      port: 9000
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Prometheus Monitoring
+prometheus:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: prom/prometheus
+    tag: v2.48.0
+    pullPolicy: IfNotPresent
+  service:
+    type: ClusterIP
+    port: 9090
+  resources:
+    limits:
+      memory: 8Gi
+      cpu: 4
+    requests:
+      memory: 4Gi
+      cpu: 2
+  args:
+    - --config.file=/etc/prometheus/prometheus.yml
+    - --storage.tsdb.path=/prometheus
+    - --storage.tsdb.retention.time=90d
+    - --web.console.libraries=/usr/share/prometheus/console_libraries
+    - --web.console.templates=/usr/share/prometheus/consoles
+    - --web.enable-remote-write-receiver
+  persistence:
+    config:
+      enabled: true
+      storageClass: "regional-pd-ssd"
+      size: 1Gi
+      mountPath: /etc/prometheus
+    data:
+      enabled: true
+      storageClass: "regional-pd-ssd"
+      size: 100Gi
+      mountPath: /prometheus
+  # Federation configuration for cross-region metrics
+  federation:
+    enabled: true
+    regions:
+      - us-west-1
+      - us-east-1
+      - eu-west-1
+      - ap-southeast-1
+  livenessProbe:
+    httpGet:
+      path: /-/healthy
+      port: 9090
+    initialDelaySeconds: 10
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /-/healthy
+      port: 9090
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Grafana Dashboards
+grafana:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: grafana/grafana
+    tag: 10.2.2
+    pullPolicy: IfNotPresent
+  service:
+    type: LoadBalancer
+    port: 3000
+  resources:
+    limits:
+      memory: 4Gi
+      cpu: 2
+    requests:
+      memory: 2Gi
+      cpu: 1
+  env:
+    - name: GF_SECURITY_ADMIN_USER
+      value: admin
+    - name: GF_SECURITY_ADMIN_PASSWORD
+      valueFrom:
+        secretKeyRef:
+          name: grafana-credentials
+          key: password
+    - name: GF_USERS_ALLOW_SIGN_UP
+      value: "false"
+    - name: GF_SERVER_ROOT_URL
+      value: http://localhost:3000
+    - name: GF_INSTALL_PLUGINS
+      value: grafana-postgresql-datasource,grafana-worldmap-panel
+    - name: REGION
+      value: "{{ .Values.global.region }}"
+  persistence:
+    data:
+      enabled: true
+      storageClass: "regional-pd-ssd"
+      size: 20Gi
+      mountPath: /var/lib/grafana
+    provisioning:
+      enabled: true
+      storageClass: "regional-pd-ssd"
+      size: 1Gi
+      mountPath: /etc/grafana/provisioning
+    dashboards:
+      enabled: true
+      storageClass: "regional-pd-ssd"
+      size: 5Gi
+      mountPath: /var/lib/grafana/dashboards
+  livenessProbe:
+    httpGet:
+      path: /api/health
+      port: 3000
+    initialDelaySeconds: 20
+    periodSeconds: 30
+    timeoutSeconds: 10
+  readinessProbe:
+    httpGet:
+      path: /api/health
+      port: 3000
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    timeoutSeconds: 5
+
+# Secrets (base64 encoded values)
+secrets:
+  immutable: false
+  postgres:
+    username: YWlfdXNlcg==
+    password: YWlfcGFzc3dvcmQ=
+    database: YWlfcGxhdGZvcm0=
+    replicationUser: cmVwbGljYXRpb25fdXNlcg==
+    replicationPassword: cmVwbGljYXRpb25fcGFzc3dvcmQ=
+  neo4j:
+    username: bmVvNGo=
+    password: bmVvNGpfcGFzc3dvcmQ=
+  minio:
+    accessKey: bWluaW9hZG1pbg==
+    secretKey: bWluaW9hZG1pbjEyMw==
+  grafana:
+    username: YWRtaW4=
+    password: YWRtaW4=
+
+# ConfigMaps
+configMaps:
+  agentRouter:
+    enabled: true
+  mcpServers:
+    enabled: true
+  mcpAcl:
+    enabled: true
+  prometheus:
+    enabled: true
+  grafana:
+    enabled: true
+  geoRouting:
+    enabled: true
+
+# DNS Configuration
+dns:
+  enabled: true
+  provider: route53  # route53, cloudflare, google-cloud-dns
+  domain: ai-platform.example.com
+  failover:
+    enabled: true
+    healthCheckPath: /health
+    healthCheckPort: 9002
+    healthCheckInterval: 30
+  geolocation:
+    enabled: true
+    policy: latency  # latency or geoproximity
+
+# Cross-Region Monitoring
+monitoring:
+  crossRegion:
+    enabled: true
+    exporters:
+      - type: prometheus
+        endpoint: http://prometheus:9090
+      - type: datadog
+        enabled: false
+      - type: cloudwatch
+        enabled: false
+    metrics:
+      - cross_region_latency
+      - replication_lag_seconds
+      - region_failover_count
+      - region_health_status

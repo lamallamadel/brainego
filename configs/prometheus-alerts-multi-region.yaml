@@ -1,0 +1,289 @@
+# Prometheus Alerting Rules for Multi-Region Deployment
+
+groups:
+  - name: region_health
+    interval: 30s
+    rules:
+      - alert: RegionDown
+        expr: region_health_status == 0
+        for: 2m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Region {{ $labels.region }} is down"
+          description: "Region {{ $labels.region }} has been unhealthy for more than 2 minutes. Automatic failover should be triggered."
+          runbook_url: "https://docs.ai-platform.example.com/runbooks/region-down"
+
+      - alert: MultipleRegionsDown
+        expr: sum(region_health_status) < 2
+        for: 1m
+        labels:
+          severity: critical
+          component: infrastructure
+        annotations:
+          summary: "Multiple regions are down"
+          description: "Less than 2 regions are healthy. This is a critical situation requiring immediate attention."
+          runbook_url: "https://docs.ai-platform.example.com/runbooks/multiple-regions-down"
+
+      - alert: RegionDegraded
+        expr: |
+          sum(up{job=~"gateway|agent-router"}) by (region) / 
+          count(up{job=~"gateway|agent-router"}) by (region) < 0.5
+        for: 5m
+        labels:
+          severity: warning
+          component: infrastructure
+        annotations:
+          summary: "Region {{ $labels.region }} is degraded"
+          description: "More than 50% of services in region {{ $labels.region }} are down."
+
+  - name: cross_region_latency
+    interval: 30s
+    rules:
+      - alert: HighCrossRegionLatency
+        expr: |
+          histogram_quantile(0.95, 
+            sum(rate(geo_routing_latency_ms_bucket[5m])) by (source_region, target_region, le)
+          ) > 250
+        for: 10m
+        labels:
+          severity: warning
+          component: networking
+        annotations:
+          summary: "High latency between {{ $labels.source_region }} and {{ $labels.target_region }}"
+          description: "P95 latency is {{ $value }}ms, exceeding 250ms threshold."
+
+      - alert: CriticalCrossRegionLatency
+        expr: |
+          histogram_quantile(0.95, 
+            sum(rate(geo_routing_latency_ms_bucket[5m])) by (source_region, target_region, le)
+          ) > 500
+        for: 5m
+        labels:
+          severity: critical
+          component: networking
+        annotations:
+          summary: "Critical latency between {{ $labels.source_region }} and {{ $labels.target_region }}"
+          description: "P95 latency is {{ $value }}ms, exceeding 500ms critical threshold."
+
+  - name: replication_lag
+    interval: 30s
+    rules:
+      - alert: PostgreSQLReplicationLag
+        expr: pg_replication_lag_seconds > 30
+        for: 5m
+        labels:
+          severity: warning
+          component: database
+        annotations:
+          summary: "PostgreSQL replication lag in {{ $labels.region }}"
+          description: "Replication lag is {{ $value }}s in region {{ $labels.region }}. Data may be stale."
+          runbook_url: "https://docs.ai-platform.example.com/runbooks/postgres-replication-lag"
+
+      - alert: PostgreSQLReplicationLagCritical
+        expr: pg_replication_lag_seconds > 60
+        for: 2m
+        labels:
+          severity: critical
+          component: database
+        annotations:
+          summary: "Critical PostgreSQL replication lag in {{ $labels.region }}"
+          description: "Replication lag is {{ $value }}s in region {{ $labels.region }}. Immediate action required."
+          runbook_url: "https://docs.ai-platform.example.com/runbooks/postgres-replication-lag"
+
+      - alert: QdrantReplicationLag
+        expr: qdrant_replication_lag_seconds > 60
+        for: 5m
+        labels:
+          severity: warning
+          component: vector-db
+        annotations:
+          summary: "Qdrant replication lag in {{ $labels.region }}"
+          description: "Qdrant collection {{ $labels.collection }} has {{ $value }}s replication lag in region {{ $labels.region }}."
+
+      - alert: QdrantReplicationLagCritical
+        expr: qdrant_replication_lag_seconds > 300
+        for: 2m
+        labels:
+          severity: critical
+          component: vector-db
+        annotations:
+          summary: "Critical Qdrant replication lag in {{ $labels.region }}"
+          description: "Qdrant collection {{ $labels.collection }} has {{ $value }}s replication lag in region {{ $labels.region }}."
+
+      - alert: ReplicationStopped
+        expr: |
+          (increase(pg_replication_lag_seconds[5m]) == 0 and pg_replication_lag_seconds > 0) or
+          (increase(qdrant_replication_lag_seconds[5m]) == 0 and qdrant_replication_lag_seconds > 0)
+        for: 10m
+        labels:
+          severity: critical
+          component: replication
+        annotations:
+          summary: "Replication appears to be stopped in {{ $labels.region }}"
+          description: "Replication lag is not changing, suggesting replication has stopped."
+
+  - name: failover_events
+    interval: 30s
+    rules:
+      - alert: FrequentFailovers
+        expr: rate(geo_routing_failovers_total[1h]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: routing
+        annotations:
+          summary: "Frequent failovers from {{ $labels.from_region }}"
+          description: "More than 6 failovers per hour from region {{ $labels.from_region }}. This may indicate instability."
+
+      - alert: FailoverStorm
+        expr: rate(geo_routing_failovers_total[5m]) > 1
+        for: 2m
+        labels:
+          severity: critical
+          component: routing
+        annotations:
+          summary: "Failover storm detected from {{ $labels.from_region }}"
+          description: "Very high rate of failovers ({{ $value }}/s) from region {{ $labels.from_region }}. System may be flapping."
+
+  - name: cross_region_traffic
+    interval: 30s
+    rules:
+      - alert: ExcessiveCrossRegionTraffic
+        expr: |
+          sum(rate(cross_region_requests_total{source_region!=target_region}[5m])) /
+          sum(rate(geo_routing_requests_total[5m])) > 0.5
+        for: 15m
+        labels:
+          severity: warning
+          component: routing
+        annotations:
+          summary: "High cross-region traffic"
+          description: "More than 50% of traffic is crossing regions. This may indicate routing issues or unexpected traffic patterns."
+
+      - alert: UnexpectedTrafficPattern
+        expr: |
+          abs(
+            (sum(rate(geo_routing_requests_total[5m])) by (target_region) / 
+             sum(rate(geo_routing_requests_total[5m]))) -
+            (sum(rate(geo_routing_requests_total[1h] offset 24h)) by (target_region) / 
+             sum(rate(geo_routing_requests_total[1h] offset 24h)))
+          ) > 0.3
+        for: 10m
+        labels:
+          severity: info
+          component: routing
+        annotations:
+          summary: "Unexpected traffic pattern in {{ $labels.target_region }}"
+          description: "Traffic distribution has changed significantly compared to same time yesterday."
+
+  - name: data_consistency
+    interval: 60s
+    rules:
+      - alert: DataInconsistency
+        expr: |
+          abs(
+            max(qdrant_collection_vectors_count{region=~"us-west-1"}) by (collection) -
+            min(qdrant_collection_vectors_count{region=~"us-east-1|eu-west-1|ap-southeast-1"}) by (collection)
+          ) > 1000
+        for: 10m
+        labels:
+          severity: warning
+          component: data-consistency
+        annotations:
+          summary: "Data inconsistency detected in collection {{ $labels.collection }}"
+          description: "Vector count difference between regions exceeds 1000. Replication may be lagging or failed."
+
+      - alert: ReplicationErrors
+        expr: rate(replication_errors_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+          component: replication
+        annotations:
+          summary: "Replication errors in {{ $labels.region }}"
+          description: "Replication errors detected at rate of {{ $value }}/s in region {{ $labels.region }}."
+
+  - name: dns_failover
+    interval: 30s
+    rules:
+      - alert: DNSHealthCheckFailing
+        expr: dns_health_check_status{region=~".+"} == 0
+        for: 2m
+        labels:
+          severity: warning
+          component: dns
+        annotations:
+          summary: "DNS health check failing for {{ $labels.region }}"
+          description: "DNS health check for region {{ $labels.region }} has been failing for 2 minutes."
+
+      - alert: DNSFailoverNotTriggered
+        expr: |
+          region_health_status == 0 and
+          dns_health_check_status == 1
+        for: 5m
+        labels:
+          severity: critical
+          component: dns
+        annotations:
+          summary: "DNS failover not triggered for unhealthy {{ $labels.region }}"
+          description: "Region {{ $labels.region }} is unhealthy but DNS health check still passing. Manual intervention may be required."
+
+  - name: resource_exhaustion
+    interval: 30s
+    rules:
+      - alert: RegionalStorageNearCapacity
+        expr: |
+          (
+            sum(kubelet_volume_stats_used_bytes{namespace="ai-platform"}) by (region, persistentvolumeclaim) /
+            sum(kubelet_volume_stats_capacity_bytes{namespace="ai-platform"}) by (region, persistentvolumeclaim)
+          ) > 0.85
+        for: 10m
+        labels:
+          severity: warning
+          component: storage
+        annotations:
+          summary: "Storage near capacity in {{ $labels.region }}"
+          description: "PVC {{ $labels.persistentvolumeclaim }} in region {{ $labels.region }} is {{ $value | humanizePercentage }} full."
+
+      - alert: RegionalGPUUnavailable
+        expr: |
+          sum(kube_node_status_condition{condition="Ready",status="true",node=~".*gpu.*"}) by (region) == 0
+        for: 5m
+        labels:
+          severity: critical
+          component: compute
+        annotations:
+          summary: "No GPU nodes available in {{ $labels.region }}"
+          description: "All GPU nodes are unavailable in region {{ $labels.region }}. MAX Serve workloads cannot run."
+
+  - name: performance_degradation
+    interval: 30s
+    rules:
+      - alert: RegionalP95LatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(http_request_duration_seconds_bucket{job="gateway"}[5m])) by (region, le)
+          ) > 1.0
+        for: 10m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "High P95 latency in {{ $labels.region }}"
+          description: "P95 request latency is {{ $value }}s in region {{ $labels.region }}."
+
+      - alert: RegionalThroughputDrop
+        expr: |
+          (
+            sum(rate(http_requests_total{job="gateway"}[5m])) by (region) /
+            sum(rate(http_requests_total{job="gateway"}[5m] offset 1h)) by (region)
+          ) < 0.5
+        for: 10m
+        labels:
+          severity: warning
+          component: performance
+        annotations:
+          summary: "Throughput drop in {{ $labels.region }}"
+          description: "Request rate has dropped by more than 50% in region {{ $labels.region }} compared to 1 hour ago."

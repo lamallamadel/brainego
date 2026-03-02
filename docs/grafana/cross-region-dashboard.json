@@ -1,0 +1,779 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "cross-region-monitoring",
+    "title": "Cross-Region Latency and Replication Monitoring",
+    "tags": ["multi-region", "replication", "latency", "geo-routing"],
+    "timezone": "browser",
+    "schemaVersion": 38,
+    "version": 1,
+    "refresh": "30s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "timepicker": {
+      "refresh_intervals": ["5s", "10s", "30s", "1m", "5m", "15m", "30m", "1h"],
+      "time_options": ["5m", "15m", "1h", "6h", "12h", "24h", "2d", "7d", "30d"]
+    },
+    "templating": {
+      "list": [
+        {
+          "type": "datasource",
+          "name": "datasource",
+          "label": "Data Source",
+          "query": "prometheus",
+          "current": {
+            "text": "Prometheus",
+            "value": "Prometheus"
+          }
+        },
+        {
+          "type": "query",
+          "name": "region",
+          "label": "Region",
+          "datasource": "${datasource}",
+          "query": "label_values(region_health_status, region)",
+          "multi": true,
+          "includeAll": true,
+          "allValue": ".*",
+          "current": {
+            "text": "All",
+            "value": "$__all"
+          }
+        },
+        {
+          "type": "query",
+          "name": "source_region",
+          "label": "Source Region",
+          "datasource": "${datasource}",
+          "query": "label_values(cross_region_requests_total, source_region)",
+          "multi": true,
+          "includeAll": true,
+          "allValue": ".*"
+        },
+        {
+          "type": "query",
+          "name": "target_region",
+          "label": "Target Region",
+          "datasource": "${datasource}",
+          "query": "label_values(cross_region_requests_total, target_region)",
+          "multi": true,
+          "includeAll": true,
+          "allValue": ".*"
+        }
+      ]
+    },
+    "annotations": {
+      "list": [
+        {
+          "datasource": "${datasource}",
+          "enable": true,
+          "expr": "ALERTS{alertname=~\"RegionDown|ReplicationLag|HighLatency\"}",
+          "iconColor": "red",
+          "name": "Critical Alerts",
+          "tagKeys": "alertname,region"
+        }
+      ]
+    },
+    "panels": [
+      {
+        "id": 1,
+        "gridPos": {"h": 3, "w": 24, "x": 0, "y": 0},
+        "type": "row",
+        "title": "Region Health Overview",
+        "collapsed": false
+      },
+      {
+        "id": 2,
+        "gridPos": {"h": 4, "w": 6, "x": 0, "y": 1},
+        "type": "stat",
+        "title": "Healthy Regions",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "sum(region_health_status{region=~\"$region\"} == 1)",
+            "legendFormat": "Healthy Regions",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "none",
+          "justifyMode": "center",
+          "orientation": "horizontal",
+          "reduceOptions": {
+            "calcs": ["lastNotNull"],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "value_and_name"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "red"},
+                {"value": 2, "color": "yellow"},
+                {"value": 3, "color": "green"}
+              ]
+            },
+            "unit": "short"
+          }
+        }
+      },
+      {
+        "id": 3,
+        "gridPos": {"h": 4, "w": 6, "x": 6, "y": 1},
+        "type": "stat",
+        "title": "Total Requests (All Regions)",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "sum(rate(geo_routing_requests_total{source_region=~\"$source_region\", target_region=~\"$target_region\"}[5m]))",
+            "legendFormat": "Requests/sec",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "center",
+          "orientation": "horizontal",
+          "reduceOptions": {
+            "calcs": ["lastNotNull"],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "value_and_name"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "unit": "reqps"
+          }
+        }
+      },
+      {
+        "id": 4,
+        "gridPos": {"h": 4, "w": 6, "x": 12, "y": 1},
+        "type": "stat",
+        "title": "Cross-Region Requests",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "sum(rate(cross_region_requests_total{source_region=~\"$source_region\", target_region=~\"$target_region\", source_region!=target_region}[5m]))",
+            "legendFormat": "Cross-Region/sec",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "center",
+          "orientation": "horizontal",
+          "reduceOptions": {
+            "calcs": ["lastNotNull"],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "value_and_name"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 100, "color": "yellow"},
+                {"value": 500, "color": "red"}
+              ]
+            },
+            "unit": "reqps"
+          }
+        }
+      },
+      {
+        "id": 5,
+        "gridPos": {"h": 4, "w": 6, "x": 18, "y": 1},
+        "type": "stat",
+        "title": "Failover Events (24h)",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "sum(increase(geo_routing_failovers_total{from_region=~\"$region\"}[24h]))",
+            "legendFormat": "Failovers",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "none",
+          "justifyMode": "center",
+          "orientation": "horizontal",
+          "reduceOptions": {
+            "calcs": ["lastNotNull"],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "value_and_name"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 1, "color": "yellow"},
+                {"value": 5, "color": "red"}
+              ]
+            },
+            "unit": "short"
+          }
+        }
+      },
+      {
+        "id": 6,
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
+        "type": "row",
+        "title": "Cross-Region Latency",
+        "collapsed": false
+      },
+      {
+        "id": 7,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 6},
+        "type": "timeseries",
+        "title": "Cross-Region Latency (P50, P95, P99)",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "histogram_quantile(0.50, sum(rate(geo_routing_latency_ms_bucket{source_region=~\"$source_region\", target_region=~\"$target_region\"}[5m])) by (source_region, target_region, le))",
+            "legendFormat": "{{source_region}} → {{target_region}} (P50)",
+            "refId": "A"
+          },
+          {
+            "datasource": "${datasource}",
+            "expr": "histogram_quantile(0.95, sum(rate(geo_routing_latency_ms_bucket{source_region=~\"$source_region\", target_region=~\"$target_region\"}[5m])) by (source_region, target_region, le))",
+            "legendFormat": "{{source_region}} → {{target_region}} (P95)",
+            "refId": "B"
+          },
+          {
+            "datasource": "${datasource}",
+            "expr": "histogram_quantile(0.99, sum(rate(geo_routing_latency_ms_bucket{source_region=~\"$source_region\", target_region=~\"$target_region\"}[5m])) by (source_region, target_region, le))",
+            "legendFormat": "{{source_region}} → {{target_region}} (P99)",
+            "refId": "C"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "axisLabel": "Latency (ms)",
+              "lineInterpolation": "smooth",
+              "showPoints": "never",
+              "spanNulls": true
+            },
+            "unit": "ms",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 100, "color": "yellow"},
+                {"value": 250, "color": "red"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "showLegend": true,
+            "calcs": ["mean", "max"]
+          },
+          "tooltip": {
+            "mode": "multi"
+          }
+        }
+      },
+      {
+        "id": 8,
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 6},
+        "type": "heatmap",
+        "title": "Latency Heatmap by Region Pair",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "sum(rate(geo_routing_latency_ms_bucket{source_region=~\"$source_region\", target_region=~\"$target_region\"}[5m])) by (source_region, target_region, le)",
+            "legendFormat": "{{source_region}} → {{target_region}}",
+            "refId": "A",
+            "format": "heatmap"
+          }
+        ],
+        "options": {
+          "color": {
+            "mode": "scheme",
+            "scheme": "Spectral"
+          },
+          "calculate": false,
+          "cellGap": 2,
+          "yAxis": {
+            "unit": "ms"
+          }
+        }
+      },
+      {
+        "id": 9,
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14},
+        "type": "row",
+        "title": "Database Replication",
+        "collapsed": false
+      },
+      {
+        "id": 10,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 15},
+        "type": "timeseries",
+        "title": "PostgreSQL Replication Lag",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "pg_replication_lag_seconds{region=~\"$region\"}",
+            "legendFormat": "{{region}} - {{replica}}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "axisLabel": "Lag (seconds)",
+              "lineInterpolation": "smooth",
+              "showPoints": "never"
+            },
+            "unit": "s",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 5, "color": "yellow"},
+                {"value": 30, "color": "red"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "showLegend": true,
+            "calcs": ["mean", "max", "last"]
+          }
+        }
+      },
+      {
+        "id": 11,
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 15},
+        "type": "timeseries",
+        "title": "Qdrant Replication Lag",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "qdrant_replication_lag_seconds{region=~\"$region\"}",
+            "legendFormat": "{{region}} - Collection: {{collection}}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "axisLabel": "Lag (seconds)",
+              "lineInterpolation": "smooth",
+              "showPoints": "never"
+            },
+            "unit": "s",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 10, "color": "yellow"},
+                {"value": 60, "color": "red"}
+              ]
+            }
+          }
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "showLegend": true,
+            "calcs": ["mean", "max", "last"]
+          }
+        }
+      },
+      {
+        "id": 12,
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 23},
+        "type": "row",
+        "title": "Region Traffic Distribution",
+        "collapsed": false
+      },
+      {
+        "id": 13,
+        "gridPos": {"h": 8, "w": 8, "x": 0, "y": 24},
+        "type": "piechart",
+        "title": "Requests by Target Region",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "sum(rate(geo_routing_requests_total{target_region=~\"$target_region\"}[5m])) by (target_region)",
+            "legendFormat": "{{target_region}}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "showLegend": true,
+            "values": ["value", "percent"]
+          },
+          "pieType": "pie",
+          "tooltip": {
+            "mode": "single"
+          }
+        }
+      },
+      {
+        "id": 14,
+        "gridPos": {"h": 8, "w": 8, "x": 8, "y": 24},
+        "type": "bargauge",
+        "title": "Request Rate by Region",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "sum(rate(geo_routing_requests_total{target_region=~\"$target_region\"}[5m])) by (target_region)",
+            "legendFormat": "{{target_region}}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "orientation": "horizontal",
+          "displayMode": "gradient",
+          "showUnfilled": true
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "continuous-GrYlRd"
+            },
+            "unit": "reqps",
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 500, "color": "yellow"},
+                {"value": 1000, "color": "red"}
+              ]
+            }
+          }
+        }
+      },
+      {
+        "id": 15,
+        "gridPos": {"h": 8, "w": 8, "x": 16, "y": 24},
+        "type": "table",
+        "title": "Region Pair Traffic Matrix",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "sum(rate(geo_routing_requests_total{source_region=~\"$source_region\", target_region=~\"$target_region\"}[5m])) by (source_region, target_region)",
+            "legendFormat": "",
+            "refId": "A",
+            "format": "table",
+            "instant": true
+          }
+        ],
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "excludeByName": {
+                "Time": true
+              },
+              "renameByName": {
+                "source_region": "Source",
+                "target_region": "Target",
+                "Value": "Req/s"
+              }
+            }
+          }
+        ],
+        "options": {
+          "showHeader": true,
+          "sortBy": [{"displayName": "Req/s", "desc": true}]
+        },
+        "fieldConfig": {
+          "defaults": {
+            "custom": {
+              "align": "left"
+            },
+            "color": {
+              "mode": "continuous-GrYlRd"
+            }
+          },
+          "overrides": [
+            {
+              "matcher": {"id": "byName", "options": "Req/s"},
+              "properties": [
+                {
+                  "id": "custom.displayMode",
+                  "value": "color-background"
+                },
+                {
+                  "id": "unit",
+                  "value": "reqps"
+                }
+              ]
+            }
+          ]
+        }
+      },
+      {
+        "id": 16,
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 32},
+        "type": "row",
+        "title": "Failover and Error Tracking",
+        "collapsed": false
+      },
+      {
+        "id": 17,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 33},
+        "type": "timeseries",
+        "title": "Failover Events by Region",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "rate(geo_routing_failovers_total{from_region=~\"$region\"}[5m])",
+            "legendFormat": "{{from_region}} → {{to_region}} ({{reason}})",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "palette-classic"
+            },
+            "custom": {
+              "axisLabel": "Failovers/sec",
+              "lineInterpolation": "stepAfter",
+              "fillOpacity": 20
+            },
+            "unit": "short"
+          }
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "showLegend": true
+          }
+        }
+      },
+      {
+        "id": 18,
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 33},
+        "type": "timeseries",
+        "title": "Region Health Status",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "region_health_status{region=~\"$region\"}",
+            "legendFormat": "{{region}}",
+            "refId": "A"
+          }
+        ],
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "custom": {
+              "axisLabel": "Status",
+              "lineInterpolation": "stepAfter",
+              "fillOpacity": 50
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "red"},
+                {"value": 1, "color": "green"}
+              ]
+            },
+            "unit": "short",
+            "max": 1,
+            "min": 0
+          }
+        },
+        "options": {
+          "legend": {
+            "displayMode": "table",
+            "placement": "right",
+            "showLegend": true
+          }
+        }
+      },
+      {
+        "id": 19,
+        "gridPos": {"h": 1, "w": 24, "x": 0, "y": 41},
+        "type": "row",
+        "title": "Data Consistency Metrics",
+        "collapsed": false
+      },
+      {
+        "id": 20,
+        "gridPos": {"h": 6, "w": 8, "x": 0, "y": 42},
+        "type": "stat",
+        "title": "Max PostgreSQL Lag",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "max(pg_replication_lag_seconds{region=~\"$region\"})",
+            "legendFormat": "Max Lag",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "center",
+          "orientation": "horizontal",
+          "reduceOptions": {
+            "calcs": ["lastNotNull"],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "value_and_name"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 5, "color": "yellow"},
+                {"value": 30, "color": "red"}
+              ]
+            },
+            "unit": "s"
+          }
+        }
+      },
+      {
+        "id": 21,
+        "gridPos": {"h": 6, "w": 8, "x": 8, "y": 42},
+        "type": "stat",
+        "title": "Max Qdrant Lag",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "max(qdrant_replication_lag_seconds{region=~\"$region\"})",
+            "legendFormat": "Max Lag",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "area",
+          "justifyMode": "center",
+          "orientation": "horizontal",
+          "reduceOptions": {
+            "calcs": ["lastNotNull"],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "value_and_name"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 10, "color": "yellow"},
+                {"value": 60, "color": "red"}
+              ]
+            },
+            "unit": "s"
+          }
+        }
+      },
+      {
+        "id": 22,
+        "gridPos": {"h": 6, "w": 8, "x": 16, "y": 42},
+        "type": "stat",
+        "title": "Replication Errors (24h)",
+        "targets": [
+          {
+            "datasource": "${datasource}",
+            "expr": "sum(increase(replication_errors_total{region=~\"$region\"}[24h]))",
+            "legendFormat": "Errors",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "colorMode": "value",
+          "graphMode": "none",
+          "justifyMode": "center",
+          "orientation": "horizontal",
+          "reduceOptions": {
+            "calcs": ["lastNotNull"],
+            "fields": "",
+            "values": false
+          },
+          "textMode": "value_and_name"
+        },
+        "fieldConfig": {
+          "defaults": {
+            "color": {
+              "mode": "thresholds"
+            },
+            "thresholds": {
+              "mode": "absolute",
+              "steps": [
+                {"value": null, "color": "green"},
+                {"value": 1, "color": "yellow"},
+                {"value": 10, "color": "red"}
+              ]
+            },
+            "unit": "short"
+          }
+        }
+      }
+    ]
+  }
+}

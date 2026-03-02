@@ -1,0 +1,342 @@
+# Geo-Routing Configuration for Kong Ingress
+# Routes requests to nearest region based on geo-ip headers and latency
+
+# Global Configuration
+global:
+  enabled: true
+  defaultRegion: us-west-1
+  fallbackStrategy: round-robin  # round-robin, weighted, latency-based
+  healthCheckInterval: 30
+  healthCheckTimeout: 5
+
+# Region Definitions
+regions:
+  us-west-1:
+    name: "US West (Oregon)"
+    priority: 1
+    enabled: true
+    endpoint: https://us-west-1.ai-platform.example.com
+    internalEndpoint: http://gateway.us-west-1.ai-platform.svc.cluster.local:9002
+    weight: 100
+    maxLatencyMs: 100
+    geolocation:
+      countries:
+        - US
+        - CA
+      states:
+        - CA
+        - OR
+        - WA
+        - NV
+        - AZ
+      continents:
+        - NA
+    healthCheck:
+      enabled: true
+      path: /health
+      port: 9002
+      interval: 30
+      timeout: 5
+      unhealthyThreshold: 3
+      healthyThreshold: 2
+
+  us-east-1:
+    name: "US East (Virginia)"
+    priority: 2
+    enabled: true
+    endpoint: https://us-east-1.ai-platform.example.com
+    internalEndpoint: http://gateway.us-east-1.ai-platform.svc.cluster.local:9002
+    weight: 100
+    maxLatencyMs: 100
+    geolocation:
+      countries:
+        - US
+        - CA
+      states:
+        - NY
+        - VA
+        - FL
+        - MA
+        - PA
+      continents:
+        - NA
+    healthCheck:
+      enabled: true
+      path: /health
+      port: 9002
+      interval: 30
+      timeout: 5
+      unhealthyThreshold: 3
+      healthyThreshold: 2
+
+  eu-west-1:
+    name: "EU West (Ireland)"
+    priority: 3
+    enabled: true
+    endpoint: https://eu-west-1.ai-platform.example.com
+    internalEndpoint: http://gateway.eu-west-1.ai-platform.svc.cluster.local:9002
+    weight: 100
+    maxLatencyMs: 150
+    geolocation:
+      countries:
+        - GB
+        - IE
+        - FR
+        - DE
+        - ES
+        - IT
+        - NL
+        - BE
+        - CH
+        - AT
+      continents:
+        - EU
+    healthCheck:
+      enabled: true
+      path: /health
+      port: 9002
+      interval: 30
+      timeout: 5
+      unhealthyThreshold: 3
+      healthyThreshold: 2
+
+  ap-southeast-1:
+    name: "Asia Pacific (Singapore)"
+    priority: 4
+    enabled: true
+    endpoint: https://ap-southeast-1.ai-platform.example.com
+    internalEndpoint: http://gateway.ap-southeast-1.ai-platform.svc.cluster.local:9002
+    weight: 100
+    maxLatencyMs: 200
+    geolocation:
+      countries:
+        - SG
+        - MY
+        - TH
+        - ID
+        - PH
+        - VN
+        - IN
+        - AU
+        - NZ
+        - JP
+        - KR
+        - CN
+        - HK
+      continents:
+        - AS
+        - OC
+    healthCheck:
+      enabled: true
+      path: /health
+      port: 9002
+      interval: 30
+      timeout: 5
+      unhealthyThreshold: 3
+      healthyThreshold: 2
+
+# Routing Rules
+routing:
+  # Primary routing strategy
+  strategy: geo-latency  # geo-latency, geo-proximity, latency-only, weighted
+  
+  # Geo-IP header priority
+  geoIpHeaders:
+    - X-Forwarded-For
+    - CF-Connecting-IP
+    - X-Real-IP
+    - True-Client-IP
+  
+  # Cloudflare geo headers
+  cloudflareHeaders:
+    country: CF-IPCountry
+    region: CF-Region
+    city: CF-City
+    latitude: CF-Latitude
+    longitude: CF-Longitude
+  
+  # AWS CloudFront geo headers
+  cloudFrontHeaders:
+    country: CloudFront-Viewer-Country
+    region: CloudFront-Viewer-Country-Region
+    city: CloudFront-Viewer-City
+    latitude: CloudFront-Viewer-Latitude
+    longitude: CloudFront-Viewer-Longitude
+  
+  # Google Cloud CDN geo headers
+  googleHeaders:
+    country: X-Google-Gfe-Request-Country
+    region: X-Google-Gfe-Request-Region
+  
+  # Latency-based routing
+  latencyBased:
+    enabled: true
+    measurementInterval: 60  # seconds
+    probeEndpoint: /health
+    maxProbes: 3
+    timeoutMs: 1000
+  
+  # Failover configuration
+  failover:
+    enabled: true
+    maxAttempts: 3
+    retryBackoffMs: 100
+    unhealthyRegionRetryAfterSeconds: 60
+    circuitBreaker:
+      enabled: true
+      failureThreshold: 5
+      successThreshold: 2
+      timeout: 30
+
+# Kong Plugin Configuration
+kongPlugins:
+  # Custom geo-routing plugin
+  geoRouting:
+    enabled: true
+    pluginName: geo-routing
+    priority: 900
+    config:
+      regions: 
+        - us-west-1
+        - us-east-1
+        - eu-west-1
+        - ap-southeast-1
+      routingStrategy: geo-latency
+      fallbackRegion: us-west-1
+      cacheEnabled: true
+      cacheTtlSeconds: 300
+  
+  # Rate limiting per region
+  rateLimiting:
+    enabled: true
+    perRegion: true
+    limits:
+      us-west-1:
+        second: 1000
+        minute: 50000
+        hour: 2000000
+      us-east-1:
+        second: 1000
+        minute: 50000
+        hour: 2000000
+      eu-west-1:
+        second: 800
+        minute: 40000
+        hour: 1500000
+      ap-southeast-1:
+        second: 800
+        minute: 40000
+        hour: 1500000
+  
+  # Request transformation to add region header
+  requestTransformer:
+    enabled: true
+    addHeaders:
+      - X-Region:{{ .region }}
+      - X-Routed-To:{{ .endpoint }}
+      - X-Latency-Ms:{{ .latency }}
+  
+  # Response transformation to add region info
+  responseTransformer:
+    enabled: true
+    addHeaders:
+      - X-Served-By-Region:{{ .region }}
+      - X-Region-Latency-Ms:{{ .latency }}
+
+# Monitoring and Metrics
+monitoring:
+  enabled: true
+  prometheus:
+    enabled: true
+    port: 9090
+    path: /metrics
+  
+  metrics:
+    - name: geo_routing_requests_total
+      type: counter
+      help: "Total number of requests routed by region"
+      labels:
+        - source_region
+        - target_region
+        - routing_strategy
+    
+    - name: geo_routing_latency_ms
+      type: histogram
+      help: "Request latency by region in milliseconds"
+      labels:
+        - source_region
+        - target_region
+      buckets: [10, 25, 50, 100, 250, 500, 1000, 2500, 5000]
+    
+    - name: geo_routing_failovers_total
+      type: counter
+      help: "Total number of regional failovers"
+      labels:
+        - from_region
+        - to_region
+        - reason
+    
+    - name: region_health_status
+      type: gauge
+      help: "Health status of each region (1=healthy, 0=unhealthy)"
+      labels:
+        - region
+    
+    - name: cross_region_requests_total
+      type: counter
+      help: "Requests that crossed regions"
+      labels:
+        - source_region
+        - target_region
+
+# Caching Configuration
+caching:
+  enabled: true
+  backend: redis
+  redis:
+    host: redis
+    port: 6379
+    db: 3
+    ttlSeconds: 300
+  
+  # Cache geo-ip lookups
+  geoIpCache:
+    enabled: true
+    ttlSeconds: 3600
+  
+  # Cache latency measurements
+  latencyCache:
+    enabled: true
+    ttlSeconds: 60
+
+# Logging Configuration
+logging:
+  enabled: true
+  level: info  # debug, info, warn, error
+  format: json
+  
+  # Log sampling to reduce volume
+  sampling:
+    enabled: true
+    rate: 0.1  # Log 10% of requests
+  
+  # Fields to include in logs
+  fields:
+    - timestamp
+    - request_id
+    - source_ip
+    - source_country
+    - source_region
+    - target_region
+    - routing_strategy
+    - latency_ms
+    - status_code
+    - error_message
+
+# Testing and Debugging
+debug:
+  enabled: false
+  forceRegion: ""  # Force routing to specific region for testing
+  simulateLatency: false
+  latencySimulationMs: 0
+  logAllRequests: false
