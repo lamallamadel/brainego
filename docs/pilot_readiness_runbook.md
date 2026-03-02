@@ -296,6 +296,22 @@ The script performs a follow-up retrieval query to validate indexing success.
 
 ---
 
+## 3b) Optional: Repo-RAG Golden Set Spot Check (AFR-111)
+
+Use the 20-question golden set to validate retrieval relevance and citation correctness:
+
+- Golden set: `tests/contract/fixtures/repo_rag_golden_set.ndjson`
+- Guide: `docs/repo_rag_golden_set.md`
+
+Recommended usage:
+
+1. Keep the indexed pilot corpus from step 3.
+2. Run a sample of 5-10 golden questions first.
+3. Ensure answers include source citations in `[source:<path>]` format.
+
+---
+
+## 4) Validate Policy + Incident Handling Drill
 ## 5) Run Demo Scenarios
 
 ### Scenario A - Connector walkthrough (GitHub + tracker)
@@ -445,6 +461,7 @@ curl -fsS -X DELETE \
 - `MCP_AFR32_MANUAL_TEST.md`
 - `SECURITY_QUICKSTART.md`
 - `DISASTER_RECOVERY_RUNBOOK.md`
+- `docs/repo_rag_golden_set.md`
 - `configs/mcp-servers.yaml`
 - `configs/mcp-acl.yaml`
 - `configs/tool-policy.yaml`
