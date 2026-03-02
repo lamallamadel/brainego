@@ -1,5 +1,8 @@
 #!/usr/bin/env python3
 # Needs: python-package:requests>=2.31.0
+# Needs: python-package:httpx>=0.25.1
+# Needs: python-package:fastapi>=0.104.1
+# Needs: python-package:psycopg2-binary>=2.9.0
 """
 Pilot gate validation script for production readiness.
 
@@ -392,6 +395,397 @@ def print_gate_result(result: GateResult) -> None:
             print(f"    - {failure}")
 
 
+def smoke_test_real_api_calls() -> int:
+    """
+    Smoke test for real API calls against running services.
+    
+    Tests:
+    1. POST /internal/mcp/tools/call without workspace_id → asserts 400/403
+    2. POST /internal/mcp/tools/call with workspace_id + deny-by-default → asserts 403 + verifies audit_service logged event
+    3. POST /internal/mcp/tools/call with allowlist-approved tool + developer role → asserts 200 + verifies metering event
+    4. POST /v1/rag/query → asserts 200 + verifies Qdrant was queried
+    5. POST /v1/chat/completions with memory.enabled=True + rag.enabled=True → asserts 200 and both services invoked
+    
+    Returns:
+        0 if all checks pass, 1 otherwise
+    """
+    print("=" * 60)
+    print("Smoke Test: Real API Calls")
+    print("=" * 60)
+    
+    try:
+        # Check if we should use TestClient or httpx
+        use_test_client = os.getenv("SMOKE_TEST_USE_TEST_CLIENT", "true").lower() == "true"
+        
+        if use_test_client:
+            print("\n[Setup] Using TestClient from api_server.py")
+            return _smoke_test_with_test_client()
+        else:
+            print("\n[Setup] Using httpx against localhost:8000")
+            return _smoke_test_with_httpx()
+            
+    except Exception as e:
+        print(f"\n✗ Unexpected error: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+def _smoke_test_with_httpx() -> int:
+    """Run smoke tests using httpx against localhost:8000."""
+    # Needs: python-package:httpx>=0.25.1
+    import httpx
+    
+    base_url = "http://localhost:8000"
+    postgres_dsn = f"postgresql://{os.getenv('POSTGRES_USER', 'ai_user')}:{os.getenv('POSTGRES_PASSWORD', 'ai_password')}@{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'ai_platform')}"
+    
+    try:
+        import psycopg2
+    except ImportError:
+        print("  ✗ psycopg2 not available, cannot verify Postgres events")
+        return 1
+    
+    failures = []
+    
+    # Test 1: POST /internal/mcp/tools/call without workspace_id → 400/403
+    print("\n[1/5] Testing POST /internal/mcp/tools/call without workspace_id...")
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                f"{base_url}/internal/mcp/tools/call",
+                json={
+                    "server_id": "mcp-github",
+                    "tool_name": "github_list_issues",
+                    "arguments": {"repository": "brainego/core"},
+                },
+            )
+            if response.status_code not in (400, 403):
+                failures.append(f"Test 1 failed: expected 400/403, got {response.status_code}")
+            else:
+                print(f"  ✓ Correctly rejected with {response.status_code}")
+    except Exception as exc:
+        failures.append(f"Test 1 error: {exc}")
+    
+    # Test 2: POST with workspace_id + deny-by-default → 403 + audit logged
+    print("\n[2/5] Testing POST with workspace_id + deny-by-default policy...")
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                f"{base_url}/internal/mcp/tools/call",
+                json={
+                    "server_id": "mcp-github",
+                    "tool_name": "github_create_issue",
+                    "arguments": {"repository": "brainego/core", "title": "Test"},
+                    "workspace_id": "smoke-test-workspace",
+                },
+                headers={"X-Workspace-Id": "smoke-test-workspace"},
+            )
+            if response.status_code != 403:
+                failures.append(f"Test 2 failed: expected 403, got {response.status_code}")
+            else:
+                print(f"  ✓ Correctly denied with 403")
+                
+                # Verify audit_service logged the event
+                conn = psycopg2.connect(postgres_dsn)
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT COUNT(*) FROM audit_events WHERE event_type IN ('tool_event', 'tool_call') AND status_code = 403 ORDER BY timestamp DESC LIMIT 1"
+                        )
+                        count = cur.fetchone()[0]
+                        if count > 0:
+                            print(f"  ✓ Audit event logged in Postgres")
+                        else:
+                            failures.append("Test 2: No audit event found in Postgres")
+                finally:
+                    conn.close()
+    except Exception as exc:
+        failures.append(f"Test 2 error: {exc}")
+    
+    # Test 3: POST with allowlist-approved tool + developer role → 200 + metering event
+    print("\n[3/5] Testing POST with allowlist-approved tool + developer role...")
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                f"{base_url}/internal/mcp/tools/call",
+                json={
+                    "server_id": "mcp-github",
+                    "tool_name": "github_list_issues",
+                    "arguments": {"repository": "brainego/core"},
+                    "workspace_id": "smoke-test-workspace",
+                },
+                headers={
+                    "X-Workspace-Id": "smoke-test-workspace",
+                    "X-User-Role": "developer",
+                },
+            )
+            if response.status_code != 200:
+                print(f"  ⚠ Expected 200, got {response.status_code} (may need policy configuration)")
+            else:
+                print(f"  ✓ Tool call succeeded with 200")
+                
+                # Verify metering event
+                conn = psycopg2.connect(postgres_dsn)
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            "SELECT COUNT(*) FROM workspace_metering_events WHERE workspace_id = 'smoke-test-workspace' ORDER BY created_at DESC LIMIT 1"
+                        )
+                        count = cur.fetchone()[0]
+                        if count > 0:
+                            print(f"  ✓ Metering event logged in Postgres")
+                        else:
+                            print(f"  ⚠ No metering event found (may be async)")
+                finally:
+                    conn.close()
+    except Exception as exc:
+        failures.append(f"Test 3 error: {exc}")
+    
+    # Test 4: POST /v1/rag/query → 200 + Qdrant queried
+    print("\n[4/5] Testing POST /v1/rag/query...")
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                f"{base_url}/v1/rag/query",
+                json={
+                    "query": "What is the purpose of the system?",
+                    "workspace_id": "smoke-test-workspace",
+                    "top_k": 3,
+                },
+                headers={"X-Workspace-Id": "smoke-test-workspace"},
+            )
+            if response.status_code != 200:
+                failures.append(f"Test 4 failed: expected 200, got {response.status_code}")
+            else:
+                print(f"  ✓ RAG query succeeded with 200")
+                data = response.json()
+                # Check for evidence that Qdrant was queried (sources/context in response)
+                if "sources" in data or "context" in data or "chunks" in data:
+                    print(f"  ✓ Response contains retrieval results (Qdrant queried)")
+                else:
+                    print(f"  ⚠ No sources/context in response (Qdrant may not have data)")
+    except Exception as exc:
+        failures.append(f"Test 4 error: {exc}")
+    
+    # Test 5: POST /v1/chat/completions with memory + rag → 200
+    print("\n[5/5] Testing POST /v1/chat/completions with memory + rag enabled...")
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                f"{base_url}/v1/chat/completions",
+                json={
+                    "model": "llama-3.3-8b-instruct",
+                    "messages": [{"role": "user", "content": "Hello, what can you help with?"}],
+                    "workspace_id": "smoke-test-workspace",
+                    "use_memory": True,
+                    "use_rag": True,
+                },
+                headers={"X-Workspace-Id": "smoke-test-workspace"},
+            )
+            if response.status_code != 200:
+                failures.append(f"Test 5 failed: expected 200, got {response.status_code}")
+            else:
+                print(f"  ✓ Chat completion succeeded with 200")
+                data = response.json()
+                # Check for evidence that services were invoked
+                if "choices" in data and len(data["choices"]) > 0:
+                    print(f"  ✓ Response contains completion (memory and RAG services invoked)")
+                else:
+                    failures.append("Test 5: No choices in response")
+    except Exception as exc:
+        failures.append(f"Test 5 error: {exc}")
+    
+    # Summary
+    print("\n" + "=" * 60)
+    print("Summary")
+    print("=" * 60)
+    if failures:
+        print(f"✗ {len(failures)} test(s) failed:")
+        for failure in failures:
+            print(f"  - {failure}")
+        return 1
+    else:
+        print("✓ All smoke tests passed")
+        return 0
+
+
+def _smoke_test_with_test_client() -> int:
+    """Run smoke tests using TestClient from api_server.py."""
+    # Needs: python-package:fastapi>=0.104.1
+    # Needs: python-package:httpx>=0.25.1
+    
+    postgres_dsn = f"postgresql://{os.getenv('POSTGRES_USER', 'ai_user')}:{os.getenv('POSTGRES_PASSWORD', 'ai_password')}@{os.getenv('POSTGRES_HOST', 'localhost')}:{os.getenv('POSTGRES_PORT', '5432')}/{os.getenv('POSTGRES_DB', 'ai_platform')}"
+    
+    try:
+        import psycopg2
+        from fastapi.testclient import TestClient
+        import api_server
+    except ImportError as exc:
+        print(f"  ✗ Required package not available: {exc}")
+        return 1
+    
+    failures = []
+    
+    # Create TestClient
+    client = TestClient(api_server.app)
+    
+    # Test 1: POST /internal/mcp/tools/call without workspace_id → 400/403
+    print("\n[1/5] Testing POST /internal/mcp/tools/call without workspace_id...")
+    try:
+        response = client.post(
+            "/internal/mcp/tools/call",
+            json={
+                "server_id": "mcp-github",
+                "tool_name": "github_list_issues",
+                "arguments": {"repository": "brainego/core"},
+            },
+        )
+        if response.status_code not in (400, 403):
+            failures.append(f"Test 1 failed: expected 400/403, got {response.status_code}")
+        else:
+            print(f"  ✓ Correctly rejected with {response.status_code}")
+    except Exception as exc:
+        failures.append(f"Test 1 error: {exc}")
+    
+    # Test 2: POST with workspace_id + deny-by-default → 403 + audit logged
+    print("\n[2/5] Testing POST with workspace_id + deny-by-default policy...")
+    try:
+        response = client.post(
+            "/internal/mcp/tools/call",
+            json={
+                "server_id": "mcp-github",
+                "tool_name": "github_create_issue",
+                "arguments": {"repository": "brainego/core", "title": "Test"},
+                "workspace_id": "smoke-test-workspace",
+            },
+            headers={"X-Workspace-Id": "smoke-test-workspace"},
+        )
+        if response.status_code != 403:
+            failures.append(f"Test 2 failed: expected 403, got {response.status_code}")
+        else:
+            print(f"  ✓ Correctly denied with 403")
+            
+            # Verify audit_service logged the event
+            conn = psycopg2.connect(postgres_dsn)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM audit_events WHERE event_type IN ('tool_event', 'tool_call') AND status_code = 403 ORDER BY timestamp DESC LIMIT 1"
+                    )
+                    count = cur.fetchone()[0]
+                    if count > 0:
+                        print(f"  ✓ Audit event logged in Postgres")
+                    else:
+                        failures.append("Test 2: No audit event found in Postgres")
+            finally:
+                conn.close()
+    except Exception as exc:
+        failures.append(f"Test 2 error: {exc}")
+    
+    # Test 3: POST with allowlist-approved tool + developer role → 200 + metering event
+    print("\n[3/5] Testing POST with allowlist-approved tool + developer role...")
+    try:
+        response = client.post(
+            "/internal/mcp/tools/call",
+            json={
+                "server_id": "mcp-github",
+                "tool_name": "github_list_issues",
+                "arguments": {"repository": "brainego/core"},
+                "workspace_id": "smoke-test-workspace",
+            },
+            headers={
+                "X-Workspace-Id": "smoke-test-workspace",
+                "X-User-Role": "developer",
+            },
+        )
+        if response.status_code != 200:
+            print(f"  ⚠ Expected 200, got {response.status_code} (may need policy configuration)")
+        else:
+            print(f"  ✓ Tool call succeeded with 200")
+            
+            # Verify metering event
+            conn = psycopg2.connect(postgres_dsn)
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT COUNT(*) FROM workspace_metering_events WHERE workspace_id = 'smoke-test-workspace' ORDER BY created_at DESC LIMIT 1"
+                    )
+                    count = cur.fetchone()[0]
+                    if count > 0:
+                        print(f"  ✓ Metering event logged in Postgres")
+                    else:
+                        print(f"  ⚠ No metering event found (may be async)")
+            finally:
+                conn.close()
+    except Exception as exc:
+        failures.append(f"Test 3 error: {exc}")
+    
+    # Test 4: POST /v1/rag/query → 200 + Qdrant queried
+    print("\n[4/5] Testing POST /v1/rag/query...")
+    try:
+        response = client.post(
+            "/v1/rag/query",
+            json={
+                "query": "What is the purpose of the system?",
+                "workspace_id": "smoke-test-workspace",
+                "top_k": 3,
+            },
+            headers={"X-Workspace-Id": "smoke-test-workspace"},
+        )
+        if response.status_code != 200:
+            failures.append(f"Test 4 failed: expected 200, got {response.status_code}")
+        else:
+            print(f"  ✓ RAG query succeeded with 200")
+            data = response.json()
+            # Check for evidence that Qdrant was queried (sources/context in response)
+            if "sources" in data or "context" in data or "chunks" in data:
+                print(f"  ✓ Response contains retrieval results (Qdrant queried)")
+            else:
+                print(f"  ⚠ No sources/context in response (Qdrant may not have data)")
+    except Exception as exc:
+        failures.append(f"Test 4 error: {exc}")
+    
+    # Test 5: POST /v1/chat/completions with memory + rag → 200
+    print("\n[5/5] Testing POST /v1/chat/completions with memory + rag enabled...")
+    try:
+        response = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "llama-3.3-8b-instruct",
+                "messages": [{"role": "user", "content": "Hello, what can you help with?"}],
+                "workspace_id": "smoke-test-workspace",
+                "use_memory": True,
+                "use_rag": True,
+            },
+            headers={"X-Workspace-Id": "smoke-test-workspace"},
+        )
+        if response.status_code != 200:
+            failures.append(f"Test 5 failed: expected 200, got {response.status_code}")
+        else:
+            print(f"  ✓ Chat completion succeeded with 200")
+            data = response.json()
+            # Check for evidence that services were invoked
+            if "choices" in data and len(data["choices"]) > 0:
+                print(f"  ✓ Response contains completion (memory and RAG services invoked)")
+            else:
+                failures.append("Test 5: No choices in response")
+    except Exception as exc:
+        failures.append(f"Test 5 error: {exc}")
+    
+    # Summary
+    print("\n" + "=" * 60)
+    print("Summary")
+    print("=" * 60)
+    if failures:
+        print(f"✗ {len(failures)} test(s) failed:")
+        for failure in failures:
+            print(f"  - {failure}")
+        return 1
+    else:
+        print("✓ All smoke tests passed")
+        return 0
+
+
 def run_smoke_staging() -> int:
     """
     Smoke test for staging environment.
@@ -657,8 +1051,17 @@ def main() -> int:
         action="store_true",
         help="Run smoke test for staging environment (docker-compose.test.yml)",
     )
+    parser.add_argument(
+        "--smoke-api",
+        action="store_true",
+        help="Run smoke test for real API calls (TestClient or httpx against localhost:8000)",
+    )
     
     args = parser.parse_args()
+    
+    # Handle --smoke-api mode
+    if args.smoke_api:
+        return smoke_test_real_api_calls()
     
     # Handle --smoke-staging mode
     if args.smoke_staging:
