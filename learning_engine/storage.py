@@ -9,6 +9,7 @@ import logging
 import json
 import shutil
 import re
+import hashlib
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 
@@ -106,6 +107,8 @@ class AdapterStorage:
             self.client.fput_object(self.bucket_name, object_name, archive_path)
             logger.info(f"✓ Adapter uploaded: {object_name}")
 
+            adapter_digest = self._compute_sha256(archive_path)
+
             if metadata is not None:
                 path_parts = version_prefix.split("/")
                 metadata_payload = {
@@ -114,8 +117,11 @@ class AdapterStorage:
                     "version": path_parts[2],
                     "dataset_id": metadata.get("dataset_id"),
                     "validation_metrics": metadata.get("validation_metrics", {}),
+                    "eval_scores": metadata.get("eval_scores", {}),
+                    "training_data_version": metadata.get("training_data_version"),
                     "timestamp": metadata.get("timestamp") or datetime.utcnow().isoformat(),
                     "author": metadata.get("author") or author or "unknown",
+                    "adapter_sha256": metadata.get("adapter_sha256") or adapter_digest,
                 }
                 metadata_payload.update(metadata)
 
@@ -136,6 +142,73 @@ class AdapterStorage:
         except S3Error as e:
             logger.error(f"Failed to upload adapter: {e}")
             raise
+
+    @staticmethod
+    def _compute_sha256(file_path: str) -> str:
+        digest = hashlib.sha256()
+        with open(file_path, "rb") as stream:
+            for chunk in iter(lambda: stream.read(8192), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    def set_rollback_pointer(
+        self,
+        pointer_name: str,
+        version: str,
+        model_name: Optional[str] = None,
+        project_name: Optional[str] = None,
+        reason: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Persist a named rollback pointer for a model/project namespace."""
+        selected_model = self._sanitize_path_component(model_name or self.model_name)
+        selected_project = self._sanitize_path_component(project_name or self.project_name)
+        selected_version = self._sanitize_path_component(version)
+        selected_pointer = self._sanitize_path_component(pointer_name)
+
+        payload = {
+            "model_name": selected_model,
+            "project": selected_project,
+            "pointer": selected_pointer,
+            "version": selected_version,
+            "updated_at": datetime.utcnow().isoformat(),
+            "reason": reason or "manual-update",
+        }
+
+        pointer_object = f"{selected_model}/{selected_project}/pointers/{selected_pointer}.json"
+        body = json.dumps(payload, indent=2).encode("utf-8")
+        self.client.put_object(
+            self.bucket_name,
+            pointer_object,
+            data=body,
+            length=len(body),
+            content_type="application/json",
+        )
+        logger.info(f"✓ Rollback pointer {selected_pointer} -> {selected_version}")
+        return payload
+
+    def get_rollback_pointer(
+        self,
+        pointer_name: str,
+        model_name: Optional[str] = None,
+        project_name: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Read a rollback pointer for a model/project namespace."""
+        selected_model = self._sanitize_path_component(model_name or self.model_name)
+        selected_project = self._sanitize_path_component(project_name or self.project_name)
+        selected_pointer = self._sanitize_path_component(pointer_name)
+        pointer_object = f"{selected_model}/{selected_project}/pointers/{selected_pointer}.json"
+
+        try:
+            response = self.client.get_object(self.bucket_name, pointer_object)
+            payload = json.loads(response.read().decode("utf-8"))
+            response.close()
+            response.release_conn()
+            return payload
+        except S3Error as e:
+            if e.code == "NoSuchKey":
+                return None
+            logger.error(f"Failed to read rollback pointer {selected_pointer}: {e}")
+            return None
 
     async def download_adapter(
         self,

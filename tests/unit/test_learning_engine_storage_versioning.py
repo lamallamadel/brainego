@@ -2,7 +2,6 @@
 
 import json
 import asyncio
-
 import pytest
 
 import importlib.util
@@ -98,6 +97,7 @@ def storage(monkeypatch):
     monkeypatch.setattr(storage_module, "Minio", FakeMinio)
     monkeypatch.setattr(storage_module.shutil, "make_archive", lambda *args, **kwargs: "/tmp/fake.tar.gz")
     monkeypatch.setattr(storage_module.os, "remove", lambda *args, **kwargs: None)
+    monkeypatch.setattr(storage_module.AdapterStorage, "_compute_sha256", staticmethod(lambda *args, **kwargs: "abc123"))
     return storage_module.AdapterStorage(
         endpoint="minio:9000",
         access_key="minio",
@@ -145,3 +145,44 @@ def test_list_and_get_adapter_metadata_for_model_project(storage):
     assert versions == ["v1.0", "v1.1"]
     latest = storage.get_latest_version()
     assert latest == "v1.1"
+
+
+def test_upload_adapter_includes_hash_eval_and_training_data_version(storage):
+    storage.upload_adapter(
+        local_path="/tmp/adapter",
+        version="v2.0",
+        metadata={
+            "eval_scores": {"safety": 0.98, "latency": 0.91},
+            "training_data_version": "golden-set-2026-03",
+        },
+    )
+
+    metadata_raw = storage.client.objects[(
+        "lora-adapters",
+        "llama-3.3-8b-instruct/afroware-rag/v2.0/metadata.json",
+    )]
+    metadata = json.loads(metadata_raw.decode("utf-8"))
+
+    assert metadata["adapter_sha256"] == "abc123"
+    assert metadata["eval_scores"]["safety"] == pytest.approx(0.98)
+    assert metadata["training_data_version"] == "golden-set-2026-03"
+
+
+def test_set_and_get_rollback_pointer(storage):
+    payload = storage.set_rollback_pointer(
+        pointer_name="stable",
+        version="v1.1",
+        reason="regression-on-v1.2",
+    )
+
+    assert payload["pointer"] == "stable"
+    assert payload["version"] == "v1.1"
+    assert payload["reason"] == "regression-on-v1.2"
+
+    fetched = storage.get_rollback_pointer("stable")
+    assert fetched is not None
+    assert fetched["version"] == "v1.1"
+
+
+def test_get_rollback_pointer_returns_none_when_missing(storage):
+    assert storage.get_rollback_pointer("missing") is None
