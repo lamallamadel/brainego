@@ -90,3 +90,10 @@ workspaces:
     # Per-request budget and timeout controls.
     max_tool_calls_per_request: 25
     per_call_timeout_seconds: 10
+
+    # Optional outbound network restrictions for tools that call external URLs.
+    allowed_outbound_domains:
+      - "api.linear.app"
+      - "*.notion.so"
+      - "api.atlassian.com"
+    block_private_ip_ranges: true
