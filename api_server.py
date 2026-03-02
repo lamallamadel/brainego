@@ -3648,13 +3648,20 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
     if MCP_GATEWAY_API_KEY:
         headers["authorization"] = f"Bearer {MCP_GATEWAY_API_KEY}"
     headers[WORKSPACE_ID_RESPONSE_HEADER] = payload.get("workspace_id", workspace_id)
-    redacted_arguments, argument_redactions = _redact_value_for_audit(payload.get("arguments", {}))
+    policy_redacted_arguments, policy_redactions = get_tool_policy_engine().redact_tool_arguments(
+        workspace_id=payload.get("workspace_id"),
+        server_id=request.server_id,
+        tool_name=request.tool_name,
+        arguments=payload.get("arguments", {}),
+    )
+    redacted_arguments, argument_redactions = _redact_value_for_audit(policy_redacted_arguments)
     logger.info(
-        "mcp_proxy_call action=%s server=%s tool=%s argument_redactions=%s arguments=%s",
+        "mcp_proxy_call action=%s server=%s tool=%s argument_redactions=%s policy_redactions=%s arguments=%s",
         request.action,
         request.server_id,
         request.tool_name,
         argument_redactions,
+        policy_redactions,
         redacted_arguments,
     )
     safe_request_payload, _ = _redact_value_for_audit(payload)
@@ -4061,13 +4068,20 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
         normalized_metadata_payload = dict(metadata_payload)
         normalized_metadata_payload.setdefault("workspace_id", workspace_id)
         tool_arguments["metadata"] = normalized_metadata_payload
-    redacted_arguments, argument_redactions = _redact_value_for_audit(request.arguments or {})
+    policy_redacted_arguments, policy_redactions = get_tool_policy_engine().redact_tool_arguments(
+        workspace_id=workspace_id,
+        server_id=request.server_id,
+        tool_name=request.tool_name,
+        arguments=request.arguments or {},
+    )
+    redacted_arguments, argument_redactions = _redact_value_for_audit(policy_redacted_arguments)
     logger.info(
-        "internal_mcp_tool_call server=%s tool=%s context=%s argument_redactions=%s arguments=%s",
+        "internal_mcp_tool_call server=%s tool=%s context=%s argument_redactions=%s policy_redactions=%s arguments=%s",
         request.server_id,
         request.tool_name,
         request.context or "api.internal",
         argument_redactions,
+        policy_redactions,
         redacted_arguments,
     )
     try:

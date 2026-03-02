@@ -68,6 +68,21 @@ class WorkspaceRolePolicy:
         }
 
 
+
+
+@dataclass
+class ToolRedactionRule:
+    """Argument-level redaction rule scoped by workspace policy."""
+
+    argument: str
+    patterns: List[str] = field(default_factory=list)
+    replacement: str = "[REDACTED]"
+
+    def applies_to(self, argument_name: str, value: str) -> bool:
+        if argument_name != self.argument:
+            return False
+        return any(fnmatch.fnmatch(value, pattern) for pattern in self.patterns)
+
 @dataclass
 class WorkspaceToolPolicy:
     """Policy rules scoped to one workspace."""
@@ -82,7 +97,10 @@ class WorkspaceToolPolicy:
     default_role: str = "viewer"
     role_policies: Dict[str, WorkspaceRolePolicy] = field(default_factory=dict)
     max_tool_calls_per_request: int = 0
+    max_tool_calls_per_workspace_window: int = 0
+    workspace_quota_window_seconds: int = 60
     per_call_timeout_seconds: Optional[float] = None
+    redaction_rules: List[ToolRedactionRule] = field(default_factory=list)
 
     def allowed_tools_for_action(self, action: str) -> Set[str]:
         """Return tools allowed for an action including wildcard bucket."""
@@ -118,7 +136,17 @@ class WorkspaceToolPolicy:
                 "tools": self.allowlists_tools,
             },
             "max_tool_calls_per_request": self.max_tool_calls_per_request,
+            "max_tool_calls_per_workspace_window": self.max_tool_calls_per_workspace_window,
+            "workspace_quota_window_seconds": self.workspace_quota_window_seconds,
             "per_call_timeout_seconds": self.per_call_timeout_seconds,
+            "redaction_rules": [
+                {
+                    "argument": rule.argument,
+                    "patterns": list(rule.patterns),
+                    "replacement": rule.replacement,
+                }
+                for rule in self.redaction_rules
+            ],
         }
         if self.role_policies:
             payload["default_role"] = self.default_role
@@ -144,6 +172,7 @@ class ToolPolicyEngine:
         self.default_role = _normalize_supported_role(default_role, fallback="viewer")
         self.request_counter_ttl_seconds = request_counter_ttl_seconds
         self._request_call_counts: Dict[Tuple[str, str], Tuple[int, float]] = {}
+        self._workspace_quota_windows: Dict[str, List[float]] = {}
         self._lock = threading.Lock()
 
     @classmethod
@@ -254,9 +283,21 @@ class ToolPolicyEngine:
             config.get("max_tool_calls_per_request", 0),
             field_name=f"workspaces.{workspace_id}.max_tool_calls_per_request",
         )
+        max_tool_calls_per_workspace_window = _parse_non_negative_int(
+            config.get("max_tool_calls_per_workspace_window", 0),
+            field_name=f"workspaces.{workspace_id}.max_tool_calls_per_workspace_window",
+        )
+        workspace_quota_window_seconds = _parse_positive_int(
+            config.get("workspace_quota_window_seconds", 60),
+            field_name=f"workspaces.{workspace_id}.workspace_quota_window_seconds",
+        )
         timeout_value = _parse_optional_timeout_seconds(
             config.get("per_call_timeout_seconds"),
             field_name=f"workspaces.{workspace_id}.per_call_timeout_seconds",
+        )
+        redaction_rules = _parse_redaction_rules(
+            config.get("redaction_rules"),
+            field_name=f"workspaces.{workspace_id}.redaction_rules",
         )
 
         return WorkspaceToolPolicy(
@@ -270,7 +311,10 @@ class ToolPolicyEngine:
             default_role=default_role,
             role_policies=role_policies,
             max_tool_calls_per_request=max_tool_calls_per_request,
+            max_tool_calls_per_workspace_window=max_tool_calls_per_workspace_window,
+            workspace_quota_window_seconds=workspace_quota_window_seconds,
             per_call_timeout_seconds=timeout_value,
+            redaction_rules=redaction_rules,
         )
 
     def resolve_workspace_id(self, workspace_id: Optional[str]) -> Optional[str]:
@@ -462,7 +506,7 @@ class ToolPolicyEngine:
                 workspace_id=resolved_workspace,
             )
 
-        quota_allowed, quota_reason = self._validate_request_quota(
+        quota_allowed, quota_reason = self._validate_quotas(
             workspace_policy=workspace_policy,
             workspace_id=resolved_workspace,
             request_id=request_id,
@@ -480,6 +524,37 @@ class ToolPolicyEngine:
             workspace_id=resolved_workspace,
             timeout_seconds=workspace_policy.resolve_timeout(default_timeout_seconds),
         )
+
+    def redact_tool_arguments(
+        self,
+        *,
+        workspace_id: Optional[str],
+        server_id: str,
+        tool_name: str,
+        arguments: Optional[Dict[str, Any]],
+    ) -> Tuple[Dict[str, Any], int]:
+        """Apply workspace redaction rules to argument payloads for auditing."""
+        payload = dict(arguments or {})
+        resolved_workspace = self.resolve_workspace_id(workspace_id)
+        if not resolved_workspace:
+            return payload, 0
+        workspace_policy = self.workspace_policies.get(resolved_workspace)
+        if not workspace_policy or not workspace_policy.redaction_rules:
+            return payload, 0
+
+        redacted_payload = dict(payload)
+        redactions = 0
+        for rule in workspace_policy.redaction_rules:
+            if rule.argument not in redacted_payload:
+                continue
+            values = _extract_argument_values(redacted_payload[rule.argument])
+            if not values:
+                continue
+            if any(any(fnmatch.fnmatch(value, pattern) for pattern in rule.patterns) for value in values):
+                redacted_payload[rule.argument] = rule.replacement
+                redactions += 1
+
+        return redacted_payload, redactions
 
     def _validate_allowlists(
         self,
@@ -517,36 +592,50 @@ class ToolPolicyEngine:
 
         return True, None
 
-    def _validate_request_quota(
+    def _validate_quotas(
         self,
         *,
         workspace_policy: WorkspaceToolPolicy,
         workspace_id: str,
         request_id: Optional[str],
     ) -> Tuple[bool, Optional[str]]:
-        max_calls = workspace_policy.max_tool_calls_per_request
-        if max_calls <= 0:
-            return True, None
-
-        # Request-scoped quota is only enforceable when request_id is available.
-        if not request_id:
-            return True, None
-
         now = time.time()
-        key = (workspace_id, request_id)
 
         with self._lock:
             self._cleanup_stale_request_counters(now)
-            current_count, _ = self._request_call_counts.get(key, (0, now))
-            if current_count >= max_calls:
-                return (
-                    False,
-                    (
-                        f"max tool calls per request exceeded ({max_calls}) "
-                        f"for request '{request_id}'"
-                    ),
-                )
-            self._request_call_counts[key] = (current_count + 1, now)
+            self._cleanup_workspace_quota_windows(now)
+
+            workspace_limit = workspace_policy.max_tool_calls_per_workspace_window
+            if workspace_limit > 0:
+                workspace_calls = self._workspace_quota_windows.get(workspace_id, [])
+                if len(workspace_calls) >= workspace_limit:
+                    return (
+                        False,
+                        (
+                            "workspace tool-call quota exceeded "
+                            f"({workspace_limit}/{workspace_policy.workspace_quota_window_seconds}s)"
+                        ),
+                    )
+
+            request_limit = workspace_policy.max_tool_calls_per_request
+            request_key = None
+            if request_limit > 0 and request_id:
+                request_key = (workspace_id, request_id)
+                current_count, _ = self._request_call_counts.get(request_key, (0, now))
+                if current_count >= request_limit:
+                    return (
+                        False,
+                        (
+                            f"max tool calls per request exceeded ({request_limit}) "
+                            f"for request '{request_id}'"
+                        ),
+                    )
+
+            if workspace_limit > 0:
+                self._workspace_quota_windows.setdefault(workspace_id, []).append(now)
+            if request_key is not None:
+                current_count, _ = self._request_call_counts.get(request_key, (0, now))
+                self._request_call_counts[request_key] = (current_count + 1, now)
 
         return True, None
 
@@ -555,6 +644,23 @@ class ToolPolicyEngine:
         stale_keys = [key for key, (_, ts) in self._request_call_counts.items() if ts < cutoff]
         for key in stale_keys:
             self._request_call_counts.pop(key, None)
+
+    def _cleanup_workspace_quota_windows(self, now: float) -> None:
+        stale_workspaces: List[str] = []
+        for workspace_id, timestamps in self._workspace_quota_windows.items():
+            workspace_policy = self.workspace_policies.get(workspace_id)
+            if not workspace_policy or workspace_policy.max_tool_calls_per_workspace_window <= 0:
+                stale_workspaces.append(workspace_id)
+                continue
+            cutoff = now - workspace_policy.workspace_quota_window_seconds
+            fresh_timestamps = [ts for ts in timestamps if ts >= cutoff]
+            if fresh_timestamps:
+                self._workspace_quota_windows[workspace_id] = fresh_timestamps
+            else:
+                stale_workspaces.append(workspace_id)
+
+        for workspace_id in stale_workspaces:
+            self._workspace_quota_windows.pop(workspace_id, None)
 
     def get_workspace_policy(self, workspace_id: str) -> Dict[str, Any]:
         """Return serialized workspace policy payload."""
@@ -680,6 +786,18 @@ def _parse_non_negative_int(raw_value: Any, *, field_name: str) -> int:
     return parsed
 
 
+def _parse_positive_int(raw_value: Any, *, field_name: str) -> int:
+    if isinstance(raw_value, bool):
+        raise ValueError(f"{field_name} must be a positive integer")
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a positive integer") from exc
+    if parsed <= 0:
+        raise ValueError(f"{field_name} must be a positive integer")
+    return parsed
+
+
 def _parse_optional_timeout_seconds(raw_value: Any, *, field_name: str) -> Optional[float]:
     if raw_value is None:
         return None
@@ -801,6 +919,38 @@ def _parse_role_policies(raw_roles: Any, *, field_name: str) -> Dict[str, Worksp
             ),
         )
 
+    return parsed
+
+
+def _parse_redaction_rules(raw_rules: Any, *, field_name: str) -> List[ToolRedactionRule]:
+    if raw_rules is None:
+        return []
+    if not isinstance(raw_rules, list):
+        raise ValueError(f"{field_name} must be a list")
+
+    parsed: List[ToolRedactionRule] = []
+    for index, raw_rule in enumerate(raw_rules):
+        if not isinstance(raw_rule, dict):
+            raise ValueError(f"{field_name}[{index}] must be a mapping")
+        argument = raw_rule.get("argument")
+        if not isinstance(argument, str) or not argument.strip():
+            raise ValueError(f"{field_name}[{index}].argument must be a non-empty string")
+        patterns = _as_pattern_list(
+            raw_rule.get("patterns"),
+            field_name=f"{field_name}[{index}].patterns",
+        )
+        if not patterns:
+            raise ValueError(f"{field_name}[{index}].patterns must include at least one pattern")
+        replacement = raw_rule.get("replacement", "[REDACTED]")
+        if not isinstance(replacement, str):
+            raise ValueError(f"{field_name}[{index}].replacement must be a string")
+        parsed.append(
+            ToolRedactionRule(
+                argument=argument.strip(),
+                patterns=patterns,
+                replacement=replacement,
+            )
+        )
     return parsed
 
 
