@@ -418,3 +418,146 @@ groups:
         annotations:
           summary: "High trace drop rate"
           description: "OpenTelemetry Collector is dropping {{ $value }}% of spans (threshold: 5%)"
+
+  - name: chaos_engineering_alerts
+    interval: 30s
+    rules:
+      # Circuit breaker open
+      - alert: CircuitBreakerOpen
+        expr: circuit_breaker_state{state="open"} == 1
+        for: 2m
+        labels:
+          severity: warning
+          component: circuit-breaker
+        annotations:
+          summary: "Circuit breaker is open"
+          description: "Circuit breaker '{{ $labels.name }}' is in OPEN state for {{ $labels.service }}"
+
+      # Circuit breaker open for extended period (critical)
+      - alert: CircuitBreakerOpenExtended
+        expr: circuit_breaker_state{state="open"} == 1
+        for: 10m
+        labels:
+          severity: critical
+          component: circuit-breaker
+        annotations:
+          summary: "Circuit breaker open for extended period"
+          description: "Circuit breaker '{{ $labels.name }}' has been OPEN for over 10 minutes (service: {{ $labels.service }})"
+
+      # High circuit breaker rejection rate
+      - alert: CircuitBreakerHighRejectionRate
+        expr: |
+          (
+            rate(circuit_breaker_rejections_total[5m]) /
+            rate(circuit_breaker_requests_total[5m])
+          ) * 100 > 50
+        for: 3m
+        labels:
+          severity: warning
+          component: circuit-breaker
+        annotations:
+          summary: "High circuit breaker rejection rate"
+          description: "Circuit breaker '{{ $labels.name }}' is rejecting {{ $value }}% of requests (threshold: 50%)"
+
+      # Pod restart rate high
+      - alert: PodRestartRateHigh
+        expr: rate(kube_pod_container_status_restarts_total[15m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          component: kubernetes
+        annotations:
+          summary: "High pod restart rate detected"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has restart rate of {{ $value }} restarts/sec over 15m"
+
+      # Pod restart rate critical
+      - alert: PodRestartRateCritical
+        expr: rate(kube_pod_container_status_restarts_total[15m]) > 0.3
+        for: 2m
+        labels:
+          severity: critical
+          component: kubernetes
+        annotations:
+          summary: "Critical pod restart rate detected"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has critical restart rate of {{ $value }} restarts/sec - investigate immediately"
+
+      # Multiple pod restarts in short time
+      - alert: PodRestartSpike
+        expr: increase(kube_pod_container_status_restarts_total[10m]) > 3
+        for: 1m
+        labels:
+          severity: critical
+          component: kubernetes
+        annotations:
+          summary: "Pod restart spike detected"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has restarted {{ $value }} times in the last 10 minutes"
+
+      # CrashLoopBackOff detected
+      - alert: PodCrashLoopBackOff
+        expr: kube_pod_container_status_waiting_reason{reason="CrashLoopBackOff"} == 1
+        for: 5m
+        labels:
+          severity: critical
+          component: kubernetes
+        annotations:
+          summary: "Pod in CrashLoopBackOff"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} is in CrashLoopBackOff state"
+
+      # Pod not ready for extended period
+      - alert: PodNotReady
+        expr: kube_pod_status_ready{condition="false"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          component: kubernetes
+        annotations:
+          summary: "Pod not ready"
+          description: "Pod {{ $labels.namespace }}/{{ $labels.pod }} has been not ready for over 5 minutes"
+
+      # StatefulSet pod down
+      - alert: StatefulSetPodDown
+        expr: kube_statefulset_status_replicas_ready < kube_statefulset_replicas
+        for: 5m
+        labels:
+          severity: critical
+          component: kubernetes
+        annotations:
+          summary: "StatefulSet pod down"
+          description: "StatefulSet {{ $labels.namespace }}/{{ $labels.statefulset }} has {{ $value }} pods not ready"
+
+      # High failure rate during chaos test
+      - alert: ChaosTestHighFailureRate
+        expr: |
+          (
+            sum(rate(chaos_test_failures_total[5m])) /
+            sum(rate(chaos_test_total[5m]))
+          ) * 100 > 25
+        for: 3m
+        labels:
+          severity: warning
+          component: chaos-engineering
+        annotations:
+          summary: "High failure rate during chaos testing"
+          description: "Chaos tests are experiencing {{ $value }}% failure rate (threshold: 25%)"
+
+      # Network partition detected
+      - alert: NetworkPartitionDetected
+        expr: network_partition_active == 1
+        for: 1m
+        labels:
+          severity: warning
+          component: chaos-engineering
+        annotations:
+          summary: "Network partition detected"
+          description: "Network partition active between {{ $labels.source }} and {{ $labels.target }}"
+
+      # Memory pressure detected
+      - alert: MemoryPressureDetected
+        expr: container_memory_working_set_bytes / container_spec_memory_limit_bytes > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          component: chaos-engineering
+        annotations:
+          summary: "Memory pressure detected"
+          description: "Container {{ $labels.namespace }}/{{ $labels.pod }}/{{ $labels.container }} is using {{ $value | humanizePercentage }} of memory limit"

@@ -20,6 +20,53 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
+# Prometheus metrics - optional dependency
+try:
+    from prometheus_client import Gauge, Counter
+    METRICS_AVAILABLE = True
+    
+    # Circuit breaker state gauge (0=closed, 1=open, 2=half_open)
+    circuit_breaker_state_gauge = Gauge(
+        'circuit_breaker_state',
+        'Circuit breaker state (0=closed, 1=open, 2=half_open)',
+        ['name', 'service']
+    )
+    
+    # Circuit breaker request counters
+    circuit_breaker_requests_counter = Counter(
+        'circuit_breaker_requests_total',
+        'Total requests through circuit breaker',
+        ['name', 'service']
+    )
+    
+    circuit_breaker_rejections_counter = Counter(
+        'circuit_breaker_rejections_total',
+        'Total rejections by circuit breaker',
+        ['name', 'service']
+    )
+    
+    circuit_breaker_failures_counter = Counter(
+        'circuit_breaker_failures_total',
+        'Total failures through circuit breaker',
+        ['name', 'service']
+    )
+    
+    circuit_breaker_successes_counter = Counter(
+        'circuit_breaker_successes_total',
+        'Total successes through circuit breaker',
+        ['name', 'service']
+    )
+    
+    circuit_breaker_timeouts_counter = Counter(
+        'circuit_breaker_timeouts_total',
+        'Total timeouts through circuit breaker',
+        ['name', 'service']
+    )
+    
+except ImportError:
+    METRICS_AVAILABLE = False
+    logger.warning('prometheus_client not available, circuit breaker metrics disabled')
+
 
 class CircuitState(str, Enum):
     """Circuit breaker states."""
@@ -61,7 +108,8 @@ class CircuitBreaker:
     def __init__(
         self,
         name: str,
-        config: Optional[CircuitBreakerConfig] = None
+        config: Optional[CircuitBreakerConfig] = None,
+        service: str = "unknown"
     ):
         """
         Initialize circuit breaker.
@@ -69,8 +117,10 @@ class CircuitBreaker:
         Args:
             name: Identifier for this circuit breaker
             config: Configuration settings
+            service: Service name for metrics labels
         """
         self.name = name
+        self.service = service
         self.config = config or CircuitBreakerConfig()
         
         self.state = CircuitState.CLOSED
@@ -86,12 +136,29 @@ class CircuitBreaker:
         self.total_timeouts = 0
         self.total_circuit_open_rejections = 0
         
+        # Initialize metrics
+        self._update_state_metric()
+        
         logger.info(
             f"Circuit breaker '{name}' initialized: "
             f"failure_threshold={self.config.failure_threshold}, "
             f"timeout={self.config.timeout_seconds}s, "
             f"recovery={self.config.recovery_timeout_seconds}s"
         )
+    
+    def _update_state_metric(self):
+        """Update Prometheus state metric."""
+        if METRICS_AVAILABLE:
+            state_value = {
+                CircuitState.CLOSED: 0,
+                CircuitState.OPEN: 1,
+                CircuitState.HALF_OPEN: 2
+            }.get(self.state, 0)
+            
+            circuit_breaker_state_gauge.labels(
+                name=self.name,
+                service=self.service
+            ).set(state_value)
     
     def _should_attempt_reset(self) -> bool:
         """Check if enough time has passed to attempt reset from OPEN to HALF_OPEN."""
@@ -109,6 +176,9 @@ class CircuitBreaker:
         old_state = self.state
         self.state = new_state
         self.last_state_change = datetime.utcnow()
+        
+        # Update metrics
+        self._update_state_metric()
         
         logger.warning(
             f"Circuit breaker '{self.name}' state transition: "
@@ -132,6 +202,13 @@ class CircuitBreaker:
         """
         self.total_requests += 1
         
+        # Record request metric
+        if METRICS_AVAILABLE:
+            circuit_breaker_requests_counter.labels(
+                name=self.name,
+                service=self.service
+            ).inc()
+        
         # Check if we should attempt reset
         if self._should_attempt_reset():
             self._transition_state(
@@ -142,6 +219,14 @@ class CircuitBreaker:
         # Reject if circuit is open
         if self.state == CircuitState.OPEN:
             self.total_circuit_open_rejections += 1
+            
+            # Record rejection metric
+            if METRICS_AVAILABLE:
+                circuit_breaker_rejections_counter.labels(
+                    name=self.name,
+                    service=self.service
+                ).inc()
+            
             raise CircuitBreakerError(
                 f"Circuit breaker '{self.name}' is OPEN. "
                 f"Last failure: {self.last_failure_time.isoformat() if self.last_failure_time else 'unknown'}"
@@ -160,6 +245,14 @@ class CircuitBreaker:
             
         except asyncio.TimeoutError:
             self.total_timeouts += 1
+            
+            # Record timeout metric
+            if METRICS_AVAILABLE:
+                circuit_breaker_timeouts_counter.labels(
+                    name=self.name,
+                    service=self.service
+                ).inc()
+            
             self._on_failure(f"timeout after {self.config.timeout_seconds}s")
             raise
             
@@ -172,6 +265,13 @@ class CircuitBreaker:
         self.total_successes += 1
         self.failure_count = 0
         self.success_count += 1
+        
+        # Record success metric
+        if METRICS_AVAILABLE:
+            circuit_breaker_successes_counter.labels(
+                name=self.name,
+                service=self.service
+            ).inc()
         
         if self.state == CircuitState.HALF_OPEN:
             if self.success_count >= self.config.success_threshold:
@@ -189,6 +289,13 @@ class CircuitBreaker:
         self.failure_count += 1
         self.success_count = 0
         self.last_failure_time = datetime.utcnow()
+        
+        # Record failure metric
+        if METRICS_AVAILABLE:
+            circuit_breaker_failures_counter.labels(
+                name=self.name,
+                service=self.service
+            ).inc()
         
         logger.warning(
             f"Circuit breaker '{self.name}': failure #{self.failure_count} - {reason}"

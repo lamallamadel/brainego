@@ -24,8 +24,9 @@ logger = logging.getLogger(__name__)
 class ProductionValidator:
     """Orchestrate production validation tests"""
 
-    def __init__(self, skip_tests: List[str] = None):
+    def __init__(self, skip_tests: List[str] = None, chaos_advanced: bool = False):
         self.skip_tests = skip_tests or []
+        self.chaos_advanced = chaos_advanced
         self.results = {
             'timestamp': datetime.now().isoformat(),
             'tests': {},
@@ -163,23 +164,30 @@ class ProductionValidator:
             logger.error(f'✗ k6 load test failed: {result["stderr"]}')
             return False
 
-    def run_chaos_engineering(self) -> bool:
+    def run_chaos_engineering(self, advanced: bool = False) -> bool:
         """Run chaos engineering tests"""
         if 'chaos' in self.skip_tests:
             logger.info('Skipping chaos engineering')
             return True
 
         logger.info('=' * 60)
-        logger.info('Running Chaos Engineering Tests')
+        if advanced:
+            logger.info('Running Advanced Chaos Engineering Tests')
+        else:
+            logger.info('Running Chaos Engineering Tests')
         logger.info('=' * 60)
 
-        result = self.run_command([
-            'python', 'chaos_engineering.py',
-        ], timeout=1800)
+        # Run Python script directly with advanced flag if needed
+        cmd = ['python', 'chaos_engineering.py']
+        if advanced:
+            cmd.append('--advanced')
+        
+        result = self.run_command(cmd, timeout=2400)
 
         self.results['tests']['chaos_engineering'] = {
             'status': 'passed' if result['success'] else 'failed',
             'output': result['stdout'][-1000:],
+            'advanced': advanced,
         }
 
         if result['success']:
@@ -403,7 +411,7 @@ class ProductionValidator:
         self.run_k6_load_test()
         time.sleep(5)
 
-        self.run_chaos_engineering()
+        self.run_chaos_engineering(advanced=self.chaos_advanced)
         time.sleep(10)
 
         self.run_security_audit()
@@ -442,6 +450,11 @@ def main():
         action='store_true',
         help='Run quick validation (skip chaos and k6)'
     )
+    parser.add_argument(
+        '--chaos',
+        action='store_true',
+        help='Run advanced chaos engineering tests (network partition, memory pressure, database failover)'
+    )
 
     args = parser.parse_args()
 
@@ -449,7 +462,7 @@ def main():
     if args.quick:
         skip_tests.extend(['chaos', 'k6'])
 
-    validator = ProductionValidator(skip_tests=skip_tests)
+    validator = ProductionValidator(skip_tests=skip_tests, chaos_advanced=args.chaos)
     exit_code = validator.run_validation()
     sys.exit(exit_code)
 

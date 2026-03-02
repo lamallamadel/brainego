@@ -253,6 +253,71 @@ class MetricsExporter:
             registry=self.registry
         )
         
+        # Circuit breaker metrics
+        self.circuit_breaker_state = Gauge(
+            'circuit_breaker_state',
+            'Circuit breaker state (0=closed, 1=open, 2=half_open)',
+            ['name', 'service'],
+            registry=self.registry
+        )
+        
+        self.circuit_breaker_requests_total = Counter(
+            'circuit_breaker_requests_total',
+            'Total requests through circuit breaker',
+            ['name', 'service'],
+            registry=self.registry
+        )
+        
+        self.circuit_breaker_rejections_total = Counter(
+            'circuit_breaker_rejections_total',
+            'Total rejections by circuit breaker',
+            ['name', 'service'],
+            registry=self.registry
+        )
+        
+        self.circuit_breaker_failures_total = Counter(
+            'circuit_breaker_failures_total',
+            'Total failures through circuit breaker',
+            ['name', 'service'],
+            registry=self.registry
+        )
+        
+        self.circuit_breaker_successes_total = Counter(
+            'circuit_breaker_successes_total',
+            'Total successes through circuit breaker',
+            ['name', 'service'],
+            registry=self.registry
+        )
+        
+        self.circuit_breaker_timeouts_total = Counter(
+            'circuit_breaker_timeouts_total',
+            'Total timeouts through circuit breaker',
+            ['name', 'service'],
+            registry=self.registry
+        )
+        
+        # Chaos engineering metrics
+        self.chaos_test_total = Counter(
+            'chaos_test_total',
+            'Total chaos tests executed',
+            ['test_type'],
+            registry=self.registry
+        )
+        
+        self.chaos_test_failures_total = Counter(
+            'chaos_test_failures_total',
+            'Total chaos test failures',
+            ['test_type', 'service'],
+            registry=self.registry
+        )
+        
+        self.network_partition_active = Gauge(
+            'network_partition_active',
+            'Network partition active (1=active, 0=inactive)',
+            ['source', 'target'],
+            registry=self.registry
+        )
+        
         # Service info
         self.service_info = Info(
             'service',
@@ -447,6 +512,89 @@ class MetricsExporter:
     def record_cache_miss(self, cache_type: str):
         """Record cache miss."""
         self.cache_misses_total.labels(cache_type=cache_type).inc()
+    
+    def update_circuit_breaker_state(
+        self,
+        name: str,
+        service: str,
+        state: str,
+        total_requests: int = 0,
+        total_rejections: int = 0,
+        total_failures: int = 0,
+        total_successes: int = 0,
+        total_timeouts: int = 0
+    ):
+        """Update circuit breaker metrics."""
+        # Convert state to numeric value
+        state_value = {
+            'closed': 0,
+            'open': 1,
+            'half_open': 2
+        }.get(state.lower(), 0)
+        
+        self.circuit_breaker_state.labels(
+            name=name,
+            service=service
+        ).set(state_value)
+        
+        # Update counters if values provided
+        if total_requests > 0:
+            # Note: Counters can only be incremented, not set
+            # In practice, circuit breaker should call inc() directly
+            pass
+    
+    def record_circuit_breaker_request(self, name: str, service: str):
+        """Record circuit breaker request."""
+        self.circuit_breaker_requests_total.labels(
+            name=name,
+            service=service
+        ).inc()
+    
+    def record_circuit_breaker_rejection(self, name: str, service: str):
+        """Record circuit breaker rejection."""
+        self.circuit_breaker_rejections_total.labels(
+            name=name,
+            service=service
+        ).inc()
+    
+    def record_circuit_breaker_failure(self, name: str, service: str):
+        """Record circuit breaker failure."""
+        self.circuit_breaker_failures_total.labels(
+            name=name,
+            service=service
+        ).inc()
+    
+    def record_circuit_breaker_success(self, name: str, service: str):
+        """Record circuit breaker success."""
+        self.circuit_breaker_successes_total.labels(
+            name=name,
+            service=service
+        ).inc()
+    
+    def record_circuit_breaker_timeout(self, name: str, service: str):
+        """Record circuit breaker timeout."""
+        self.circuit_breaker_timeouts_total.labels(
+            name=name,
+            service=service
+        ).inc()
+    
+    def record_chaos_test(self, test_type: str):
+        """Record chaos test execution."""
+        self.chaos_test_total.labels(test_type=test_type).inc()
+    
+    def record_chaos_test_failure(self, test_type: str, service: str):
+        """Record chaos test failure."""
+        self.chaos_test_failures_total.labels(
+            test_type=test_type,
+            service=service
+        ).inc()
+    
+    def set_network_partition(self, source: str, target: str, active: bool):
+        """Set network partition status."""
+        self.network_partition_active.labels(
+            source=source,
+            target=target
+        ).set(1 if active else 0)
     
     def get_metrics(self) -> bytes:
         """Get current metrics in Prometheus format."""
