@@ -1618,7 +1618,12 @@ def main() -> int:
     parser.add_argument(
         "--smoke-staging",
         action="store_true",
-        help="Run smoke test for staging environment (docker-compose.test.yml)",
+        help="Run smoke tests (API calls, metrics/health, log scrubbing)",
+    )
+    parser.add_argument(
+        "--smoke-only",
+        action="store_true",
+        help="Run smoke tests only (alias for --smoke-staging, skips pytest)",
     )
     parser.add_argument(
         "--smoke-api",
@@ -1638,21 +1643,146 @@ def main() -> int:
     
     args = parser.parse_args()
     
-    # Handle --smoke-log-scrubbing mode
-    if args.smoke_log_scrubbing:
+    # Handle individual smoke test modes (backward compatibility)
+    if args.smoke_log_scrubbing and not args.smoke_staging and not args.smoke_only:
         return smoke_test_log_scrubbing()
     
-    # Handle --smoke-metrics-health mode
-    if args.smoke_metrics_health:
+    if args.smoke_metrics_health and not args.smoke_staging and not args.smoke_only:
         return smoke_test_metrics_and_health()
     
-    # Handle --smoke-api mode
-    if args.smoke_api:
+    if args.smoke_api and not args.smoke_staging and not args.smoke_only:
         return smoke_test_real_api_calls()
     
-    # Handle --smoke-staging mode
-    if args.smoke_staging:
-        return run_smoke_staging()
+    # Handle --smoke-staging or --smoke-only mode
+    if args.smoke_staging or args.smoke_only:
+        # Determine if we should run pytest first
+        run_pytest_first = args.run_pytest and not args.smoke_only
+        overall_exit_code = 0
+        
+        # Run pytest first if requested and not --smoke-only
+        if run_pytest_first:
+            print("=" * 60)
+            print("Running Integration Tests via pytest")
+            print("=" * 60)
+            
+            pytest_cmd = [
+                sys.executable,
+                "-m",
+                "pytest",
+                "tests/integration/",
+                "-m",
+                "integration",
+                "-v"
+            ]
+            
+            print(f"Command: {' '.join(pytest_cmd)}")
+            print()
+            
+            try:
+                result = subprocess.run(pytest_cmd, check=False)
+                pytest_exit_code = result.returncode
+                
+                print()
+                print("=" * 60)
+                if pytest_exit_code == 0:
+                    print("✓ All integration tests passed")
+                else:
+                    print(f"✗ Integration tests failed (exit code: {pytest_exit_code})")
+                print("=" * 60)
+                print()
+                
+                if pytest_exit_code != 0:
+                    overall_exit_code = pytest_exit_code
+            except Exception as e:
+                print(f"✗ Failed to run pytest: {e}")
+                print()
+                overall_exit_code = 1
+        
+        # Print banner for smoke tests
+        print("=" * 60)
+        print("SMOKE TESTS - STAGING ENVIRONMENT")
+        print("=" * 60)
+        print()
+        
+        # Track smoke test results
+        smoke_results = {
+            "real_api_calls": None,
+            "metrics_and_health": None,
+            "log_scrubbing": None,
+        }
+        
+        # Run smoke_test_real_api_calls()
+        print("\n" + "▶" * 30)
+        print("Running: smoke_test_real_api_calls()")
+        print("▶" * 30)
+        try:
+            smoke_results["real_api_calls"] = smoke_test_real_api_calls()
+        except Exception as e:
+            print(f"✗ smoke_test_real_api_calls() raised exception: {e}")
+            import traceback
+            traceback.print_exc()
+            smoke_results["real_api_calls"] = 1
+        
+        # Run smoke_test_metrics_and_health()
+        print("\n" + "▶" * 30)
+        print("Running: smoke_test_metrics_and_health()")
+        print("▶" * 30)
+        try:
+            smoke_results["metrics_and_health"] = smoke_test_metrics_and_health()
+        except Exception as e:
+            print(f"✗ smoke_test_metrics_and_health() raised exception: {e}")
+            import traceback
+            traceback.print_exc()
+            smoke_results["metrics_and_health"] = 1
+        
+        # Run smoke_test_log_scrubbing()
+        print("\n" + "▶" * 30)
+        print("Running: smoke_test_log_scrubbing()")
+        print("▶" * 30)
+        try:
+            smoke_results["log_scrubbing"] = smoke_test_log_scrubbing()
+        except Exception as e:
+            print(f"✗ smoke_test_log_scrubbing() raised exception: {e}")
+            import traceback
+            traceback.print_exc()
+            smoke_results["log_scrubbing"] = 1
+        
+        # Print summary of smoke test results
+        print("\n" + "=" * 60)
+        print("SMOKE TEST SUMMARY")
+        print("=" * 60)
+        
+        if run_pytest_first:
+            pytest_status = "✓ PASSED" if overall_exit_code == 0 else "✗ FAILED"
+            print(f"Pytest Integration Tests: {pytest_status}")
+            print()
+        
+        passed_tests = []
+        failed_tests = []
+        
+        for test_name, exit_code in smoke_results.items():
+            display_name = test_name.replace("_", " ").title()
+            if exit_code == 0:
+                passed_tests.append(display_name)
+                print(f"✓ {display_name}: PASSED")
+            else:
+                failed_tests.append(display_name)
+                print(f"✗ {display_name}: FAILED (exit code: {exit_code})")
+                if overall_exit_code == 0:
+                    overall_exit_code = exit_code
+        
+        print()
+        print(f"Total: {len(passed_tests)} passed, {len(failed_tests)} failed")
+        
+        if failed_tests:
+            print()
+            print("Failed tests:")
+            for test_name in failed_tests:
+                print(f"  - {test_name}")
+        
+        print("=" * 60)
+        
+        return overall_exit_code
     
     # Handle --run-pytest mode
     if args.run_pytest:
