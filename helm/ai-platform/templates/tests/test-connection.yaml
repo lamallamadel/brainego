@@ -1,0 +1,60 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ .Release.Name }}-test-connection"
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: test-connection
+      image: busybox:latest
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Testing service connectivity..."
+          
+          {{- if .Values.gateway.enabled }}
+          echo "Testing Gateway service..."
+          wget -O- --timeout=10 http://gateway:{{ .Values.gateway.service.port }}/health || exit 1
+          echo "✓ Gateway service accessible"
+          {{- end }}
+          
+          {{- if .Values.agentRouter.enabled }}
+          echo "Testing Agent Router service..."
+          wget -O- --timeout=10 http://agent-router:{{ .Values.agentRouter.service.port }}/health || exit 1
+          echo "✓ Agent Router service accessible"
+          {{- end }}
+          
+          {{- if .Values.qdrant.enabled }}
+          echo "Testing Qdrant service..."
+          wget -O- --timeout=10 http://qdrant:{{ .Values.qdrant.service.port }}/health || exit 1
+          echo "✓ Qdrant service accessible"
+          {{- end }}
+          
+          {{- if .Values.redis.enabled }}
+          echo "Testing Redis service..."
+          nc -zv redis {{ .Values.redis.service.port }} || exit 1
+          echo "✓ Redis service accessible"
+          {{- end }}
+          
+          {{- if .Values.postgres.enabled }}
+          echo "Testing Postgres service..."
+          nc -zv postgres {{ .Values.postgres.service.port }} || exit 1
+          echo "✓ Postgres service accessible"
+          {{- end }}
+          
+          {{- if .Values.neo4j.enabled }}
+          echo "Testing Neo4j service..."
+          nc -zv neo4j {{ .Values.neo4j.service.boltPort }} || exit 1
+          echo "✓ Neo4j service accessible"
+          {{- end }}
+          
+          echo "All service connectivity tests passed!"

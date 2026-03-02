@@ -1,0 +1,53 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: "{{ .Release.Name }}-test-pvc"
+  namespace: {{ .Values.namespace.name }}
+  labels:
+    app.kubernetes.io/name: {{ .Chart.Name }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/managed-by: {{ .Release.Service }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  serviceAccountName: {{ .Release.Name }}-test-sa
+  containers:
+    - name: test-pvc
+      image: bitnami/kubectl:latest
+      command:
+        - /bin/sh
+        - -c
+        - |
+          echo "Testing PVC mounts..."
+          
+          # Get all PVCs in namespace
+          PVCS=$(kubectl get pvc -n {{ .Values.namespace.name }} -o json)
+          
+          # Check if any PVCs exist
+          PVC_COUNT=$(echo "$PVCS" | jq '.items | length')
+          
+          if [ "$PVC_COUNT" -eq 0 ]; then
+            echo "Warning: No PVCs found in namespace"
+            exit 0
+          fi
+          
+          echo "Found $PVC_COUNT PVC(s)"
+          
+          # Check each PVC is Bound
+          UNBOUND_COUNT=$(echo "$PVCS" | jq '[.items[] | select(.status.phase != "Bound")] | length')
+          
+          if [ "$UNBOUND_COUNT" -gt 0 ]; then
+            echo "Error: $UNBOUND_COUNT PVC(s) not bound"
+            echo "$PVCS" | jq -r '.items[] | select(.status.phase != "Bound") | "\(.metadata.name): \(.status.phase)"'
+            exit 1
+          fi
+          
+          echo "✓ All PVCs are bound"
+          
+          # List PVCs with their status
+          echo "PVC Status:"
+          echo "$PVCS" | jq -r '.items[] | "\(.metadata.name): \(.status.phase) - \(.spec.resources.requests.storage)"'
+          
+          echo "All PVC tests passed!"

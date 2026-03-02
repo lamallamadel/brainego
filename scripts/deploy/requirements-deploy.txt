@@ -1,0 +1,13 @@
+# Deployment Script Dependencies
+#
+# Install with: pip install -r requirements-deploy.txt
+#
+
+# YAML parsing for Helm charts and Kubernetes manifests
+pyyaml>=6.0.1
+
+# Kubernetes Python client for programmatic K8s API access
+kubernetes>=28.1.0
+
+# HTTP requests for smoke tests and API validation
+requests>=2.31.0
