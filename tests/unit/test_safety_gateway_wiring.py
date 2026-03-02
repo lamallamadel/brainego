@@ -13,7 +13,7 @@ def test_safety_gateway_configuration_and_verdict_helpers_exist():
     assert "SAFETY_DECISION_VERSION = \"v2\"" in API_SERVER_SOURCE
     assert "def evaluate_safety_text(" in API_SERVER_SOURCE
     assert "def enforce_safety_gateway(" in API_SERVER_SOURCE
-    assert "Safety gateway verdict endpoint=%s verdict=%s" in API_SERVER_SOURCE
+    assert "Safety gateway verdict endpoint=%s workspace=%s verdict=%s" in API_SERVER_SOURCE
 
 
 def test_chat_and_rag_endpoints_invoke_safety_gateway_before_core_pipeline():
@@ -24,6 +24,12 @@ def test_chat_and_rag_endpoints_invoke_safety_gateway_before_core_pipeline():
     assert "enforce_safety_gateway(safety_verdict)" in API_SERVER_SOURCE
 
 
+def test_safety_prometheus_metrics_include_endpoint_and_workspace_labels():
+    assert "api_safety_verdicts_total" in API_SERVER_SOURCE
+    assert "api_safety_blocked_categories_total" in API_SERVER_SOURCE
+    assert '["workspace_id", "endpoint", "verdict"]' in API_SERVER_SOURCE
+    assert '["workspace_id", "endpoint", "category"]' in API_SERVER_SOURCE
+    assert "usage_metering.record_safety_verdict(" in API_SERVER_SOURCE
 def test_structured_verdict_includes_reason_codes_and_schema_version():
     assert "class SafetyVerdictResponse(BaseModel):" in API_SERVER_SOURCE
     assert "reason_code: str = Field(..., description=\"Primary machine-readable safety reason code\")" in API_SERVER_SOURCE
