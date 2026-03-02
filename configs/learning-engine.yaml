@@ -33,6 +33,20 @@ training:
   min_samples: 100
   description: "Training hyperparameters optimized for LoRA fine-tuning"
 
+golden_validation:
+  enabled: true
+  required: false
+  suite_path: "tests/contract/fixtures/lora_regression_prompts.ndjson"
+  baseline_output_path: "tests/contract/fixtures/lora_baseline_outputs.ndjson"
+  candidate_output_dir: "./lora_validation"
+  max_new_tokens: 192
+  thresholds:
+    max_regressions: 1
+    max_mean_score_drop: 0.15
+    min_pass_rate: 0.85
+    max_unsafe_cases: 0
+  description: "Golden-set validation gate + thresholds for LoRA promotion"
+
 storage:
   endpoint: "minio:9000"
   access_key: "minioadmin"

@@ -12,10 +12,12 @@ from .fisher import FisherInformationCalculator
 from .trainer import LoRATrainer
 from .storage import AdapterStorage
 from .scheduler import TrainingScheduler
+from .validator import GoldenSetValidator
 
 __all__ = [
     "FisherInformationCalculator",
     "LoRATrainer",
     "AdapterStorage",
-    "TrainingScheduler"
+    "TrainingScheduler",
+    "GoldenSetValidator",
 ]

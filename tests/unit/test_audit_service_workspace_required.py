@@ -11,7 +11,7 @@ def test_add_event_requires_workspace_id_before_db_access() -> None:
 
     with pytest.raises(ValueError, match="workspace_id is required for audit events"):
         service.add_event(
-            event_type="request",
+            event_type="request_event",
             request_id="req-1",
             endpoint="/health",
             method="GET",

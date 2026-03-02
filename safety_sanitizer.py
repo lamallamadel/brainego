@@ -182,6 +182,24 @@ def sanitize_untrusted_context_text(text: str) -> Tuple[str, Dict[str, Any]]:
     return sanitized, metadata
 
 
+def _resolve_chunk_reference(chunk: Dict[str, Any], index: int) -> str:
+    """Return a stable reference for one retrieved chunk for security logs."""
+    chunk_id = chunk.get("id")
+    if chunk_id:
+        return str(chunk_id)
+
+    metadata = chunk.get("metadata")
+    if isinstance(metadata, dict):
+        document_id = metadata.get("document_id")
+        if document_id:
+            return f"document:{document_id}"
+        chunk_index = metadata.get("chunk_index")
+        if chunk_index is not None:
+            return f"chunk_index:{chunk_index}"
+
+    return f"chunk:{index + 1}"
+
+
 def sanitize_retrieved_context_chunks(
     chunks: List[Dict[str, Any]],
 ) -> Tuple[List[Dict[str, Any]], Dict[str, Any]]:
@@ -190,8 +208,9 @@ def sanitize_retrieved_context_chunks(
     chunks_with_injection = 0
     dropped_injection_lines = 0
     secret_redactions = 0
+    injection_chunk_refs: List[str] = []
 
-    for chunk in chunks or []:
+    for index, chunk in enumerate(chunks or []):
         safe_chunk = dict(chunk)
 
         text_value = chunk.get("text")
@@ -200,6 +219,7 @@ def sanitize_retrieved_context_chunks(
             safe_chunk["text"] = sanitized_text
             if text_meta["injection_detected"]:
                 chunks_with_injection += 1
+                injection_chunk_refs.append(_resolve_chunk_reference(chunk, index))
             dropped_injection_lines += int(text_meta["dropped_injection_lines"])
             secret_redactions += int(text_meta["secret_redactions"])
 
@@ -214,6 +234,7 @@ def sanitize_retrieved_context_chunks(
     stats = {
         "chunks_processed": len(chunks or []),
         "chunks_with_injection": chunks_with_injection,
+        "injection_chunk_refs": injection_chunk_refs,
         "dropped_injection_lines": dropped_injection_lines,
         "secret_redactions": secret_redactions,
     }
