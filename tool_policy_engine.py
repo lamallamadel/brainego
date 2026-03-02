@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import fnmatch
+import ipaddress
 import logging
 import os
 import threading
 import time
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -100,6 +102,8 @@ class WorkspaceToolPolicy:
     max_tool_calls_per_workspace_window: int = 0
     workspace_quota_window_seconds: int = 60
     per_call_timeout_seconds: Optional[float] = None
+    allowed_outbound_domains: Set[str] = field(default_factory=set)
+    block_private_ip_ranges: bool = True
     redaction_rules: List[ToolRedactionRule] = field(default_factory=list)
 
     def allowed_tools_for_action(self, action: str) -> Set[str]:
@@ -139,6 +143,8 @@ class WorkspaceToolPolicy:
             "max_tool_calls_per_workspace_window": self.max_tool_calls_per_workspace_window,
             "workspace_quota_window_seconds": self.workspace_quota_window_seconds,
             "per_call_timeout_seconds": self.per_call_timeout_seconds,
+            "allowed_outbound_domains": sorted(self.allowed_outbound_domains),
+            "block_private_ip_ranges": self.block_private_ip_ranges,
             "redaction_rules": [
                 {
                     "argument": rule.argument,
@@ -295,6 +301,13 @@ class ToolPolicyEngine:
             config.get("per_call_timeout_seconds"),
             field_name=f"workspaces.{workspace_id}.per_call_timeout_seconds",
         )
+        allowed_outbound_domains = _parse_string_set(
+            config.get("allowed_outbound_domains"),
+            field_name=f"workspaces.{workspace_id}.allowed_outbound_domains",
+        )
+        block_private_ip_ranges = _parse_bool(
+            config.get("block_private_ip_ranges", True),
+            field_name=f"workspaces.{workspace_id}.block_private_ip_ranges",
         redaction_rules = _parse_redaction_rules(
             config.get("redaction_rules"),
             field_name=f"workspaces.{workspace_id}.redaction_rules",
@@ -314,6 +327,8 @@ class ToolPolicyEngine:
             max_tool_calls_per_workspace_window=max_tool_calls_per_workspace_window,
             workspace_quota_window_seconds=workspace_quota_window_seconds,
             per_call_timeout_seconds=timeout_value,
+            allowed_outbound_domains=allowed_outbound_domains,
+            block_private_ip_ranges=block_private_ip_ranges,
             redaction_rules=redaction_rules,
         )
 
@@ -506,6 +521,18 @@ class ToolPolicyEngine:
                 workspace_id=resolved_workspace,
             )
 
+        network_allowed, network_reason = self._validate_network_restrictions(
+            workspace_policy=workspace_policy,
+            arguments=arguments or {},
+        )
+        if not network_allowed:
+            return ToolPolicyDecision(
+                allowed=False,
+                reason=network_reason,
+                workspace_id=resolved_workspace,
+            )
+
+        quota_allowed, quota_reason = self._validate_request_quota(
         quota_allowed, quota_reason = self._validate_quotas(
             workspace_policy=workspace_policy,
             workspace_id=resolved_workspace,
@@ -592,6 +619,33 @@ class ToolPolicyEngine:
 
         return True, None
 
+    def _validate_network_restrictions(
+        self,
+        *,
+        workspace_policy: WorkspaceToolPolicy,
+        arguments: Dict[str, Any],
+    ) -> Tuple[bool, Optional[str]]:
+        outbound_targets = _extract_outbound_targets(arguments)
+        if not outbound_targets:
+            return True, None
+
+        allowed_domains = {value.lower() for value in workspace_policy.allowed_outbound_domains}
+        for target in outbound_targets:
+            host = target.lower()
+            parsed_ip = _parse_ip_address(host)
+
+            if parsed_ip and workspace_policy.block_private_ip_ranges and _is_private_or_local_ip(parsed_ip):
+                return False, f"outbound target '{target}' resolves to a blocked private/local IP range"
+
+            if allowed_domains:
+                if parsed_ip:
+                    return False, f"outbound target '{target}' is an IP literal and not an allowed domain"
+                if not any(fnmatch.fnmatch(host, pattern.lower()) for pattern in allowed_domains):
+                    return False, f"outbound domain '{target}' is outside allowed_outbound_domains"
+
+        return True, None
+
+    def _validate_request_quota(
     def _validate_quotas(
         self,
         *,
@@ -786,6 +840,10 @@ def _parse_non_negative_int(raw_value: Any, *, field_name: str) -> int:
     return parsed
 
 
+def _parse_bool(raw_value: Any, *, field_name: str) -> bool:
+    if isinstance(raw_value, bool):
+        return raw_value
+    raise ValueError(f"{field_name} must be a boolean")
 def _parse_positive_int(raw_value: Any, *, field_name: str) -> int:
     if isinstance(raw_value, bool):
         raise ValueError(f"{field_name} must be a positive integer")
@@ -1058,6 +1116,71 @@ def _extract_argument_values(value: Any) -> List[str]:
     return []
 
 
+def _extract_outbound_targets(arguments: Dict[str, Any]) -> Set[str]:
+    targets: Set[str] = set()
+    networkish_keys = {
+        "url",
+        "uri",
+        "endpoint",
+        "base_url",
+        "webhook",
+        "webhook_url",
+        "callback_url",
+        "host",
+        "hostname",
+        "domain",
+    }
+
+    def _walk(value: Any, key_hint: Optional[str] = None) -> None:
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                _walk(child_value, str(child_key).strip().lower())
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                _walk(item, key_hint)
+            return
+        if not isinstance(value, str):
+            return
+
+        text = value.strip()
+        if not text:
+            return
+
+        if "://" in text:
+            parsed = urlparse(text)
+            if parsed.hostname:
+                targets.add(parsed.hostname)
+            return
+
+        if key_hint in networkish_keys:
+            host_candidate = text
+            if "/" in host_candidate:
+                host_candidate = host_candidate.split("/", 1)[0]
+            if host_candidate:
+                targets.add(host_candidate)
+
+    _walk(arguments)
+    return targets
+
+
+def _parse_ip_address(host: str) -> Optional[ipaddress._BaseAddress]:
+    normalized = host.strip().strip("[]")
+    try:
+        return ipaddress.ip_address(normalized)
+    except ValueError:
+        return None
+
+
+def _is_private_or_local_ip(parsed_ip: ipaddress._BaseAddress) -> bool:
+    return (
+        parsed_ip.is_private
+        or parsed_ip.is_loopback
+        or parsed_ip.is_link_local
+        or parsed_ip.is_multicast
+        or parsed_ip.is_reserved
+        or parsed_ip.is_unspecified
+    )
 def _collect_allowlist_values(*, arguments: Dict[str, Any], arg_name: str) -> List[str]:
     """Collect argument values for generic, nested, and semantic allowlist keys."""
     normalized_arg = (arg_name or "").strip()

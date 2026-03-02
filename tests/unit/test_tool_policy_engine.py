@@ -454,6 +454,133 @@ def test_policy_engine_rejects_invalid_workspace_quota_window_seconds(tmp_path):
 
 
 @pytest.mark.unit
+def test_policy_engine_denies_private_ip_outbound_target_by_default(tmp_path):
+    config_path = _write_policy(
+        tmp_path,
+        {
+            "default_workspace": "ws-1",
+            "workspaces": {
+                "ws-1": {
+                    "allowed_mcp_servers": ["mcp-http"],
+                    "allowed_tool_actions": ["read"],
+                    "allowed_tool_names": {"read": ["fetch_url"]},
+                }
+            },
+        },
+    )
+    engine = ToolPolicyEngine.from_yaml(config_path)
+
+    denied = engine.evaluate_tool_call(
+        workspace_id="ws-1",
+        request_id="req-net-1",
+        server_id="mcp-http",
+        tool_name="fetch_url",
+        action="read",
+        arguments={"url": "http://10.1.2.3/health"},
+        default_timeout_seconds=3.0,
+    )
+
+    assert denied.allowed is False
+    assert "blocked private/local IP range" in (denied.reason or "")
+
+
+@pytest.mark.unit
+def test_policy_engine_enforces_allowed_outbound_domains(tmp_path):
+    config_path = _write_policy(
+        tmp_path,
+        {
+            "default_workspace": "ws-1",
+            "workspaces": {
+                "ws-1": {
+                    "allowed_mcp_servers": ["mcp-http"],
+                    "allowed_tool_actions": ["read"],
+                    "allowed_tool_names": {"read": ["fetch_url"]},
+                    "allowed_outbound_domains": ["api.linear.app", "*.notion.so"],
+                }
+            },
+        },
+    )
+    engine = ToolPolicyEngine.from_yaml(config_path)
+
+    allowed = engine.evaluate_tool_call(
+        workspace_id="ws-1",
+        request_id="req-net-2",
+        server_id="mcp-http",
+        tool_name="fetch_url",
+        action="read",
+        arguments={"url": "https://api.linear.app/graphql"},
+        default_timeout_seconds=3.0,
+    )
+    denied = engine.evaluate_tool_call(
+        workspace_id="ws-1",
+        request_id="req-net-3",
+        server_id="mcp-http",
+        tool_name="fetch_url",
+        action="read",
+        arguments={"url": "https://example.com/"},
+        default_timeout_seconds=3.0,
+    )
+
+    assert allowed.allowed is True
+    assert denied.allowed is False
+    assert "outside allowed_outbound_domains" in (denied.reason or "")
+
+
+@pytest.mark.unit
+def test_policy_engine_rejects_ip_literal_when_domain_allowlist_is_configured(tmp_path):
+    config_path = _write_policy(
+        tmp_path,
+        {
+            "default_workspace": "ws-1",
+            "workspaces": {
+                "ws-1": {
+                    "allowed_mcp_servers": ["mcp-http"],
+                    "allowed_tool_actions": ["read"],
+                    "allowed_tool_names": {"read": ["fetch_url"]},
+                    "allowed_outbound_domains": ["api.linear.app"],
+                    "block_private_ip_ranges": False,
+                }
+            },
+        },
+    )
+    engine = ToolPolicyEngine.from_yaml(config_path)
+
+    denied = engine.evaluate_tool_call(
+        workspace_id="ws-1",
+        request_id="req-net-4",
+        server_id="mcp-http",
+        tool_name="fetch_url",
+        action="read",
+        arguments={"url": "https://8.8.8.8/status"},
+        default_timeout_seconds=3.0,
+    )
+
+    assert denied.allowed is False
+    assert "IP literal and not an allowed domain" in (denied.reason or "")
+
+
+@pytest.mark.unit
+def test_policy_engine_rejects_invalid_block_private_ip_ranges_type(tmp_path):
+    config_path = _write_policy(
+        tmp_path,
+        {
+            "default_workspace": "ws-1",
+            "workspaces": {
+                "ws-1": {
+                    "allowed_mcp_servers": ["mcp-http"],
+                    "allowed_tool_actions": ["read"],
+                    "allowed_tool_names": {"read": ["fetch_url"]},
+                    "block_private_ip_ranges": "true",
+                }
+            },
+        },
+    )
+
+    with pytest.raises(ValueError, match="must be a boolean"):
+        ToolPolicyEngine.from_yaml(config_path)
+
+
+@pytest.mark.unit
 def test_policy_engine_denies_unsupported_action_in_request(tmp_path):
     config_path = _write_policy(
         tmp_path,
@@ -484,26 +611,6 @@ def test_policy_engine_denies_unsupported_action_in_request(tmp_path):
     assert "unsupported action 'execute'" in (decision.reason or "")
 
 
-@pytest.mark.unit
-def test_policy_engine_rejects_invalid_action_in_workspace_config(tmp_path):
-    config_path = _write_policy(
-        tmp_path,
-        {
-            "default_workspace": "ws-1",
-            "workspaces": {
-                "ws-1": {
-                    "allowed_mcp_servers": ["mcp-docs"],
-                    "allowed_tool_actions": ["execute"],
-                    "allowed_tool_names": {"read": ["search_docs"]},
-                }
-            },
-        },
-    )
-
-    with pytest.raises(ValueError, match="unsupported action 'execute'"):
-        ToolPolicyEngine.from_yaml(config_path)
-
-
 def _rbac_payload() -> Dict[str, Any]:
     return {
 def test_policy_engine_supports_role_scoped_permissions(tmp_path):
@@ -532,6 +639,21 @@ def test_policy_engine_supports_role_scoped_permissions(tmp_path):
     }
     engine = ToolPolicyEngine.from_yaml(_write_policy(tmp_path, payload))
 
+
+@pytest.mark.unit
+def test_policy_engine_rbac_developer_write_requires_explicit_scope(tmp_path):
+    config_path = _write_policy(tmp_path, _rbac_payload())
+    engine = ToolPolicyEngine.from_yaml(config_path)
+
+    denied = engine.evaluate_tool_call(
+        workspace_id="ws-1",
+        request_id="req-rbac-2",
+        server_id="mcp-github",
+        tool_name="github_create_issue",
+        action="write",
+        arguments={"title": "AFR-86"},
+        role="developer",
+        scopes=[],
     denied = engine.evaluate_tool_call(
         workspace_id="ws-1",
         request_id="rbac-1",

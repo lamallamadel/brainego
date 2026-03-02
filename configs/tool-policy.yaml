@@ -102,3 +102,10 @@ workspaces:
     max_tool_calls_per_workspace_window: 200
     workspace_quota_window_seconds: 60
     per_call_timeout_seconds: 10
+
+    # Optional outbound network restrictions for tools that call external URLs.
+    allowed_outbound_domains:
+      - "api.linear.app"
+      - "*.notion.so"
+      - "api.atlassian.com"
+    block_private_ip_ranges: true
