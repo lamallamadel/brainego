@@ -359,3 +359,101 @@ def test_collect_repository_codebase_incremental_skips_compare_noise_with_same_h
     assert state_entry["last_commit"] == "c2"
     assert state_entry["indexed_paths"] == ["src/main.py"]
     assert state_entry["indexed_file_hashes"] == {"src/main.py": "blob-main-v1"}
+
+
+def test_collect_repository_codebase_supports_csv_patterns(tmp_path: Path) -> None:
+    repo = _FakeRepo(
+        full_name="acme/repo",
+        default_branch="main",
+        head_commit="c1",
+        tree_entries=[
+            _FakeTreeEntry("src/main.py"),
+            _FakeTreeEntry("src/main.test.py"),
+            _FakeTreeEntry("docs/guide.md"),
+        ],
+        contents={
+            "src/main.py": _FakeContent("print('ok')\n", "blob-main"),
+            "src/main.test.py": _FakeContent("print('test')\n", "blob-test"),
+            "docs/guide.md": _FakeContent("# Guide\n", "blob-doc"),
+        },
+    )
+
+    result = _build_collector(repo).collect_repository_codebase(
+        repo_name="acme/repo",
+        workspace_id="workspace-alpha",
+        state_path=str(tmp_path / "github-sync-state.json"),
+        include_patterns="src/*.py,docs/*.md",
+        exclude_patterns="*.test.py",
+    )
+
+    assert result["status"] == "success"
+    assert sorted(doc["metadata"]["path"] for doc in result["documents"]) == [
+        "docs/guide.md",
+        "src/main.py",
+    ]
+
+
+def test_incremental_compare_applies_include_patterns(tmp_path: Path) -> None:
+    state_path = tmp_path / "github-sync-state.json"
+
+    repo_v1 = _FakeRepo(
+        full_name="acme/repo",
+        default_branch="main",
+        head_commit="c1",
+        tree_entries=[
+            _FakeTreeEntry("src/main.py"),
+            _FakeTreeEntry("docs/guide.md"),
+        ],
+        contents={
+            "src/main.py": _FakeContent("print('v1')\n", "blob-main-v1"),
+            "docs/guide.md": _FakeContent("# docs\n", "blob-doc-v1"),
+        },
+    )
+    _build_collector(repo_v1).collect_repository_codebase(
+        repo_name="acme/repo",
+        workspace_id="workspace-alpha",
+        state_path=str(state_path),
+        incremental=True,
+        include_patterns="src/*.py",
+    )
+
+    repo_v2 = _FakeRepo(
+        full_name="acme/repo",
+        default_branch="main",
+        head_commit="c2",
+        tree_entries=[
+            _FakeTreeEntry("src/main.py"),
+            _FakeTreeEntry("src/new.py"),
+        ],
+        contents={
+            "src/main.py": _FakeContent("print('v2')\n", "blob-main-v2"),
+            "src/new.py": _FakeContent("print('new')\n", "blob-new-v2"),
+        },
+        comparisons={
+            ("c1", "c2"): [
+                _FakeCompareFile(filename="src/new.py", status="added"),
+                _FakeCompareFile(filename="docs/guide.md", status="removed"),
+            ]
+        },
+    )
+
+    result = _build_collector(repo_v2).collect_repository_codebase(
+        repo_name="acme/repo",
+        workspace_id="workspace-alpha",
+        state_path=str(state_path),
+        incremental=True,
+        include_patterns="src/*.py",
+    )
+
+    assert sorted(doc["metadata"]["path"] for doc in result["documents"]) == ["src/new.py"]
+    assert result["deleted_paths"] == []
+
+
+def test_decode_content_to_text_rejects_binary_like_payload() -> None:
+    binary_like_content = types.SimpleNamespace(
+        decoded_content=(b"\x80\x81\x82" * 128),
+        size=384,
+        sha="blob-binary",
+    )
+
+    assert GitHubCollector._decode_content_to_text(binary_like_content) is None
