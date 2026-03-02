@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional, Set
 
 import httpx
 
-from safety_sanitizer import redact_secrets
+from safety_sanitizer import redact_sensitive
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +94,7 @@ class InternalMCPGatewayClient:
     ) -> MCPToolResult:
         started_at = time.perf_counter()
         raw_arguments = arguments or {}
-        redacted_arguments, argument_redactions = redact_secrets(raw_arguments)
+        redacted_arguments, argument_redactions = redact_sensitive(raw_arguments)
         payload = {
             "server_id": server_id,
             "tool_name": tool_name,
@@ -133,7 +133,7 @@ class InternalMCPGatewayClient:
             latency_ms = (time.perf_counter() - started_at) * 1000
 
             if response.status_code >= 400:
-                error, error_redactions = redact_secrets(response.text)
+                error, error_redactions = redact_sensitive(response.text)
                 logger.error(
                     "mcp_tool_call tool=%s status=error http_status=%s latency_ms=%.2f error=%s context=%s arguments=%s argument_redactions=%s error_redactions=%s",
                     tool_name,
@@ -154,7 +154,7 @@ class InternalMCPGatewayClient:
                 )
 
             data = response.json()
-            redacted_data, output_redactions = redact_secrets(data)
+            redacted_data, output_redactions = redact_sensitive(data)
             if not isinstance(redacted_data, dict):
                 redacted_data = {"result": redacted_data}
             logger.info(
@@ -176,7 +176,7 @@ class InternalMCPGatewayClient:
             )
         except Exception as exc:
             latency_ms = (time.perf_counter() - started_at) * 1000
-            redacted_error, error_redactions = redact_secrets(str(exc))
+            redacted_error, error_redactions = redact_sensitive(str(exc))
             logger.exception(
                 "mcp_tool_call tool=%s status=exception latency_ms=%.2f context=%s arguments=%s argument_redactions=%s error_redactions=%s",
                 tool_name,

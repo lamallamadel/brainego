@@ -12,6 +12,8 @@ from typing import Optional, Dict, Any
 from datetime import datetime, timezone
 from contextvars import ContextVar
 
+from safety_sanitizer import redact_secrets, redact_secrets_in_text
+
 # Context variables for trace context
 trace_id_var: ContextVar[Optional[str]] = ContextVar('trace_id', default=None)
 span_id_var: ContextVar[Optional[str]] = ContextVar('span_id', default=None)
@@ -50,13 +52,16 @@ class StructuredJSONFormatter(logging.Formatter):
     
     def format(self, record: logging.LogRecord) -> str:
         """Format log record as JSON."""
+        safe_message, message_redactions = redact_secrets_in_text(record.getMessage())
         log_data = {
             'timestamp': datetime.now(timezone.utc).isoformat(),
             'level': record.levelname,
             'logger': record.name,
-            'message': record.getMessage(),
+            'message': safe_message,
             'service': self.service_name
         }
+        if message_redactions:
+            log_data['message_redactions'] = message_redactions
         
         # Add trace context if available
         if self.include_trace:
@@ -70,11 +75,21 @@ class StructuredJSONFormatter(logging.Formatter):
         
         # Add exception info if present
         if record.exc_info:
-            log_data['exception'] = self.formatException(record.exc_info)
+            exception_text = self.formatException(record.exc_info)
+            safe_exception, exception_redactions = redact_secrets_in_text(exception_text)
+            log_data['exception'] = safe_exception
+            if exception_redactions:
+                log_data['exception_redactions'] = exception_redactions
         
         # Add extra fields from record
         if hasattr(record, 'extra_fields'):
-            log_data.update(record.extra_fields)
+            safe_extra_fields, extra_redactions = redact_secrets(record.extra_fields)
+            if isinstance(safe_extra_fields, dict):
+                log_data.update(safe_extra_fields)
+            else:
+                log_data['extra_fields'] = safe_extra_fields
+            if extra_redactions:
+                log_data['extra_fields_redactions'] = extra_redactions
         
         # Add specific fields for different log types
         if hasattr(record, 'user_id'):
