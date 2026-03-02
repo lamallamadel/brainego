@@ -995,6 +995,269 @@ SELECT id, event_id, workspace_id, user_id, meter_key, quantity FROM workspace_m
                 print(f"  ⚠ Cleanup failed: {cleanup_error}")
 
 
+def smoke_test_metrics_and_health() -> int:
+    """
+    Smoke test for /health and /metrics endpoints.
+    
+    Tests:
+    1. GET /health with all services reachable → assert status=healthy, all deps healthy
+    2. GET /health after stopping Qdrant → assert status=degraded, qdrant=unhealthy, restart Qdrant
+    3. GET /metrics → assert Prometheus text format, contains brainego_ prefixed counters
+    4. GET /metrics/json → assert JSON contains safety_verdicts and usage keys
+    
+    Returns:
+        0 if all checks pass, 1 otherwise
+    """
+    print("=" * 60)
+    print("Smoke Test: Metrics and Health Endpoints")
+    print("=" * 60)
+    
+    api_url = os.getenv("PILOT_API_URL", "http://localhost:8000")
+    failures = []
+    
+    # Test 1: GET /health with all services reachable
+    print("\n[1/4] Testing GET /health with all services reachable...")
+    try:
+        request = urllib.request.Request(url=f"{api_url}/health", method="GET")
+        request.add_header("Accept", "application/json")
+        
+        with urllib.request.urlopen(request, timeout=30.0) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            data = _parse_json(body)
+            
+            if response.getcode() != 200:
+                failures.append(f"Test 1: Expected status 200, got {response.getcode()}")
+            else:
+                print(f"  ✓ Health endpoint returned 200")
+            
+            # Check overall status is healthy
+            if not isinstance(data, dict):
+                failures.append(f"Test 1: Response is not a dict: {type(data)}")
+            else:
+                status = data.get("status", "")
+                if status != "healthy":
+                    failures.append(f"Test 1: Expected status='healthy', got '{status}'")
+                else:
+                    print(f"  ✓ Overall status is 'healthy'")
+                
+                # Check all dependencies are healthy
+                deps = data.get("dependencies", {}) or data.get("deps", {})
+                expected_deps = ["qdrant", "postgres", "redis", "neo4j"]
+                
+                for dep_name in expected_deps:
+                    dep_status = deps.get(dep_name, {})
+                    if isinstance(dep_status, dict):
+                        dep_health = dep_status.get("status", "unknown")
+                    elif isinstance(dep_status, str):
+                        dep_health = dep_status
+                    else:
+                        dep_health = "unknown"
+                    
+                    if dep_health not in ("healthy", "ok", "up"):
+                        failures.append(f"Test 1: {dep_name} status is '{dep_health}', expected healthy")
+                    else:
+                        print(f"  ✓ {dep_name} is healthy")
+    
+    except urllib.error.HTTPError as exc:
+        failures.append(f"Test 1: HTTP error {exc.code}: {exc.read().decode('utf-8', errors='replace')}")
+    except urllib.error.URLError as exc:
+        failures.append(f"Test 1: Connection error: {exc}")
+    except Exception as exc:
+        failures.append(f"Test 1: Unexpected error: {exc}")
+    
+    # Test 2: GET /health after stopping Qdrant
+    print("\n[2/4] Testing GET /health after stopping Qdrant...")
+    try:
+        # Stop Qdrant container
+        print("  Stopping Qdrant container...")
+        result = subprocess.run(
+            ["docker", "compose", "stop", "qdrant"],
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode != 0:
+            failures.append(f"Test 2: Failed to stop Qdrant: {result.stderr}")
+        else:
+            print("  ✓ Qdrant container stopped")
+            
+            # Wait for health check to detect the failure
+            time.sleep(3)
+            
+            # GET /health again
+            request = urllib.request.Request(url=f"{api_url}/health", method="GET")
+            request.add_header("Accept", "application/json")
+            
+            with urllib.request.urlopen(request, timeout=30.0) as response:
+                body = response.read().decode("utf-8", errors="replace")
+                data = _parse_json(body)
+                
+                # Status should be degraded (or unhealthy)
+                status = data.get("status", "")
+                if status not in ("degraded", "unhealthy"):
+                    failures.append(f"Test 2: Expected status='degraded', got '{status}'")
+                else:
+                    print(f"  ✓ Overall status is '{status}'")
+                
+                # Check Qdrant is unhealthy
+                deps = data.get("dependencies", {}) or data.get("deps", {})
+                qdrant_status = deps.get("qdrant", {})
+                
+                if isinstance(qdrant_status, dict):
+                    qdrant_health = qdrant_status.get("status", "unknown")
+                elif isinstance(qdrant_status, str):
+                    qdrant_health = qdrant_status
+                else:
+                    qdrant_health = "unknown"
+                
+                if qdrant_health not in ("unhealthy", "down", "error"):
+                    failures.append(f"Test 2: Qdrant status is '{qdrant_health}', expected unhealthy")
+                else:
+                    print(f"  ✓ Qdrant is unhealthy")
+            
+            # Restart Qdrant
+            print("  Restarting Qdrant container...")
+            result = subprocess.run(
+                ["docker", "compose", "start", "qdrant"],
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode != 0:
+                failures.append(f"Test 2: Failed to restart Qdrant: {result.stderr}")
+            else:
+                print("  ✓ Qdrant container restarted")
+                
+                # Wait for Qdrant to be healthy again
+                time.sleep(5)
+    
+    except subprocess.TimeoutExpired as exc:
+        failures.append(f"Test 2: Docker command timed out: {exc}")
+    except urllib.error.HTTPError as exc:
+        # Health endpoint might return 503 when degraded, which is acceptable
+        if exc.code in (200, 503):
+            try:
+                body = exc.read().decode("utf-8", errors="replace")
+                data = _parse_json(body)
+                status = data.get("status", "")
+                
+                if status in ("degraded", "unhealthy"):
+                    print(f"  ✓ Health endpoint returned {exc.code} with status '{status}'")
+                else:
+                    failures.append(f"Test 2: Expected degraded status, got '{status}'")
+            except Exception as parse_exc:
+                failures.append(f"Test 2: Failed to parse degraded health response: {parse_exc}")
+        else:
+            failures.append(f"Test 2: Unexpected HTTP error {exc.code}")
+    except urllib.error.URLError as exc:
+        failures.append(f"Test 2: Connection error: {exc}")
+    except Exception as exc:
+        failures.append(f"Test 2: Unexpected error: {exc}")
+    
+    # Test 3: GET /metrics → Prometheus text format
+    print("\n[3/4] Testing GET /metrics (Prometheus format)...")
+    try:
+        request = urllib.request.Request(url=f"{api_url}/metrics", method="GET")
+        
+        with urllib.request.urlopen(request, timeout=30.0) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            
+            if response.getcode() != 200:
+                failures.append(f"Test 3: Expected status 200, got {response.getcode()}")
+            else:
+                print(f"  ✓ Metrics endpoint returned 200")
+            
+            # Check for Prometheus text format (lines starting with # or metric names)
+            lines = body.strip().split("\n")
+            has_prometheus_format = False
+            has_brainego_prefix = False
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                # Check for Prometheus comment or metric line
+                if line.startswith("#") or ("=" in line and "{" in line):
+                    has_prometheus_format = True
+                
+                # Check for brainego_ prefix
+                if line.startswith("brainego_") or " brainego_" in line:
+                    has_brainego_prefix = True
+                
+                if has_prometheus_format and has_brainego_prefix:
+                    break
+            
+            if not has_prometheus_format:
+                failures.append("Test 3: Response does not appear to be Prometheus text format")
+            else:
+                print("  ✓ Response is in Prometheus text format")
+            
+            if not has_brainego_prefix:
+                failures.append("Test 3: No brainego_ prefixed metrics found")
+            else:
+                print("  ✓ Found brainego_ prefixed counters")
+    
+    except urllib.error.HTTPError as exc:
+        failures.append(f"Test 3: HTTP error {exc.code}: {exc.read().decode('utf-8', errors='replace')}")
+    except urllib.error.URLError as exc:
+        failures.append(f"Test 3: Connection error: {exc}")
+    except Exception as exc:
+        failures.append(f"Test 3: Unexpected error: {exc}")
+    
+    # Test 4: GET /metrics/json → JSON with safety_verdicts and usage
+    print("\n[4/4] Testing GET /metrics/json...")
+    try:
+        request = urllib.request.Request(url=f"{api_url}/metrics/json", method="GET")
+        request.add_header("Accept", "application/json")
+        
+        with urllib.request.urlopen(request, timeout=30.0) as response:
+            body = response.read().decode("utf-8", errors="replace")
+            data = _parse_json(body)
+            
+            if response.getcode() != 200:
+                failures.append(f"Test 4: Expected status 200, got {response.getcode()}")
+            else:
+                print(f"  ✓ Metrics JSON endpoint returned 200")
+            
+            if not isinstance(data, dict):
+                failures.append(f"Test 4: Response is not a dict: {type(data)}")
+            else:
+                # Check for safety_verdicts key
+                if "safety_verdicts" not in data:
+                    failures.append("Test 4: JSON response missing 'safety_verdicts' key")
+                else:
+                    print("  ✓ JSON contains 'safety_verdicts' key")
+                
+                # Check for usage key
+                if "usage" not in data:
+                    failures.append("Test 4: JSON response missing 'usage' key")
+                else:
+                    print("  ✓ JSON contains 'usage' key")
+    
+    except urllib.error.HTTPError as exc:
+        failures.append(f"Test 4: HTTP error {exc.code}: {exc.read().decode('utf-8', errors='replace')}")
+    except urllib.error.URLError as exc:
+        failures.append(f"Test 4: Connection error: {exc}")
+    except Exception as exc:
+        failures.append(f"Test 4: Unexpected error: {exc}")
+    
+    # Summary
+    print("\n" + "=" * 60)
+    print("Summary")
+    print("=" * 60)
+    if failures:
+        print(f"✗ {len(failures)} test(s) failed:")
+        for failure in failures:
+            print(f"  - {failure}")
+        return 1
+    else:
+        print("✓ All metrics and health tests passed")
+        return 0
+
+
 def main() -> int:
     """Run all pilot gate checks."""
     parser = argparse.ArgumentParser(
@@ -1056,8 +1319,17 @@ def main() -> int:
         action="store_true",
         help="Run smoke test for real API calls (TestClient or httpx against localhost:8000)",
     )
+    parser.add_argument(
+        "--smoke-metrics-health",
+        action="store_true",
+        help="Run smoke test for /health and /metrics endpoints",
+    )
     
     args = parser.parse_args()
+    
+    # Handle --smoke-metrics-health mode
+    if args.smoke_metrics_health:
+        return smoke_test_metrics_and_health()
     
     # Handle --smoke-api mode
     if args.smoke_api:
