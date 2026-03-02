@@ -144,6 +144,56 @@ groups:
           summary: "Post-LoRA safety degradation detected"
           description: "Model {{ $labels.model }} accuracy regressed by >5 points within 30m of a LoRA version change"
 
+  - name: policy_and_tool_alerts
+    interval: 30s
+    rules:
+      # PolicyDenied spikes on MCP tool calls (> 5x previous hour baseline and at least 1/min)
+      - alert: PolicyDeniedSpike
+        expr: |
+          (
+            sum(rate(api_usage_tool_calls_total{status="error"}[5m]))
+            >
+            5 * clamp_min(sum(rate(api_usage_tool_calls_total{status="error"}[1h] offset 1h)), 0.01)
+          )
+          and
+          (sum(rate(api_usage_tool_calls_total{status="error"}[5m])) > 0.0167)
+        for: 5m
+        labels:
+          severity: warning
+          component: policy
+        annotations:
+          summary: "PolicyDenied spike detected"
+          description: "MCP tool-call error rate spiked >5x vs previous hour baseline (current {{ $value }} errors/sec)"
+
+      # Tool-call error ratio exceeds 5%
+      - alert: ToolErrorRateHigh
+        expr: |
+          (
+            sum(rate(api_usage_tool_calls_total{status="error"}[5m])) /
+            clamp_min(sum(rate(api_usage_tool_calls_total[5m])), 0.001)
+          ) * 100 > 5
+        for: 5m
+        labels:
+          severity: critical
+          component: mcp
+        annotations:
+          summary: "Tool error rate is high"
+          description: "MCP tool-call error ratio is {{ $value }}% (threshold: 5%)"
+
+      # Latency regression alert: 15m p95 > 35% higher than 6h baseline
+      - alert: APILatencyRegression
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(api_usage_latency_seconds_bucket[15m])))
+          >
+          1.35 * clamp_min(histogram_quantile(0.95, sum by (le) (rate(api_usage_latency_seconds_bucket[6h] offset 15m))), 0.05)
+        for: 10m
+        labels:
+          severity: warning
+          component: api
+        annotations:
+          summary: "API latency regression detected"
+          description: "API p95 latency regressed by >35% versus 6h baseline"
+
   - name: gpu_alerts
     interval: 30s
     rules:
