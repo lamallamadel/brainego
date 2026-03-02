@@ -233,6 +233,15 @@ Tracks safety policy enforcement volume, block rates, and jailbreak robustness t
 - **Latest Jailbreak Robustness by Deployment**
   - Source: `jailbreak_robustness_score`
   - Bar gauge snapshot for quick release comparison
+- **Secret Leak Incidents (range total)**
+  - Source: `api_safety_blocked_categories_total{category=~"secret.*|credential.*"}`
+  - Baseline threshold: **0 incidents** per window
+- **Unauthorized Tool Write Denials (range total)**
+  - Source: `api_usage_tool_calls_total{status="error", tool_name=~".*(create|update|delete|write|append|modify|post|send|upload|add).*"}`
+  - Baseline threshold: **0 denied writes** per window
+- **Safety Baseline Incidents Over Time**
+  - Sources: rolling 1h increase of the two incident families above
+  - Tracks safety baseline drift over time
 
 **Use Cases**:
 - Detect sudden increases in blocked prompts after model releases
