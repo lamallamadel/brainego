@@ -97,6 +97,30 @@ groups:
   - name: safety_alerts
     interval: 30s
     rules:
+      # Baseline threshold: secret leaks must stay at 0
+      - alert: SafetySecretLeakIncident
+        expr: |
+          sum(increase(api_safety_blocked_categories_total{category=~"secret.*|credential.*"}[15m])) > 0
+        for: 0m
+        labels:
+          severity: critical
+          component: safety
+        annotations:
+          summary: "Secret leak incident detected"
+          description: "Secret/credential leak baseline breached (threshold: 0 incidents in 15m)"
+
+      # Baseline threshold: unauthorized write attempts must stay at 0
+      - alert: UnauthorizedToolWriteDenied
+        expr: |
+          sum(increase(api_usage_tool_calls_total{status="error",tool_name=~".*(create|update|delete|write|append|modify|post|send|upload|add).*"}[15m])) > 0
+        for: 0m
+        labels:
+          severity: warning
+          component: safety
+        annotations:
+          summary: "Unauthorized tool write denied"
+          description: "Unauthorized tool write baseline breached (threshold: 0 denied writes in 15m)"
+
       # Blocked/safety-denied request ratio spike (>5%)
       - alert: SafetyBlockedRequestSpike
         expr: |
