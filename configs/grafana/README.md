@@ -233,6 +233,15 @@ Tracks safety policy enforcement volume, block rates, and jailbreak robustness t
 - **Latest Jailbreak Robustness by Deployment**
   - Source: `jailbreak_robustness_score`
   - Bar gauge snapshot for quick release comparison
+- **Secret Leak Incidents (range total)**
+  - Source: `api_safety_blocked_categories_total{category=~"secret.*|credential.*"}`
+  - Baseline threshold: **0 incidents** per window
+- **Unauthorized Tool Write Denials (range total)**
+  - Source: `api_usage_tool_calls_total{status="error", tool_name=~".*(create|update|delete|write|append|modify|post|send|upload|add).*"}`
+  - Baseline threshold: **0 denied writes** per window
+- **Safety Baseline Incidents Over Time**
+  - Sources: rolling 1h increase of the two incident families above
+  - Tracks safety baseline drift over time
 
 **Use Cases**:
 - Detect sudden increases in blocked prompts after model releases
@@ -242,7 +251,36 @@ Tracks safety policy enforcement volume, block rates, and jailbreak robustness t
 
 ---
 
-### 6. Usage Metering (`usage-metering.json`)
+
+### 6. Safety Scorecard (`safety-scorecard.json`)
+
+**UID**: `safety-scorecard`  
+**Tags**: `safety`, `scorecard`, `policy`  
+**Refresh**: 30s
+
+Focused dashboard for operational safety KPIs used in human-review and policy tuning loops.
+
+**Metrics Displayed**:
+- **Tool Abuse Blocked % (5m)**
+  - Source: `guardrail_requests_total{policy_category="tool_abuse", decision="blocked"}`
+  - Formula: blocked tool-abuse requests over all tool-abuse requests
+- **False Positive Rate (Manual Tag, 5m)**
+  - Source: `guardrail_manual_review_total{tag="false_positive"}`
+  - Formula: false-positive manual-review events over all manual-review events
+- **Safety Scorecard Trends (5m)**
+  - Combined time-series for tool-abuse blocked ratio and manual-tag false-positive ratio
+- **Top Policy Triggers (range total)**
+  - Source: `guardrail_policy_triggers_total` (or legacy `guardrail_policy_trigger_total`)
+  - `topk(10)` grouped by `policy_category`
+
+**Use Cases**:
+- Track tool-abuse containment efficacy release-over-release
+- Detect manual-review false-positive drift quickly
+- Identify dominant policy categories driving safety pressure
+
+---
+
+### 7. Usage Metering (`usage-metering.json`)
 
 **UID**: `usage-metering`  
 **Tags**: `usage`, `metering`, `workspace`, `user`  

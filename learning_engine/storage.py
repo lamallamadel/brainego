@@ -70,6 +70,74 @@ class AdapterStorage:
         version_key = self._sanitize_path_component(version)
         return f"{selected_model}/{selected_project}/{version_key}"
 
+    def _registry_name(
+        self,
+        model_name: Optional[str] = None,
+        project_name: Optional[str] = None,
+    ) -> str:
+        selected_model = self._sanitize_path_component(model_name or self.model_name)
+        selected_project = self._sanitize_path_component(project_name or self.project_name)
+        return f"{selected_model}/{selected_project}/registry.json"
+
+    def _build_default_registry(self, model_name: str, project_name: str) -> Dict[str, Any]:
+        return {
+            "model_name": model_name,
+            "project": project_name,
+            "updated_at": datetime.utcnow().isoformat(),
+            "active_version": None,
+            "previous_version": None,
+            "known_good_version": None,
+            "versions": {},
+            "rollback_history": [],
+        }
+
+    def _load_registry(
+        self,
+        model_name: Optional[str] = None,
+        project_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        selected_model = self._sanitize_path_component(model_name or self.model_name)
+        selected_project = self._sanitize_path_component(project_name or self.project_name)
+        registry_name = self._registry_name(selected_model, selected_project)
+        try:
+            response = self.client.get_object(self.bucket_name, registry_name)
+            registry = json.loads(response.read().decode("utf-8"))
+            response.close()
+            response.release_conn()
+        except S3Error as e:
+            if e.code != "NoSuchKey":
+                raise
+            registry = self._build_default_registry(selected_model, selected_project)
+
+        registry.setdefault("model_name", selected_model)
+        registry.setdefault("project", selected_project)
+        registry.setdefault("active_version", None)
+        registry.setdefault("previous_version", None)
+        registry.setdefault("known_good_version", None)
+        registry.setdefault("versions", {})
+        registry.setdefault("rollback_history", [])
+        registry.setdefault("updated_at", datetime.utcnow().isoformat())
+        return registry
+
+    def _save_registry(self, registry: Dict[str, Any]):
+        payload = json.dumps(registry, indent=2)
+        registry_name = self._registry_name(registry.get("model_name"), registry.get("project"))
+        self.client.put_object(
+            self.bucket_name,
+            registry_name,
+            data=payload.encode("utf-8"),
+            length=len(payload),
+            content_type="application/json",
+        )
+
+    @staticmethod
+    def _sha256_file(path: str) -> str:
+        digest = hashlib.sha256()
+        with open(path, "rb") as fh:
+            for chunk in iter(lambda: fh.read(8192), b""):
+                digest.update(chunk)
+        return digest.hexdigest()
+
     def _ensure_bucket(self):
         """Ensure the bucket exists"""
         try:
@@ -108,6 +176,8 @@ class AdapterStorage:
             logger.info(f"✓ Adapter uploaded: {object_name}")
 
             adapter_digest = self._compute_sha256(archive_path)
+            created_at = datetime.utcnow().isoformat()
+            adapter_sha256 = self._sha256_file(archive_path)
 
             if metadata is not None:
                 path_parts = version_prefix.split("/")
@@ -122,6 +192,11 @@ class AdapterStorage:
                     "timestamp": metadata.get("timestamp") or datetime.utcnow().isoformat(),
                     "author": metadata.get("author") or author or "unknown",
                     "adapter_sha256": metadata.get("adapter_sha256") or adapter_digest,
+                    "timestamp": metadata.get("timestamp") or created_at,
+                    "author": metadata.get("author") or author or "unknown",
+                    "adapter_sha256": metadata.get("adapter_sha256") or adapter_sha256,
+                    "training_data_version": metadata.get("training_data_version"),
+                    "eval_scores": metadata.get("eval_scores", {}),
                 }
                 metadata_payload.update(metadata)
 
@@ -135,6 +210,24 @@ class AdapterStorage:
                     content_type='application/json'
                 )
                 logger.info(f"✓ Metadata uploaded: {metadata_name}")
+
+                registry = self._load_registry(path_parts[0], path_parts[1])
+                registry.setdefault("versions", {})
+                registry["versions"][path_parts[2]] = {
+                    "metadata_object": metadata_name,
+                    "adapter_object": object_name,
+                    "adapter_sha256": metadata_payload.get("adapter_sha256"),
+                    "created_at": metadata_payload.get("timestamp") or created_at,
+                    "eval_scores": metadata_payload.get("eval_scores", {}),
+                    "training_data_version": metadata_payload.get("training_data_version"),
+                    "dataset_id": metadata_payload.get("dataset_id"),
+                }
+                registry["updated_at"] = created_at
+                if registry.get("active_version") is None:
+                    registry["active_version"] = path_parts[2]
+                if registry.get("known_good_version") is None:
+                    registry["known_good_version"] = path_parts[2]
+                self._save_registry(registry)
 
             os.remove(archive_path)
             return object_name
@@ -263,7 +356,7 @@ class AdapterStorage:
             versions = set()
             for obj in objects:
                 parts = obj.object_name.split('/')
-                if len(parts) >= 3:
+                if len(parts) >= 4:
                     versions.add(parts[2])
 
             for version in sorted(versions):
@@ -312,6 +405,52 @@ class AdapterStorage:
             logger.error(f"Failed to get adapter metadata: {e}")
             return None
 
+    def update_rollback_pointers(
+        self,
+        active_version: Optional[str] = None,
+        previous_version: Optional[str] = None,
+        known_good_version: Optional[str] = None,
+        reason: str = "manual",
+        model_name: Optional[str] = None,
+        project_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update rollback pointers persisted in registry.json."""
+        registry = self._load_registry(model_name, project_name)
+        event_time = datetime.utcnow().isoformat()
+
+        if active_version is not None:
+            sanitized_active = self._sanitize_path_component(active_version)
+            if previous_version is None and registry.get("active_version") != sanitized_active:
+                previous_version = registry.get("active_version")
+            registry["active_version"] = sanitized_active
+
+        if previous_version is not None:
+            registry["previous_version"] = self._sanitize_path_component(previous_version)
+
+        if known_good_version is not None:
+            registry["known_good_version"] = self._sanitize_path_component(known_good_version)
+
+        registry.setdefault("rollback_history", []).append(
+            {
+                "active_version": registry.get("active_version"),
+                "previous_version": registry.get("previous_version"),
+                "known_good_version": registry.get("known_good_version"),
+                "reason": reason,
+                "timestamp": event_time,
+            }
+        )
+        registry["updated_at"] = event_time
+        self._save_registry(registry)
+        return registry
+
+    def get_registry(
+        self,
+        model_name: Optional[str] = None,
+        project_name: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return adapter registry and rollback pointers."""
+        return self._load_registry(model_name, project_name)
+
     def delete_adapter(
         self,
         version: str,
@@ -351,7 +490,7 @@ class AdapterStorage:
             versions = []
             for obj in objects:
                 parts = obj.object_name.split('/')
-                if len(parts) >= 3:
+                if len(parts) >= 4:
                     versions.append(parts[2])
 
             if versions:
@@ -384,7 +523,7 @@ class AdapterStorage:
             num_adapters = len(set(
                 obj.object_name.split('/')[2]
                 for obj in objects
-                if len(obj.object_name.split('/')) >= 3
+                if len(obj.object_name.split('/')) >= 4
             ))
 
             return {
