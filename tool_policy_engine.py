@@ -4,10 +4,12 @@
 from __future__ import annotations
 
 import fnmatch
+import ipaddress
 import logging
 import os
 import threading
 import time
+from urllib.parse import urlparse
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
@@ -68,6 +70,21 @@ class WorkspaceRolePolicy:
         }
 
 
+
+
+@dataclass
+class ToolRedactionRule:
+    """Argument-level redaction rule scoped by workspace policy."""
+
+    argument: str
+    patterns: List[str] = field(default_factory=list)
+    replacement: str = "[REDACTED]"
+
+    def applies_to(self, argument_name: str, value: str) -> bool:
+        if argument_name != self.argument:
+            return False
+        return any(fnmatch.fnmatch(value, pattern) for pattern in self.patterns)
+
 @dataclass
 class WorkspaceToolPolicy:
     """Policy rules scoped to one workspace."""
@@ -82,7 +99,12 @@ class WorkspaceToolPolicy:
     default_role: str = "viewer"
     role_policies: Dict[str, WorkspaceRolePolicy] = field(default_factory=dict)
     max_tool_calls_per_request: int = 0
+    max_tool_calls_per_workspace_window: int = 0
+    workspace_quota_window_seconds: int = 60
     per_call_timeout_seconds: Optional[float] = None
+    allowed_outbound_domains: Set[str] = field(default_factory=set)
+    block_private_ip_ranges: bool = True
+    redaction_rules: List[ToolRedactionRule] = field(default_factory=list)
 
     def allowed_tools_for_action(self, action: str) -> Set[str]:
         """Return tools allowed for an action including wildcard bucket."""
@@ -118,7 +140,19 @@ class WorkspaceToolPolicy:
                 "tools": self.allowlists_tools,
             },
             "max_tool_calls_per_request": self.max_tool_calls_per_request,
+            "max_tool_calls_per_workspace_window": self.max_tool_calls_per_workspace_window,
+            "workspace_quota_window_seconds": self.workspace_quota_window_seconds,
             "per_call_timeout_seconds": self.per_call_timeout_seconds,
+            "allowed_outbound_domains": sorted(self.allowed_outbound_domains),
+            "block_private_ip_ranges": self.block_private_ip_ranges,
+            "redaction_rules": [
+                {
+                    "argument": rule.argument,
+                    "patterns": list(rule.patterns),
+                    "replacement": rule.replacement,
+                }
+                for rule in self.redaction_rules
+            ],
         }
         if self.role_policies:
             payload["default_role"] = self.default_role
@@ -144,6 +178,7 @@ class ToolPolicyEngine:
         self.default_role = _normalize_supported_role(default_role, fallback="viewer")
         self.request_counter_ttl_seconds = request_counter_ttl_seconds
         self._request_call_counts: Dict[Tuple[str, str], Tuple[int, float]] = {}
+        self._workspace_quota_windows: Dict[str, List[float]] = {}
         self._lock = threading.Lock()
 
     @classmethod
@@ -254,9 +289,28 @@ class ToolPolicyEngine:
             config.get("max_tool_calls_per_request", 0),
             field_name=f"workspaces.{workspace_id}.max_tool_calls_per_request",
         )
+        max_tool_calls_per_workspace_window = _parse_non_negative_int(
+            config.get("max_tool_calls_per_workspace_window", 0),
+            field_name=f"workspaces.{workspace_id}.max_tool_calls_per_workspace_window",
+        )
+        workspace_quota_window_seconds = _parse_positive_int(
+            config.get("workspace_quota_window_seconds", 60),
+            field_name=f"workspaces.{workspace_id}.workspace_quota_window_seconds",
+        )
         timeout_value = _parse_optional_timeout_seconds(
             config.get("per_call_timeout_seconds"),
             field_name=f"workspaces.{workspace_id}.per_call_timeout_seconds",
+        )
+        allowed_outbound_domains = _parse_string_set(
+            config.get("allowed_outbound_domains"),
+            field_name=f"workspaces.{workspace_id}.allowed_outbound_domains",
+        )
+        block_private_ip_ranges = _parse_bool(
+            config.get("block_private_ip_ranges", True),
+            field_name=f"workspaces.{workspace_id}.block_private_ip_ranges",
+        redaction_rules = _parse_redaction_rules(
+            config.get("redaction_rules"),
+            field_name=f"workspaces.{workspace_id}.redaction_rules",
         )
 
         return WorkspaceToolPolicy(
@@ -270,7 +324,12 @@ class ToolPolicyEngine:
             default_role=default_role,
             role_policies=role_policies,
             max_tool_calls_per_request=max_tool_calls_per_request,
+            max_tool_calls_per_workspace_window=max_tool_calls_per_workspace_window,
+            workspace_quota_window_seconds=workspace_quota_window_seconds,
             per_call_timeout_seconds=timeout_value,
+            allowed_outbound_domains=allowed_outbound_domains,
+            block_private_ip_ranges=block_private_ip_ranges,
+            redaction_rules=redaction_rules,
         )
 
     def resolve_workspace_id(self, workspace_id: Optional[str]) -> Optional[str]:
@@ -462,7 +521,19 @@ class ToolPolicyEngine:
                 workspace_id=resolved_workspace,
             )
 
+        network_allowed, network_reason = self._validate_network_restrictions(
+            workspace_policy=workspace_policy,
+            arguments=arguments or {},
+        )
+        if not network_allowed:
+            return ToolPolicyDecision(
+                allowed=False,
+                reason=network_reason,
+                workspace_id=resolved_workspace,
+            )
+
         quota_allowed, quota_reason = self._validate_request_quota(
+        quota_allowed, quota_reason = self._validate_quotas(
             workspace_policy=workspace_policy,
             workspace_id=resolved_workspace,
             request_id=request_id,
@@ -480,6 +551,37 @@ class ToolPolicyEngine:
             workspace_id=resolved_workspace,
             timeout_seconds=workspace_policy.resolve_timeout(default_timeout_seconds),
         )
+
+    def redact_tool_arguments(
+        self,
+        *,
+        workspace_id: Optional[str],
+        server_id: str,
+        tool_name: str,
+        arguments: Optional[Dict[str, Any]],
+    ) -> Tuple[Dict[str, Any], int]:
+        """Apply workspace redaction rules to argument payloads for auditing."""
+        payload = dict(arguments or {})
+        resolved_workspace = self.resolve_workspace_id(workspace_id)
+        if not resolved_workspace:
+            return payload, 0
+        workspace_policy = self.workspace_policies.get(resolved_workspace)
+        if not workspace_policy or not workspace_policy.redaction_rules:
+            return payload, 0
+
+        redacted_payload = dict(payload)
+        redactions = 0
+        for rule in workspace_policy.redaction_rules:
+            if rule.argument not in redacted_payload:
+                continue
+            values = _extract_argument_values(redacted_payload[rule.argument])
+            if not values:
+                continue
+            if any(any(fnmatch.fnmatch(value, pattern) for pattern in rule.patterns) for value in values):
+                redacted_payload[rule.argument] = rule.replacement
+                redactions += 1
+
+        return redacted_payload, redactions
 
     def _validate_allowlists(
         self,
@@ -504,10 +606,7 @@ class ToolPolicyEngine:
             return True, None
 
         for arg_name, patterns in constraints.items():
-            if arg_name not in arguments:
-                continue
-
-            values = _extract_argument_values(arguments[arg_name])
+            values = _collect_allowlist_values(arguments=arguments, arg_name=arg_name)
             if not values:
                 continue
 
@@ -520,36 +619,77 @@ class ToolPolicyEngine:
 
         return True, None
 
+    def _validate_network_restrictions(
+        self,
+        *,
+        workspace_policy: WorkspaceToolPolicy,
+        arguments: Dict[str, Any],
+    ) -> Tuple[bool, Optional[str]]:
+        outbound_targets = _extract_outbound_targets(arguments)
+        if not outbound_targets:
+            return True, None
+
+        allowed_domains = {value.lower() for value in workspace_policy.allowed_outbound_domains}
+        for target in outbound_targets:
+            host = target.lower()
+            parsed_ip = _parse_ip_address(host)
+
+            if parsed_ip and workspace_policy.block_private_ip_ranges and _is_private_or_local_ip(parsed_ip):
+                return False, f"outbound target '{target}' resolves to a blocked private/local IP range"
+
+            if allowed_domains:
+                if parsed_ip:
+                    return False, f"outbound target '{target}' is an IP literal and not an allowed domain"
+                if not any(fnmatch.fnmatch(host, pattern.lower()) for pattern in allowed_domains):
+                    return False, f"outbound domain '{target}' is outside allowed_outbound_domains"
+
+        return True, None
+
     def _validate_request_quota(
+    def _validate_quotas(
         self,
         *,
         workspace_policy: WorkspaceToolPolicy,
         workspace_id: str,
         request_id: Optional[str],
     ) -> Tuple[bool, Optional[str]]:
-        max_calls = workspace_policy.max_tool_calls_per_request
-        if max_calls <= 0:
-            return True, None
-
-        # Request-scoped quota is only enforceable when request_id is available.
-        if not request_id:
-            return True, None
-
         now = time.time()
-        key = (workspace_id, request_id)
 
         with self._lock:
             self._cleanup_stale_request_counters(now)
-            current_count, _ = self._request_call_counts.get(key, (0, now))
-            if current_count >= max_calls:
-                return (
-                    False,
-                    (
-                        f"max tool calls per request exceeded ({max_calls}) "
-                        f"for request '{request_id}'"
-                    ),
-                )
-            self._request_call_counts[key] = (current_count + 1, now)
+            self._cleanup_workspace_quota_windows(now)
+
+            workspace_limit = workspace_policy.max_tool_calls_per_workspace_window
+            if workspace_limit > 0:
+                workspace_calls = self._workspace_quota_windows.get(workspace_id, [])
+                if len(workspace_calls) >= workspace_limit:
+                    return (
+                        False,
+                        (
+                            "workspace tool-call quota exceeded "
+                            f"({workspace_limit}/{workspace_policy.workspace_quota_window_seconds}s)"
+                        ),
+                    )
+
+            request_limit = workspace_policy.max_tool_calls_per_request
+            request_key = None
+            if request_limit > 0 and request_id:
+                request_key = (workspace_id, request_id)
+                current_count, _ = self._request_call_counts.get(request_key, (0, now))
+                if current_count >= request_limit:
+                    return (
+                        False,
+                        (
+                            f"max tool calls per request exceeded ({request_limit}) "
+                            f"for request '{request_id}'"
+                        ),
+                    )
+
+            if workspace_limit > 0:
+                self._workspace_quota_windows.setdefault(workspace_id, []).append(now)
+            if request_key is not None:
+                current_count, _ = self._request_call_counts.get(request_key, (0, now))
+                self._request_call_counts[request_key] = (current_count + 1, now)
 
         return True, None
 
@@ -558,6 +698,23 @@ class ToolPolicyEngine:
         stale_keys = [key for key, (_, ts) in self._request_call_counts.items() if ts < cutoff]
         for key in stale_keys:
             self._request_call_counts.pop(key, None)
+
+    def _cleanup_workspace_quota_windows(self, now: float) -> None:
+        stale_workspaces: List[str] = []
+        for workspace_id, timestamps in self._workspace_quota_windows.items():
+            workspace_policy = self.workspace_policies.get(workspace_id)
+            if not workspace_policy or workspace_policy.max_tool_calls_per_workspace_window <= 0:
+                stale_workspaces.append(workspace_id)
+                continue
+            cutoff = now - workspace_policy.workspace_quota_window_seconds
+            fresh_timestamps = [ts for ts in timestamps if ts >= cutoff]
+            if fresh_timestamps:
+                self._workspace_quota_windows[workspace_id] = fresh_timestamps
+            else:
+                stale_workspaces.append(workspace_id)
+
+        for workspace_id in stale_workspaces:
+            self._workspace_quota_windows.pop(workspace_id, None)
 
     def get_workspace_policy(self, workspace_id: str) -> Dict[str, Any]:
         """Return serialized workspace policy payload."""
@@ -680,6 +837,22 @@ def _parse_non_negative_int(raw_value: Any, *, field_name: str) -> int:
         raise ValueError(f"{field_name} must be a non-negative integer") from exc
     if parsed < 0:
         raise ValueError(f"{field_name} must be a non-negative integer")
+    return parsed
+
+
+def _parse_bool(raw_value: Any, *, field_name: str) -> bool:
+    if isinstance(raw_value, bool):
+        return raw_value
+    raise ValueError(f"{field_name} must be a boolean")
+def _parse_positive_int(raw_value: Any, *, field_name: str) -> int:
+    if isinstance(raw_value, bool):
+        raise ValueError(f"{field_name} must be a positive integer")
+    try:
+        parsed = int(raw_value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{field_name} must be a positive integer") from exc
+    if parsed <= 0:
+        raise ValueError(f"{field_name} must be a positive integer")
     return parsed
 
 
@@ -807,6 +980,38 @@ def _parse_role_policies(raw_roles: Any, *, field_name: str) -> Dict[str, Worksp
     return parsed
 
 
+def _parse_redaction_rules(raw_rules: Any, *, field_name: str) -> List[ToolRedactionRule]:
+    if raw_rules is None:
+        return []
+    if not isinstance(raw_rules, list):
+        raise ValueError(f"{field_name} must be a list")
+
+    parsed: List[ToolRedactionRule] = []
+    for index, raw_rule in enumerate(raw_rules):
+        if not isinstance(raw_rule, dict):
+            raise ValueError(f"{field_name}[{index}] must be a mapping")
+        argument = raw_rule.get("argument")
+        if not isinstance(argument, str) or not argument.strip():
+            raise ValueError(f"{field_name}[{index}].argument must be a non-empty string")
+        patterns = _as_pattern_list(
+            raw_rule.get("patterns"),
+            field_name=f"{field_name}[{index}].patterns",
+        )
+        if not patterns:
+            raise ValueError(f"{field_name}[{index}].patterns must include at least one pattern")
+        replacement = raw_rule.get("replacement", "[REDACTED]")
+        if not isinstance(replacement, str):
+            raise ValueError(f"{field_name}[{index}].replacement must be a string")
+        parsed.append(
+            ToolRedactionRule(
+                argument=argument.strip(),
+                patterns=patterns,
+                replacement=replacement,
+            )
+        )
+    return parsed
+
+
 def _parse_allowlists(raw_allowlists: Any, *, field_name: str) -> Tuple[
     Dict[str, List[str]],
     Dict[str, Dict[str, List[str]]],
@@ -909,6 +1114,180 @@ def _extract_argument_values(value: Any) -> List[str]:
             collected.extend(_extract_argument_values(item))
         return collected
     return []
+
+
+def _extract_outbound_targets(arguments: Dict[str, Any]) -> Set[str]:
+    targets: Set[str] = set()
+    networkish_keys = {
+        "url",
+        "uri",
+        "endpoint",
+        "base_url",
+        "webhook",
+        "webhook_url",
+        "callback_url",
+        "host",
+        "hostname",
+        "domain",
+    }
+
+    def _walk(value: Any, key_hint: Optional[str] = None) -> None:
+        if isinstance(value, dict):
+            for child_key, child_value in value.items():
+                _walk(child_value, str(child_key).strip().lower())
+            return
+        if isinstance(value, (list, tuple, set)):
+            for item in value:
+                _walk(item, key_hint)
+            return
+        if not isinstance(value, str):
+            return
+
+        text = value.strip()
+        if not text:
+            return
+
+        if "://" in text:
+            parsed = urlparse(text)
+            if parsed.hostname:
+                targets.add(parsed.hostname)
+            return
+
+        if key_hint in networkish_keys:
+            host_candidate = text
+            if "/" in host_candidate:
+                host_candidate = host_candidate.split("/", 1)[0]
+            if host_candidate:
+                targets.add(host_candidate)
+
+    _walk(arguments)
+    return targets
+
+
+def _parse_ip_address(host: str) -> Optional[ipaddress._BaseAddress]:
+    normalized = host.strip().strip("[]")
+    try:
+        return ipaddress.ip_address(normalized)
+    except ValueError:
+        return None
+
+
+def _is_private_or_local_ip(parsed_ip: ipaddress._BaseAddress) -> bool:
+    return (
+        parsed_ip.is_private
+        or parsed_ip.is_loopback
+        or parsed_ip.is_link_local
+        or parsed_ip.is_multicast
+        or parsed_ip.is_reserved
+        or parsed_ip.is_unspecified
+    )
+def _collect_allowlist_values(*, arguments: Dict[str, Any], arg_name: str) -> List[str]:
+    """Collect argument values for generic, nested, and semantic allowlist keys."""
+    normalized_arg = (arg_name or "").strip()
+    if not normalized_arg:
+        return []
+
+    semantic_collectors = {
+        "github_org": _extract_github_org_values,
+        "github_repo": _extract_github_repo_values,
+        "tracker_project": _extract_tracker_project_values,
+    }
+    semantic_collector = semantic_collectors.get(normalized_arg)
+    if semantic_collector:
+        return semantic_collector(arguments)
+
+    if normalized_arg in arguments:
+        return _extract_argument_values(arguments[normalized_arg])
+
+    return _extract_nested_argument_values(arguments, normalized_arg)
+
+
+def _extract_nested_argument_values(arguments: Dict[str, Any], path: str) -> List[str]:
+    """Resolve a dotted path (e.g. repository.owner) inside arguments."""
+    parts = [part.strip() for part in path.split(".") if part.strip()]
+    if not parts:
+        return []
+
+    current_values: List[Any] = [arguments]
+    for part in parts:
+        next_values: List[Any] = []
+        for current in current_values:
+            if isinstance(current, dict) and part in current:
+                next_values.append(current[part])
+            elif isinstance(current, (list, tuple, set)):
+                for item in current:
+                    if isinstance(item, dict) and part in item:
+                        next_values.append(item[part])
+        if not next_values:
+            return []
+        current_values = next_values
+
+    collected: List[str] = []
+    for value in current_values:
+        collected.extend(_extract_argument_values(value))
+    return collected
+
+
+def _extract_github_org_values(arguments: Dict[str, Any]) -> List[str]:
+    collected: List[str] = []
+    for key in ("org", "owner", "organization"):
+        collected.extend(_extract_argument_values(arguments.get(key)))
+
+    for repo_key in ("repo", "repository"):
+        for repo_value in _extract_argument_values(arguments.get(repo_key)):
+            if "/" in repo_value:
+                collected.append(repo_value.split("/", 1)[0])
+
+    repository_payload = arguments.get("repository")
+    if isinstance(repository_payload, dict):
+        collected.extend(
+            _extract_argument_values(
+                repository_payload.get("owner")
+                or repository_payload.get("organization")
+                or repository_payload.get("login")
+            )
+        )
+        for full_name in _extract_argument_values(repository_payload.get("full_name")):
+            if "/" in full_name:
+                collected.append(full_name.split("/", 1)[0])
+
+    return [value for value in collected if value]
+
+
+def _extract_github_repo_values(arguments: Dict[str, Any]) -> List[str]:
+    collected: List[str] = []
+    for key in ("repo", "repository", "name"):
+        for repo_value in _extract_argument_values(arguments.get(key)):
+            collected.append(repo_value)
+            if "/" in repo_value:
+                collected.append(repo_value.split("/", 1)[1])
+
+    repository_payload = arguments.get("repository")
+    if isinstance(repository_payload, dict):
+        full_name_values = _extract_argument_values(repository_payload.get("full_name"))
+        for full_name in full_name_values:
+            collected.append(full_name)
+            if "/" in full_name:
+                collected.append(full_name.split("/", 1)[1])
+        repo_name_values = _extract_argument_values(repository_payload.get("name"))
+        if repo_name_values:
+            collected.extend(repo_name_values)
+        else:
+            owner_values = _extract_argument_values(repository_payload.get("owner"))
+            name_values = _extract_argument_values(repository_payload.get("repo"))
+            for owner in owner_values:
+                for name in name_values:
+                    collected.append(f"{owner}/{name}")
+                    collected.append(name)
+
+    return [value for value in collected if value]
+
+
+def _extract_tracker_project_values(arguments: Dict[str, Any]) -> List[str]:
+    collected: List[str] = []
+    for key in ("project", "project_key", "projectKey", "project_id", "projectId"):
+        collected.extend(_extract_argument_values(arguments.get(key)))
+    return [value for value in collected if value]
 
 
 def _normalize_action(action: str) -> str:

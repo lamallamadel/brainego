@@ -49,6 +49,18 @@ def test_repo_rag_golden_set_has_required_case_fields() -> None:
         assert case["citation_format"] == "[source:<path>]"
         assert isinstance(case["citation_anchors"], list) and case["citation_anchors"]
 
+        expected_citations = case["expected_citations"]
+        assert isinstance(expected_citations, list) and expected_citations
+        for citation in expected_citations:
+            assert citation["source"] in case["expected_sources"]
+            assert citation["required"] is True
+
+        expected_tool_usage = case["expected_tool_usage"]
+        assert isinstance(expected_tool_usage, list) and expected_tool_usage
+        tool_names = {tool["tool"] for tool in expected_tool_usage}
+        assert "retriever.search" in tool_names
+        assert "llm.generate" in tool_names
+
 
 def test_repo_rag_golden_set_sources_align_with_pilot_index_defaults() -> None:
     suite = _load_fixture()
@@ -66,8 +78,10 @@ def test_repo_rag_golden_set_sources_align_with_pilot_index_defaults() -> None:
     assert covered_sources == expected_default_sources
 
 
-def test_repo_rag_golden_set_declares_eval_axes() -> None:
+def test_repo_rag_golden_set_declares_eval_axes_and_schema_version() -> None:
     suite = _load_fixture()
     axes = set(suite["metadata"]["evaluation_axes"])
     assert "retrieval_relevance" in axes
     assert "citation_correctness" in axes
+    assert "tool_usage_correctness" in axes
+    assert suite["metadata"]["schema_version"] == "golden_qa.v1"
