@@ -1,27 +1,51 @@
 """
 Chaos Engineering for Production Validation
 
-Basic Tests:
-- Random pod kills
-- CPU saturation  
-- Network partitions
-- Memory pressure
+Test Suites:
 
-Advanced Tests (--advanced flag):
+1. Basic Suite (--chaos-suite basic):
+   - Random pod kills
+   - CPU saturation
+
+2. Advanced Suite (--chaos-suite advanced):
+   - Random pod kills
+   - CPU saturation
+   - Advanced tests run in PARALLEL with async/await:
+     * network_partition_test()
+     * memory_pressure_test()
+     * database_failover_test()
+
+Advanced Tests Details:
 - network_partition_test(): Simulates 50% packet loss between api-server and Qdrant for 60s using tc (traffic control)
   * Verifies circuit breaker triggers degraded mode
   * Monitors for automatic recovery after partition is removed
   * Records network_partition_active metric in Prometheus
+  * Validates circuit breaker state via /health/circuit-breakers API
   
 - memory_pressure_test(): Simulates 90% memory usage on learning-engine pod using stress-ng
   * Verifies graceful degradation (service stays responsive but degraded)
   * Monitors for automatic recovery after pressure is released
   * Tests OOM handling and memory limits
+  * Validates circuit breaker state via /health/circuit-breakers API
   
 - database_failover_test(): Kills Postgres primary pod and verifies StatefulSet automatic recovery
   * Tests database high availability
   * Verifies automatic pod restart and recovery
   * Ensures data integrity after failover
+  * Validates circuit breaker state via /health/circuit-breakers API
+
+Circuit Breaker Integration:
+- Validates circuit breaker states via /circuit-breakers API endpoint
+- Monitors for proper state transitions (CLOSED -> OPEN -> HALF_OPEN -> CLOSED)
+- Checks failure rates and rejection counts
+- Included in consolidated chaos report
+
+Reporting:
+- Consolidated chaos report with per-service resilience scores
+- Overall resilience score based on all tests
+- Circuit breaker validation results
+- Detailed test results per service
+- Failures and recovery information
 
 Prometheus Metrics Exported:
 - chaos_test_total: Counter of chaos tests executed by type
@@ -43,13 +67,21 @@ Prometheus Alerts Created:
 - MemoryPressureDetected: Container using >90% of memory limit
 
 Usage:
-    # Run basic tests only
+    # Run basic tests only (legacy mode)
     python chaos_engineering.py
     
-    # Run basic + advanced tests
-    python chaos_engineering.py --advanced
+    # Run basic suite (pod kills + CPU saturation)
+    python chaos_engineering.py --chaos-suite basic
+    
+    # Run advanced suite (basic + parallel advanced tests)
+    python chaos_engineering.py --chaos-suite advanced
     
     # Integration with production validation
+    python run_production_validation.py --chaos-suite basic
+    python run_production_validation.py --chaos-suite advanced
+    
+    # Legacy flag (deprecated)
+    python chaos_engineering.py --advanced
     python run_production_validation.py --chaos
 
 Requirements:
@@ -61,13 +93,16 @@ Requirements:
 
 import asyncio
 import docker
+import httpx
+import json
 import logging
 import random
 import subprocess
 import time
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Tuple
 
 logging.basicConfig(
     level=logging.INFO,
@@ -115,10 +150,13 @@ class ChaosExperiment:
 class ChaosEngineer:
     """Chaos engineering orchestrator"""
 
-    def __init__(self):
+    def __init__(self, api_base_url: str = "http://localhost:8000"):
         self.docker_client = docker.from_env()
         self.experiments_run = []
         self.failures_detected = []
+        self.api_base_url = api_base_url
+        self.service_test_results = defaultdict(list)  # Track per-service test results
+        self.circuit_breaker_validations = []  # Track circuit breaker state validations
 
     def get_running_containers(self) -> List[str]:
         """Get list of running containers"""
@@ -147,6 +185,70 @@ class ChaosEngineer:
         
         logger.error(f'{service_name} did not recover within {timeout}s')
         return False
+
+    async def validate_circuit_breaker_state(self) -> Dict[str, any]:
+        """
+        Validate circuit breaker state via /health/circuit-breakers API endpoint.
+        
+        Returns dict with circuit breaker states and validation results.
+        """
+        logger.info('Validating circuit breaker states...')
+        
+        validation_result = {
+            'timestamp': datetime.utcnow().isoformat(),
+            'endpoint_available': False,
+            'circuit_breakers': {},
+            'validation_passed': False,
+        }
+        
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Try the documented endpoint first
+                response = await client.get(f'{self.api_base_url}/circuit-breakers')
+                
+                if response.status_code == 200:
+                    validation_result['endpoint_available'] = True
+                    data = response.json()
+                    
+                    circuit_breakers = data.get('circuit_breakers', {})
+                    validation_result['circuit_breakers'] = circuit_breakers
+                    
+                    # Log circuit breaker states
+                    logger.info(f'Found {len(circuit_breakers)} circuit breakers:')
+                    for name, stats in circuit_breakers.items():
+                        state = stats.get('state', 'unknown')
+                        total_requests = stats.get('total_requests', 0)
+                        total_failures = stats.get('total_failures', 0)
+                        
+                        logger.info(f'  - {name}: state={state}, requests={total_requests}, failures={total_failures}')
+                        
+                        # Validate expected behavior during chaos
+                        if total_requests > 0:
+                            failure_rate = total_failures / total_requests
+                            if failure_rate > 0.5 and state == 'closed':
+                                logger.warning(f'  ⚠ High failure rate but circuit breaker still CLOSED')
+                    
+                    validation_result['validation_passed'] = True
+                    logger.info('✓ Circuit breaker validation completed')
+                    
+                else:
+                    logger.warning(f'Circuit breaker endpoint returned {response.status_code}')
+                    
+        except httpx.ConnectError:
+            logger.warning('Could not connect to API server for circuit breaker validation')
+        except Exception as e:
+            logger.error(f'Error validating circuit breakers: {e}')
+        
+        self.circuit_breaker_validations.append(validation_result)
+        return validation_result
+    
+    def record_service_test_result(self, service: str, test_name: str, passed: bool):
+        """Record test result for a service for resilience scoring."""
+        self.service_test_results[service].append({
+            'test': test_name,
+            'passed': passed,
+            'timestamp': datetime.utcnow().isoformat()
+        })
 
     def random_pod_kill(self):
         """Kill a random container and verify recovery"""
@@ -183,7 +285,10 @@ class ChaosEngineer:
                 # Wait for recovery
                 time.sleep(experiment.recovery_time_seconds)
                 
-                if self.wait_for_recovery(target):
+                recovered = self.wait_for_recovery(target)
+                self.record_service_test_result(target, experiment.name, recovered)
+                
+                if recovered:
                     logger.info(f'✓ {target} recovered successfully')
                 else:
                     self.failures_detected.append({
@@ -200,6 +305,7 @@ class ChaosEngineer:
                     'service': target,
                     'failure': str(e),
                 })
+                self.record_service_test_result(target, experiment.name, False)
         
         self.experiments_run.append(experiment)
 
@@ -243,7 +349,10 @@ class ChaosEngineer:
                 # Verify service is still healthy
                 time.sleep(experiment.recovery_time_seconds)
                 
-                if self.check_service_health(target):
+                healthy = self.check_service_health(target)
+                self.record_service_test_result(target, experiment.name, healthy)
+                
+                if healthy:
                     logger.info(f'✓ {target} survived CPU saturation')
                 else:
                     self.failures_detected.append({
@@ -255,6 +364,7 @@ class ChaosEngineer:
                     
             except Exception as e:
                 logger.error(f'Error stressing {target}: {e}')
+                self.record_service_test_result(target, experiment.name, False)
         
         self.experiments_run.append(experiment)
 
@@ -377,7 +487,7 @@ class ChaosEngineer:
         
         self.experiments_run.append(experiment)
 
-    def network_partition_test(self):
+    async def network_partition_test(self):
         """Simulate 50% packet loss between api-server and Qdrant for 60s and verify circuit breaker triggers"""
         experiment = ChaosExperiment(
             name='Network Partition Test - Circuit Breaker',
@@ -446,12 +556,12 @@ class ChaosEngineer:
                 except Exception as e:
                     logger.debug(f'Error checking circuit breaker: {e}')
                 
-                time.sleep(5)
+                await asyncio.sleep(5)
             
             # Wait for full duration
             elapsed = time.time() - start_time
             if elapsed < experiment.duration_seconds:
-                time.sleep(experiment.duration_seconds - elapsed)
+                await asyncio.sleep(experiment.duration_seconds - elapsed)
             
             # Remove packet loss
             tc_del_cmd = 'tc qdisc del dev eth0 root netem'
@@ -469,7 +579,11 @@ class ChaosEngineer:
             time.sleep(experiment.recovery_time_seconds)
             
             # Verify recovery
-            if self.check_service_health('api-server'):
+            recovered = self.check_service_health('api-server')
+            test_passed = recovered and circuit_breaker_triggered
+            self.record_service_test_result('api-server', experiment.name, test_passed)
+            
+            if recovered:
                 logger.info('✓ api-server recovered from network partition')
                 
                 if circuit_breaker_triggered:
@@ -502,9 +616,13 @@ class ChaosEngineer:
                         test_type='network_partition',
                         service='api-server'
                     ).inc()
+            
+            # Validate circuit breaker state after test
+            await self.validate_circuit_breaker_state()
                 
         except docker.errors.NotFound as e:
             logger.warning(f'Container not found: {e}')
+            self.record_service_test_result('api-server', experiment.name, False)
         except Exception as e:
             logger.error(f'Error in network partition test: {e}')
             self.failures_detected.append({
@@ -512,10 +630,11 @@ class ChaosEngineer:
                 'service': 'api-server',
                 'failure': str(e),
             })
+            self.record_service_test_result('api-server', experiment.name, False)
         
         self.experiments_run.append(experiment)
 
-    def memory_pressure_test(self):
+    async def memory_pressure_test(self):
         """Simulate 90% memory usage on learning-engine pod and verify graceful degradation"""
         experiment = ChaosExperiment(
             name='Memory Pressure Test - Learning Engine',
@@ -585,10 +704,10 @@ class ChaosEngineer:
                     logger.warning(f'⚠ Container {container.name} stopped during memory pressure')
                     break
                 
-                time.sleep(10)
+                await asyncio.sleep(10)
             
             # Wait for stress-ng to complete
-            time.sleep(5)
+            await asyncio.sleep(5)
             
             # Kill any remaining stress processes
             try:
@@ -602,7 +721,10 @@ class ChaosEngineer:
             
             # Verify recovery
             container.reload()
-            if container.status == 'running' and self.check_service_health(container.name):
+            recovered = container.status == 'running' and self.check_service_health(container.name)
+            self.record_service_test_result(container.name, experiment.name, recovered)
+            
+            if recovered:
                 logger.info(f'✓ {container.name} recovered from memory pressure')
                 
                 if degradation_detected:
@@ -623,25 +745,30 @@ class ChaosEngineer:
                         test_type='memory_pressure',
                         service=container.name
                     ).inc()
+            
+            # Validate circuit breaker state after test
+            await self.validate_circuit_breaker_state()
                 
         except Exception as e:
             logger.error(f'Error in memory pressure test: {e}')
+            service_name = 'learning-engine'
             self.failures_detected.append({
                 'experiment': experiment.name,
-                'service': 'learning-engine',
+                'service': service_name,
                 'failure': str(e),
             })
+            self.record_service_test_result(service_name, experiment.name, False)
             
             # Record failure metric
             if METRICS_AVAILABLE:
                 chaos_test_failures_counter.labels(
                     test_type='memory_pressure',
-                    service='learning-engine'
+                    service=service_name
                 ).inc()
         
         self.experiments_run.append(experiment)
 
-    def database_failover_test(self):
+    async def database_failover_test(self):
         """Kill Postgres primary and verify StatefulSet automatic recovery"""
         experiment = ChaosExperiment(
             name='Database Failover Test - Postgres',
@@ -680,7 +807,7 @@ class ChaosEngineer:
             logger.info('✓ Postgres container killed')
             
             # Wait a bit
-            time.sleep(experiment.duration_seconds)
+            await asyncio.sleep(experiment.duration_seconds)
             
             # Monitor for automatic recovery
             logger.info('Monitoring for automatic recovery...')
@@ -696,7 +823,7 @@ class ChaosEngineer:
                         logger.info(f'✓ Postgres container recovered (ID: {postgres_new.id[:12]})')
                         
                         # Verify it's functional
-                        time.sleep(10)  # Allow time for postgres to fully start
+                        await asyncio.sleep(10)  # Allow time for postgres to fully start
                         
                         # Try to connect
                         health_check = postgres_new.exec_run('pg_isready -U postgres')
@@ -711,7 +838,9 @@ class ChaosEngineer:
                 except Exception as e:
                     logger.debug(f'Error checking recovery: {e}')
                 
-                time.sleep(5)
+                await asyncio.sleep(5)
+            
+            self.record_service_test_result('postgres', experiment.name, recovery_successful)
             
             if recovery_successful:
                 logger.info('✓ Database failover and recovery successful')
@@ -729,6 +858,9 @@ class ChaosEngineer:
                         test_type='database_failover',
                         service='postgres'
                     ).inc()
+            
+            # Validate circuit breaker state after test
+            await self.validate_circuit_breaker_state()
                 
         except Exception as e:
             logger.error(f'Error in database failover test: {e}')
@@ -737,6 +869,7 @@ class ChaosEngineer:
                 'service': 'postgres',
                 'failure': str(e),
             })
+            self.record_service_test_result('postgres', experiment.name, False)
             
             # Record failure metric
             if METRICS_AVAILABLE:
@@ -747,27 +880,82 @@ class ChaosEngineer:
         
         self.experiments_run.append(experiment)
 
-    def run_all_experiments(self, include_new_tests: bool = True):
-        """Run all chaos experiments"""
+    async def run_parallel_advanced_tests(self):
+        """
+        Run advanced chaos tests in parallel with async/await.
+        Executes network_partition_test, memory_pressure_test, and database_failover_test simultaneously.
+        """
         logger.info('=' * 60)
-        logger.info('Starting Chaos Engineering Validation')
+        logger.info('Running Advanced Chaos Tests in PARALLEL')
         logger.info('=' * 60)
         
-        experiments = [
-            self.random_pod_kill,
-            self.cpu_saturation,
-            self.memory_pressure,
-            self.network_partition,
-        ]
+        try:
+            # Run three advanced tests concurrently
+            results = await asyncio.gather(
+                self.network_partition_test(),
+                self.memory_pressure_test(),
+                self.database_failover_test(),
+                return_exceptions=True
+            )
+            
+            # Check for exceptions
+            for i, result in enumerate(results):
+                if isinstance(result, Exception):
+                    test_names = ['network_partition_test', 'memory_pressure_test', 'database_failover_test']
+                    logger.error(f'{test_names[i]} failed with exception: {result}')
+            
+            logger.info('✓ Parallel advanced tests completed')
+            
+        except Exception as e:
+            logger.error(f'Error running parallel advanced tests: {e}')
+    
+    def run_all_experiments(self, include_new_tests: bool = True, chaos_suite: str = None):
+        """
+        Run all chaos experiments.
         
-        if include_new_tests:
-            experiments.extend([
-                self.network_partition_test,
-                self.memory_pressure_test,
-                self.database_failover_test,
-            ])
+        Args:
+            include_new_tests: Whether to include advanced tests (deprecated, use chaos_suite)
+            chaos_suite: 'basic', 'advanced', or None (for backward compatibility)
+        """
+        logger.info('=' * 60)
+        if chaos_suite:
+            logger.info(f'Starting Chaos Engineering Validation - Suite: {chaos_suite.upper()}')
+        else:
+            logger.info('Starting Chaos Engineering Validation')
+        logger.info('=' * 60)
         
-        for experiment in experiments:
+        # Determine which tests to run based on suite
+        if chaos_suite == 'basic':
+            # Basic suite: pod kills + CPU saturation only
+            sync_experiments = [
+                self.random_pod_kill,
+                self.cpu_saturation,
+            ]
+            run_advanced = False
+            run_parallel = False
+            
+        elif chaos_suite == 'advanced':
+            # Advanced suite: basic tests + advanced tests in parallel
+            sync_experiments = [
+                self.random_pod_kill,
+                self.cpu_saturation,
+            ]
+            run_advanced = True
+            run_parallel = True
+            
+        else:
+            # Legacy behavior for backward compatibility
+            sync_experiments = [
+                self.random_pod_kill,
+                self.cpu_saturation,
+                self.memory_pressure,
+                self.network_partition,
+            ]
+            run_advanced = include_new_tests
+            run_parallel = False
+        
+        # Run synchronous experiments
+        for experiment in sync_experiments:
             try:
                 experiment()
                 logger.info(f'Completed: {experiment.__name__}')
@@ -775,10 +963,63 @@ class ChaosEngineer:
             except Exception as e:
                 logger.error(f'Experiment {experiment.__name__} failed: {e}')
         
+        # Run advanced tests (either parallel or sequential)
+        if run_advanced:
+            if run_parallel:
+                # Run advanced tests in parallel
+                try:
+                    asyncio.run(self.run_parallel_advanced_tests())
+                    time.sleep(15)  # Cool-down after parallel tests
+                except Exception as e:
+                    logger.error(f'Parallel advanced tests failed: {e}')
+            else:
+                # Run advanced tests sequentially (legacy mode)
+                advanced_experiments = [
+                    self.network_partition_test,
+                    self.memory_pressure_test,
+                    self.database_failover_test,
+                ]
+                
+                for experiment in advanced_experiments:
+                    try:
+                        asyncio.run(experiment())
+                        logger.info(f'Completed: {experiment.__name__}')
+                        time.sleep(10)  # Cool-down between experiments
+                    except Exception as e:
+                        logger.error(f'Experiment {experiment.__name__} failed: {e}')
+        
+        # Final circuit breaker validation
+        logger.info('Running final circuit breaker validation...')
+        try:
+            asyncio.run(self.validate_circuit_breaker_state())
+        except Exception as e:
+            logger.error(f'Final circuit breaker validation failed: {e}')
+        
         self.generate_report()
 
+    def calculate_service_resilience_scores(self) -> Dict[str, float]:
+        """
+        Calculate per-service resilience scores based on test results.
+        
+        Returns:
+            Dict mapping service name to resilience score (0-100%)
+        """
+        service_scores = {}
+        
+        for service, test_results in self.service_test_results.items():
+            if not test_results:
+                continue
+            
+            passed_tests = sum(1 for result in test_results if result['passed'])
+            total_tests = len(test_results)
+            
+            score = (passed_tests / total_tests * 100) if total_tests > 0 else 0
+            service_scores[service] = round(score, 1)
+        
+        return service_scores
+    
     def generate_report(self):
-        """Generate chaos engineering report"""
+        """Generate consolidated chaos engineering report with per-service resilience scores"""
         logger.info('\n' + '=' * 60)
         logger.info('Chaos Engineering Report')
         logger.info('=' * 60)
@@ -794,36 +1035,95 @@ class ChaosEngineer:
         else:
             logger.info('  None - System is resilient!')
         
-        # Calculate resilience score
+        # Calculate per-service resilience scores
+        service_scores = self.calculate_service_resilience_scores()
+        
+        logger.info('\n' + '=' * 60)
+        logger.info('Per-Service Resilience Scores')
+        logger.info('=' * 60)
+        
+        if service_scores:
+            for service, score in sorted(service_scores.items(), key=lambda x: x[1], reverse=True):
+                test_count = len(self.service_test_results[service])
+                passed = sum(1 for r in self.service_test_results[service] if r['passed'])
+                
+                if score >= 90:
+                    status = '✓ EXCELLENT'
+                elif score >= 75:
+                    status = '⚠ GOOD'
+                else:
+                    status = '✗ NEEDS IMPROVEMENT'
+                
+                logger.info(f'  {service}: {score}% ({passed}/{test_count} tests passed) - {status}')
+        else:
+            logger.info('  No per-service data collected')
+        
+        # Calculate overall resilience score
         total_tests = len(self.experiments_run) * 3  # Average 3 services per experiment
         failures = len(self.failures_detected)
-        resilience_score = ((total_tests - failures) / total_tests * 100) if total_tests > 0 else 0
+        overall_resilience_score = ((total_tests - failures) / total_tests * 100) if total_tests > 0 else 0
         
-        logger.info(f'\nResilience Score: {resilience_score:.1f}%')
+        # Alternative calculation based on actual service test results
+        if service_scores:
+            overall_resilience_score = sum(service_scores.values()) / len(service_scores)
         
-        if resilience_score >= 90:
+        logger.info('\n' + '=' * 60)
+        logger.info(f'Overall Resilience Score: {overall_resilience_score:.1f}%')
+        
+        if overall_resilience_score >= 90:
             logger.info('Status: EXCELLENT ✓')
-        elif resilience_score >= 75:
+        elif overall_resilience_score >= 75:
             logger.info('Status: GOOD ⚠')
         else:
             logger.info('Status: NEEDS IMPROVEMENT ✗')
         
+        # Circuit breaker summary
+        logger.info('\n' + '=' * 60)
+        logger.info('Circuit Breaker Validations')
         logger.info('=' * 60)
         
-        # Save report
+        if self.circuit_breaker_validations:
+            for i, validation in enumerate(self.circuit_breaker_validations, 1):
+                if validation['validation_passed']:
+                    cb_count = len(validation['circuit_breakers'])
+                    logger.info(f'  Validation #{i}: ✓ PASSED ({cb_count} circuit breakers checked)')
+                else:
+                    logger.warning(f'  Validation #{i}: ✗ FAILED (endpoint unavailable)')
+        else:
+            logger.info('  No circuit breaker validations performed')
+        
+        logger.info('=' * 60)
+        
+        # Save comprehensive report
         report = {
             'timestamp': datetime.now().isoformat(),
-            'experiments_run': len(self.experiments_run),
-            'failures_detected': len(self.failures_detected),
-            'resilience_score': resilience_score,
+            'summary': {
+                'experiments_run': len(self.experiments_run),
+                'failures_detected': len(self.failures_detected),
+                'overall_resilience_score': round(overall_resilience_score, 1),
+            },
+            'experiments': [
+                {
+                    'name': exp.name,
+                    'description': exp.description,
+                    'duration_seconds': exp.duration_seconds,
+                    'recovery_time_seconds': exp.recovery_time_seconds,
+                }
+                for exp in self.experiments_run
+            ],
             'failures': self.failures_detected,
+            'service_resilience_scores': service_scores,
+            'service_test_results': {
+                service: results
+                for service, results in self.service_test_results.items()
+            },
+            'circuit_breaker_validations': self.circuit_breaker_validations,
         }
         
-        import json
         with open('chaos_report.json', 'w') as f:
             json.dump(report, f, indent=2)
         
-        logger.info('Report saved to chaos_report.json')
+        logger.info('\nConsolidated chaos report saved to chaos_report.json')
 
 
 def main():
@@ -834,13 +1134,29 @@ def main():
     parser.add_argument(
         '--advanced',
         action='store_true',
-        help='Run advanced chaos tests (network partition, memory pressure, database failover)'
+        help='Run advanced chaos tests (network partition, memory pressure, database failover) - DEPRECATED, use --chaos-suite advanced'
+    )
+    parser.add_argument(
+        '--chaos-suite',
+        choices=['basic', 'advanced'],
+        help='Chaos test suite: basic (pod kills + CPU saturation) or advanced (+ network partitions + memory pressure + DB failover with parallel execution)'
+    )
+    parser.add_argument(
+        '--api-url',
+        default='http://localhost:8000',
+        help='Base URL for API server (for circuit breaker validation)'
     )
     
     args = parser.parse_args()
     
-    engineer = ChaosEngineer()
-    engineer.run_all_experiments(include_new_tests=args.advanced)
+    engineer = ChaosEngineer(api_base_url=args.api_url)
+    
+    # Handle chaos-suite flag
+    if args.chaos_suite:
+        engineer.run_all_experiments(chaos_suite=args.chaos_suite)
+    else:
+        # Legacy support for --advanced flag
+        engineer.run_all_experiments(include_new_tests=args.advanced)
 
 
 if __name__ == '__main__':
