@@ -78,10 +78,16 @@ def test_mcp_tool_request_supports_write_confirmation_fields() -> None:
 
 def test_write_actions_return_pending_confirmation_when_unconfirmed() -> None:
     source_text = SOURCE.read_text(encoding="utf-8")
-    assert 'requires_write_confirmation(request.tool_name)' in source_text
+    assert "evaluate_write_confirmation_gate(" in source_text
     assert '"status": "pending_confirmation"' in source_text
-    assert "write_confirmation_store.create_plan(" in source_text
+    assert "confirmation_decision.pending_plan" in source_text
     assert "confirm=true and confirmation_id" in source_text
+
+
+def test_call_tool_applies_confirmation_gate_denials() -> None:
+    source_text = SOURCE.read_text(encoding="utf-8")
+    assert "confirmation_decision.status_code" in source_text
+    assert "confirmation_decision.reason" in source_text
 
 
 def test_unified_mcp_passes_confirm_fields_to_call_tool_request() -> None:

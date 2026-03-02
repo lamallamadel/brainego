@@ -94,6 +94,16 @@ class PendingWritePlan:
         }
 
 
+@dataclass(frozen=True)
+class WriteConfirmationGateDecision:
+    """Decision returned by the write confirmation gate."""
+
+    allow_execution: bool
+    pending_plan: Optional[PendingWritePlan] = None
+    status_code: Optional[int] = None
+    reason: Optional[str] = None
+
+
 class PendingWritePlanStore:
     """In-memory storage for pending write confirmations."""
 
@@ -176,3 +186,71 @@ class PendingWritePlanStore:
         ]
         for plan_id in expired_plan_ids:
             self._plans.pop(plan_id, None)
+
+
+def evaluate_write_confirmation_gate(
+    *,
+    store: PendingWritePlanStore,
+    requested_by: str,
+    server_id: str,
+    tool_name: str,
+    arguments: Optional[Dict[str, Any]] = None,
+    confirm: bool = False,
+    confirmation_id: Optional[str] = None,
+) -> WriteConfirmationGateDecision:
+    """
+    Evaluate the write confirmation gate for one tool call.
+
+    Behaviour:
+    - Any call with confirmation_id requires confirm=true.
+    - Write issue/comment tools require a two-step flow:
+      1) unconfirmed call returns pending plan
+      2) confirmed call must include matching confirmation_id + payload
+    - confirm=true without confirmation_id is rejected for write issue/comment tools.
+    """
+    normalized_arguments = copy.deepcopy(arguments or {})
+    normalized_confirmation_id = (confirmation_id or "").strip() or None
+
+    if normalized_confirmation_id and not confirm:
+        return WriteConfirmationGateDecision(
+            allow_execution=False,
+            status_code=400,
+            reason="confirmation_id requires confirm=true",
+        )
+
+    if not requires_write_confirmation(tool_name):
+        return WriteConfirmationGateDecision(allow_execution=True)
+
+    if confirm and not normalized_confirmation_id:
+        return WriteConfirmationGateDecision(
+            allow_execution=False,
+            status_code=400,
+            reason="confirm=true requires confirmation_id",
+        )
+
+    if confirm and normalized_confirmation_id:
+        plan_matches, mismatch_reason = store.consume_plan(
+            confirmation_id=normalized_confirmation_id,
+            requested_by=requested_by,
+            server_id=server_id,
+            tool_name=tool_name,
+            arguments=normalized_arguments,
+        )
+        if not plan_matches:
+            return WriteConfirmationGateDecision(
+                allow_execution=False,
+                status_code=409,
+                reason=mismatch_reason or "Confirmed request does not match pending plan",
+            )
+        return WriteConfirmationGateDecision(allow_execution=True)
+
+    pending_plan = store.create_plan(
+        requested_by=requested_by,
+        server_id=server_id,
+        tool_name=tool_name,
+        arguments=normalized_arguments,
+    )
+    return WriteConfirmationGateDecision(
+        allow_execution=False,
+        pending_plan=pending_plan,
+    )
