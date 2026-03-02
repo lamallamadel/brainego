@@ -33,6 +33,8 @@ Each case contains:
 - `question`: user question to ask
 - `expected_sources`: source file(s) expected in retrieval
 - `expected_answer_keywords`: key facts expected in the answer
+- `expected_citations`: required citation targets, each with `{source, required}`
+- `expected_tool_usage`: expected tool calls, each with `{tool, required}`
 - `citation_required`: always `true` for this set
 - `citation_format`: expected citation pattern (`[source:<path>]`)
 - `citation_anchors`: exact source snippets used as citation ground truth
@@ -84,3 +86,22 @@ When pilot indexed files change:
 ```bash
 pytest tests/unit/test_repo_rag_golden_set_contract.py -q
 ```
+
+
+## Schema + version tooling (AFR-130)
+
+Use `scripts/golden_set_tool.py` to enforce schema and manage semantic versions:
+
+```bash
+# Validate schema invariants
+python scripts/golden_set_tool.py validate --path tests/contract/fixtures/repo_rag_golden_set.ndjson
+
+# Bump golden set version after changes
+python scripts/golden_set_tool.py bump --path tests/contract/fixtures/repo_rag_golden_set.ndjson --part patch
+```
+
+Versioning policy:
+
+- `patch`: typo/wording fixes, no behavioral contract changes
+- `minor`: add cases/fields compatible with `golden_qa.v1`
+- `major`: breaking schema or incompatible contract updates

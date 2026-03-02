@@ -353,6 +353,15 @@ async def _activate_adapter_version(
         },
     )
 
+    storage.update_rollback_pointers(
+        active_version=version,
+        previous_version=from_version,
+        known_good_version=lora_state.known_good_adapter_version,
+        reason=reason,
+        model_name=model_name,
+        project_name=project,
+    )
+
     return {
         "version": version,
         "path": local_path,
@@ -690,6 +699,14 @@ async def rollback_lora(request: LoRAOperationRequest):
             "control_plane_status": control_plane["status_code"] if control_plane else None,
         },
     )
+
+    if storage:
+        storage.update_rollback_pointers(
+            active_version=target_version,
+            previous_version=from_version,
+            known_good_version=target_version,
+            reason=request.reason,
+        )
 
     return LoRAStatusResponse(**lora_state.as_dict())
 

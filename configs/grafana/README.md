@@ -251,7 +251,36 @@ Tracks safety policy enforcement volume, block rates, and jailbreak robustness t
 
 ---
 
-### 6. Usage Metering (`usage-metering.json`)
+
+### 6. Safety Scorecard (`safety-scorecard.json`)
+
+**UID**: `safety-scorecard`  
+**Tags**: `safety`, `scorecard`, `policy`  
+**Refresh**: 30s
+
+Focused dashboard for operational safety KPIs used in human-review and policy tuning loops.
+
+**Metrics Displayed**:
+- **Tool Abuse Blocked % (5m)**
+  - Source: `guardrail_requests_total{policy_category="tool_abuse", decision="blocked"}`
+  - Formula: blocked tool-abuse requests over all tool-abuse requests
+- **False Positive Rate (Manual Tag, 5m)**
+  - Source: `guardrail_manual_review_total{tag="false_positive"}`
+  - Formula: false-positive manual-review events over all manual-review events
+- **Safety Scorecard Trends (5m)**
+  - Combined time-series for tool-abuse blocked ratio and manual-tag false-positive ratio
+- **Top Policy Triggers (range total)**
+  - Source: `guardrail_policy_triggers_total` (or legacy `guardrail_policy_trigger_total`)
+  - `topk(10)` grouped by `policy_category`
+
+**Use Cases**:
+- Track tool-abuse containment efficacy release-over-release
+- Detect manual-review false-positive drift quickly
+- Identify dominant policy categories driving safety pressure
+
+---
+
+### 7. Usage Metering (`usage-metering.json`)
 
 **UID**: `usage-metering`  
 **Tags**: `usage`, `metering`, `workspace`, `user`  
@@ -428,3 +457,27 @@ All dashboards support:
 - [DCGM Exporter Metrics](https://github.com/NVIDIA/dcgm-exporter)
 - Platform Architecture: `../../ARCHITECTURE.md`
 - Observability Guide: `../../OBSERVABILITY_README.md`
+
+---
+
+### Drift Alerting Overview (`drift-alerting-overview.json`)
+
+**UID**: `drift-alerting-overview`  
+**Tags**: `drift`, `alerting`, `eval`, `retraining`  
+**Refresh**: 1m
+
+Focused dashboard for AFR-139 to track eval trends, drift event spikes, and retraining history in one place.
+
+**Metrics Displayed**:
+- **Eval Trend (Baseline vs Current)**
+  - Source: `drift_baseline_accuracy`, `drift_current_accuracy`
+  - Includes an additional series for `drift_baseline_accuracy - drift_current_accuracy`
+- **Drift Events by Severity**
+  - Source: `sum by (severity) (increase(drift_detected_total[$__range]))`
+- **Retraining Trigger History**
+  - Source: `sum by (trigger_type) (increase(finetuning_triggers_total[$__range]))`
+
+**Use Cases**:
+- Detect sustained eval regressions before customer impact
+- Confirm whether drift detections are isolated or increasing over time
+- Verify that drift incidents are followed by automatic or manual retraining triggers
