@@ -20,6 +20,8 @@ def test_rag_delete_is_workspace_scoped() -> None:
 
     assert "async def rag_delete_document(" in content
     assert "workspace_id: str = Query(..., description=\"Workspace owning the document\")" in content
+    assert "context_workspace_id=get_current_workspace_id()" in content
+    assert "_enforce_workspace_match(" in content
     assert "service.delete_document(document_id, workspace_id=normalized_workspace_id)" in content
 
 

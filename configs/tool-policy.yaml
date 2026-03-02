@@ -19,7 +19,7 @@ workspaces:
       - mcp-calendar
       - mcp-docs
 
-    # Minimal RBAC profile (AFR-86):
+    # Minimal RBAC profile (AFR-98):
     # - viewer: read-only
     # - developer: read + explicit write scopes
     # - admin: full policy management + full tool access

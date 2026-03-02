@@ -27,10 +27,12 @@ except Exception:  # pragma: no cover - allows unit tests without PyGithub
 DEFAULT_GITHUB_REPO_SYNC_STATE_PATH = "/tmp/brainego_github_repo_sync_state.json"
 DEFAULT_MAX_FILE_SIZE_BYTES = 200_000
 _BINARY_EXTENSIONS = {
+    ".bin",
     ".7z",
     ".a",
     ".bmp",
     ".class",
+    ".dat",
     ".dll",
     ".dylib",
     ".exe",
@@ -55,6 +57,7 @@ _BINARY_EXTENSIONS = {
     ".webp",
     ".woff",
     ".woff2",
+    ".wasm",
     ".zip",
 }
 _EXCLUDED_PATH_PARTS = {
@@ -211,6 +214,9 @@ class GitHubCollector:
         if max_file_size_bytes <= 0:
             raise ValueError("max_file_size_bytes must be greater than 0")
 
+        normalized_include_patterns = self._normalize_glob_patterns(include_patterns)
+        normalized_exclude_patterns = self._normalize_glob_patterns(exclude_patterns)
+
         repo = self.github.get_repo(repo_name)
         target_branch = branch or repo.default_branch
         head_commit_sha = repo.get_branch(target_branch).commit.sha
@@ -233,22 +239,36 @@ class GitHubCollector:
             for path in previous_state.get("indexed_paths", [])
             if str(path).strip()
         }
+        previous_file_hashes = self._normalize_file_hashes(
+            previous_state.get("indexed_file_hashes")
+        )
+
+        current_manifest = self._list_repository_manifest(
+            repo=repo,
+            ref=head_commit_sha,
+            max_file_size_bytes=max_file_size_bytes,
+            include_patterns=normalized_include_patterns,
+            exclude_patterns=normalized_exclude_patterns,
+        )
+        current_paths = set(current_manifest.keys())
 
         mode = "full"
         changed_paths: Set[str] = set()
-        deleted_paths: Set[str] = set()
+        deleted_paths: Set[str] = previous_paths - current_paths
 
         if incremental and previous_commit and not reindex:
             if previous_commit == head_commit_sha:
                 mode = "incremental"
                 changed_paths = set()
-                deleted_paths = set()
             else:
                 try:
                     comparison = repo.compare(previous_commit, head_commit_sha)
-                    changed_paths, deleted_paths = self._extract_compare_paths(
+                    changed_paths, comparison_deleted_paths = self._extract_compare_paths(
                         getattr(comparison, "files", []),
+                        include_patterns=normalized_include_patterns,
+                        exclude_patterns=normalized_exclude_patterns,
                     )
+                    deleted_paths.update(comparison_deleted_paths)
                     mode = "incremental"
                 except Exception as exc:
                     logger.warning(
@@ -258,33 +278,28 @@ class GitHubCollector:
                         head_commit_sha,
                         exc,
                     )
-                    changed_paths = set(
-                        self._list_repository_paths(
-                            repo=repo,
-                            ref=head_commit_sha,
-                            max_file_size_bytes=max_file_size_bytes,
-                            include_patterns=include_patterns,
-                            exclude_patterns=exclude_patterns,
-                        )
-                    )
-                    deleted_paths = previous_paths - changed_paths
+                    changed_paths = set(current_paths)
                     mode = "full_fallback"
         else:
-            changed_paths = set(
-                self._list_repository_paths(
-                    repo=repo,
-                    ref=head_commit_sha,
-                    max_file_size_bytes=max_file_size_bytes,
-                    include_patterns=include_patterns,
-                    exclude_patterns=exclude_patterns,
-                )
-            )
-            deleted_paths = previous_paths - changed_paths
+            changed_paths = set(current_paths)
             mode = "full_reindex" if reindex else "full"
 
+        changed_paths = {path for path in changed_paths if path in current_paths}
+        paths_to_collect = {
+            path
+            for path in changed_paths
+            if self._has_repository_path_changed(
+                path=path,
+                current_file_hashes=current_manifest,
+                previous_file_hashes=previous_file_hashes,
+            )
+        }
+        skipped_unchanged_paths = changed_paths - paths_to_collect
+
         documents: List[Dict[str, Any]] = []
+        collected_hashes: Dict[str, str] = {}
         skipped_paths: Set[str] = set()
-        for path in sorted(changed_paths):
+        for path in sorted(paths_to_collect):
             document = self._build_repository_document(
                 repo=repo,
                 path=path,
@@ -292,23 +307,35 @@ class GitHubCollector:
                 branch=target_branch,
                 workspace_id=normalized_workspace_id,
                 max_file_size_bytes=max_file_size_bytes,
-                include_patterns=include_patterns,
-                exclude_patterns=exclude_patterns,
+                include_patterns=normalized_include_patterns,
+                exclude_patterns=normalized_exclude_patterns,
             )
             if document is None:
                 skipped_paths.add(path)
                 if path in previous_paths:
                     deleted_paths.add(path)
                 continue
+            metadata = document.get("metadata", {})
+            normalized_path = str(metadata.get("path", "")).strip()
+            resolved_hash = self._resolve_document_hash(metadata)
+            if normalized_path and resolved_hash:
+                collected_hashes[normalized_path] = resolved_hash
             documents.append(document)
 
-        if mode == "incremental":
-            indexed_paths = set(previous_paths)
-        else:
-            indexed_paths = set()
+        indexed_paths = set(previous_paths)
         indexed_paths -= deleted_paths
         indexed_paths -= skipped_paths
         indexed_paths.update(doc["metadata"]["path"] for doc in documents)
+
+        indexed_file_hashes: Dict[str, str] = {}
+        for path in sorted(indexed_paths):
+            resolved_hash = (
+                collected_hashes.get(path)
+                or current_manifest.get(path)
+                or previous_file_hashes.get(path)
+            )
+            if resolved_hash:
+                indexed_file_hashes[path] = resolved_hash
 
         sync_state[state_key] = {
             "repo": repo.full_name,
@@ -316,6 +343,7 @@ class GitHubCollector:
             "branch": target_branch,
             "last_commit": head_commit_sha,
             "indexed_paths": sorted(indexed_paths),
+            "indexed_file_hashes": indexed_file_hashes,
             "updated_at": datetime.utcnow().isoformat(),
         }
         self._save_repo_sync_state(effective_state_path, sync_state)
@@ -330,11 +358,15 @@ class GitHubCollector:
             "documents": documents,
             "deleted_paths": sorted(deleted_paths),
             "skipped_paths": sorted(skipped_paths),
+            "skipped_unchanged_paths": sorted(skipped_unchanged_paths),
             "sync": {
                 "mode": mode,
                 "incremental": mode == "incremental",
                 "previous_commit": previous_commit,
                 "current_commit": head_commit_sha,
+                "paths_considered": len(changed_paths),
+                "paths_collected": len(paths_to_collect),
+                "paths_skipped_unchanged": len(skipped_unchanged_paths),
                 "documents_collected": len(documents),
                 "paths_deleted": len(deleted_paths),
                 "paths_skipped": len(skipped_paths),
@@ -345,6 +377,31 @@ class GitHubCollector:
     def _build_sync_state_key(repo_full_name: str, workspace_id: str, branch: str) -> str:
         """Create stable key used for persisted sync state."""
         return f"{repo_full_name}:{workspace_id}:{branch}"
+
+    @staticmethod
+    def _normalize_glob_patterns(
+        patterns: Optional[Any],
+    ) -> Optional[List[str]]:
+        """Normalize include/exclude glob patterns from list-like or CSV input."""
+        if patterns is None:
+            return None
+
+        normalized: List[str] = []
+        if isinstance(patterns, str):
+            raw_values = patterns.split(",")
+        elif isinstance(patterns, (list, tuple, set)):
+            raw_values = list(patterns)
+        else:
+            raise ValueError("Patterns must be provided as a list or comma-separated string")
+
+        for raw_pattern in raw_values:
+            if raw_pattern is None:
+                continue
+            pattern = str(raw_pattern).strip()
+            if pattern:
+                normalized.append(pattern)
+
+        return normalized or None
 
     @staticmethod
     def _load_repo_sync_state(path: Path) -> Dict[str, Any]:
@@ -366,7 +423,54 @@ class GitHubCollector:
         with path.open("w", encoding="utf-8") as state_file:
             json.dump(payload, state_file, indent=2, sort_keys=True)
 
-    def _extract_compare_paths(self, files: Any) -> Tuple[Set[str], Set[str]]:
+    @staticmethod
+    def _normalize_file_hashes(file_hashes: Any) -> Dict[str, str]:
+        """Normalize persisted file-hash mapping."""
+        if not isinstance(file_hashes, dict):
+            return {}
+
+        normalized: Dict[str, str] = {}
+        for raw_path, raw_hash in file_hashes.items():
+            path = str(raw_path).strip()
+            file_hash = str(raw_hash).strip()
+            if not path or not file_hash:
+                continue
+            normalized[path] = file_hash
+        return normalized
+
+    @staticmethod
+    def _has_repository_path_changed(
+        path: str,
+        current_file_hashes: Dict[str, str],
+        previous_file_hashes: Dict[str, str],
+    ) -> bool:
+        """Determine whether a file should be (re)ingested."""
+        current_hash = str(current_file_hashes.get(path, "")).strip()
+        previous_hash = str(previous_file_hashes.get(path, "")).strip()
+        if not previous_hash:
+            return True
+        if not current_hash:
+            return True
+        return current_hash != previous_hash
+
+    @staticmethod
+    def _resolve_document_hash(metadata: Dict[str, Any]) -> Optional[str]:
+        """Resolve stable file hash from built document metadata."""
+        blob_sha = str(metadata.get("blob_sha", "")).strip()
+        if blob_sha:
+            return blob_sha
+
+        file_hash = str(metadata.get("file_hash", "")).strip()
+        if file_hash:
+            return file_hash
+        return None
+
+    def _extract_compare_paths(
+        self,
+        files: Any,
+        include_patterns: Optional[List[str]],
+        exclude_patterns: Optional[List[str]],
+    ) -> Tuple[Set[str], Set[str]]:
         """Extract changed and removed file paths from GitHub compare response."""
         changed_paths: Set[str] = set()
         deleted_paths: Set[str] = set()
@@ -382,35 +486,49 @@ class GitHubCollector:
             ).strip()
 
             if status == "removed":
-                if self._should_collect_repository_path(path, None, None):
+                if self._should_collect_repository_path(
+                    path=path,
+                    include_patterns=include_patterns,
+                    exclude_patterns=exclude_patterns,
+                ):
                     deleted_paths.add(path)
                 continue
 
             if status == "renamed":
                 if previous_filename and self._should_collect_repository_path(
-                    previous_filename, None, None
+                    path=previous_filename,
+                    include_patterns=include_patterns,
+                    exclude_patterns=exclude_patterns,
                 ):
                     deleted_paths.add(previous_filename)
-                if self._should_collect_repository_path(path, None, None):
+                if self._should_collect_repository_path(
+                    path=path,
+                    include_patterns=include_patterns,
+                    exclude_patterns=exclude_patterns,
+                ):
                     changed_paths.add(path)
                 continue
 
-            if self._should_collect_repository_path(path, None, None):
+            if self._should_collect_repository_path(
+                path=path,
+                include_patterns=include_patterns,
+                exclude_patterns=exclude_patterns,
+            ):
                 changed_paths.add(path)
 
         return changed_paths, deleted_paths
 
-    def _list_repository_paths(
+    def _list_repository_manifest(
         self,
         repo: Any,
         ref: str,
         max_file_size_bytes: int,
         include_patterns: Optional[List[str]],
         exclude_patterns: Optional[List[str]],
-    ) -> List[str]:
-        """List collectable repository file paths for a given ref."""
+    ) -> Dict[str, str]:
+        """List collectable repository paths with stable file hashes."""
         tree = repo.get_git_tree(ref, recursive=True)
-        paths: List[str] = []
+        manifest: Dict[str, str] = {}
 
         for item in getattr(tree, "tree", []):
             if getattr(item, "type", None) != "blob":
@@ -418,6 +536,7 @@ class GitHubCollector:
 
             path = str(getattr(item, "path", "")).strip()
             size = getattr(item, "size", 0) or 0
+            file_hash = str(getattr(item, "sha", "")).strip()
             if not path:
                 continue
 
@@ -431,9 +550,27 @@ class GitHubCollector:
             ):
                 continue
 
-            paths.append(path)
+            manifest[path] = file_hash
 
-        return sorted(paths)
+        return dict(sorted(manifest.items()))
+
+    def _list_repository_paths(
+        self,
+        repo: Any,
+        ref: str,
+        max_file_size_bytes: int,
+        include_patterns: Optional[List[str]],
+        exclude_patterns: Optional[List[str]],
+    ) -> List[str]:
+        """List collectable repository file paths for a given ref."""
+        manifest = self._list_repository_manifest(
+            repo=repo,
+            ref=ref,
+            max_file_size_bytes=max_file_size_bytes,
+            include_patterns=include_patterns,
+            exclude_patterns=exclude_patterns,
+        )
+        return sorted(manifest.keys())
 
     @staticmethod
     def _should_collect_repository_path(
@@ -480,16 +617,44 @@ class GitHubCollector:
 
         if not isinstance(raw_bytes, (bytes, bytearray)):
             return None
-        if b"\x00" in raw_bytes:
+        if GitHubCollector._is_probably_binary_bytes(raw_bytes):
             return None
 
         try:
             text = raw_bytes.decode("utf-8")
         except UnicodeDecodeError:
             text = raw_bytes.decode("utf-8", errors="replace")
+            replacement_ratio = text.count("\ufffd") / max(len(text), 1)
+            if replacement_ratio > 0.05:
+                return None
 
         normalized_text = text.replace("\r\n", "\n").replace("\r", "\n")
         return normalized_text if normalized_text.strip() else None
+
+    @staticmethod
+    def _is_probably_binary_bytes(raw_bytes: bytes) -> bool:
+        """Best-effort binary detection for decoded content payloads."""
+        if not raw_bytes:
+            return False
+
+        if b"\x00" in raw_bytes:
+            return True
+
+        sample = raw_bytes[:8192]
+        allowed_controls = {9, 10, 13}
+        control_bytes = sum(
+            1
+            for byte in sample
+            if byte < 32 and byte not in allowed_controls
+        )
+        control_ratio = control_bytes / max(len(sample), 1)
+        return control_ratio > 0.30
+
+    @staticmethod
+    def _compute_text_hash(text: str) -> str:
+        """Compute deterministic hash from normalized text content."""
+        normalized_text = str(text).replace("\r\n", "\n").replace("\r", "\n").strip()
+        return hashlib.sha256(normalized_text.encode("utf-8")).hexdigest()
 
     @staticmethod
     def _detect_language(path: str) -> str:
@@ -557,6 +722,7 @@ class GitHubCollector:
             "workspace_id": workspace_id,
             "document_id": document_id,
             "blob_sha": getattr(content, "sha", None),
+            "file_hash": self._compute_text_hash(text),
             "file_size": file_size,
             "collected_at": collected_at,
         }

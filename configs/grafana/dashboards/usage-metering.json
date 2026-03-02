@@ -150,13 +150,27 @@
       "targets": [
         {
           "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum(rate(api_usage_latency_seconds_bucket{workspace_id=~\"$workspace\", user_id=~\"$user\"}[5m])) by (le, workspace_id))",
+          "legendFormat": "p50 {{workspace_id}}",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "editorMode": "code",
           "expr": "histogram_quantile(0.95, sum(rate(api_usage_latency_seconds_bucket{workspace_id=~\"$workspace\", user_id=~\"$user\"}[5m])) by (le, workspace_id))",
           "legendFormat": "p95 {{workspace_id}}",
           "range": true,
-          "refId": "A"
+          "refId": "B"
+        },
+        {
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum(rate(api_usage_latency_seconds_bucket{workspace_id=~\"$workspace\", user_id=~\"$user\"}[5m])) by (le, workspace_id))",
+          "legendFormat": "p99 {{workspace_id}}",
+          "range": true,
+          "refId": "C"
         }
       ],
-      "title": "Latency p95 by Workspace",
+      "title": "Latency Percentiles (p50/p95/p99) by Workspace",
       "type": "timeseries"
     },
     {
@@ -337,6 +351,6 @@
   "timezone": "browser",
   "title": "Usage Metering (Workspace/User)",
   "uid": "usage-metering",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }

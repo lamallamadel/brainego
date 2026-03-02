@@ -11,6 +11,7 @@ from typing import Any, Dict, Optional, Set
 import httpx
 
 from safety_sanitizer import redact_secrets, sanitize_tool_output_payload
+from safety_sanitizer import redact_sensitive
 
 logger = logging.getLogger(__name__)
 
@@ -94,7 +95,7 @@ class InternalMCPGatewayClient:
     ) -> MCPToolResult:
         started_at = time.perf_counter()
         raw_arguments = arguments or {}
-        redacted_arguments, argument_redactions = redact_secrets(raw_arguments)
+        redacted_arguments, argument_redactions = redact_sensitive(raw_arguments)
         payload = {
             "server_id": server_id,
             "tool_name": tool_name,
@@ -135,6 +136,7 @@ class InternalMCPGatewayClient:
             if response.status_code >= 400:
                 safe_error, error_safety = sanitize_tool_output_payload(response.text)
                 error = safe_error if isinstance(safe_error, str) else str(safe_error)
+                error, error_redactions = redact_sensitive(response.text)
                 logger.error(
                     "mcp_tool_call tool=%s status=error http_status=%s latency_ms=%.2f error=%s context=%s arguments=%s argument_redactions=%s error_redactions=%s error_policy_hits=%s",
                     tool_name,
@@ -159,6 +161,9 @@ class InternalMCPGatewayClient:
             safe_data, output_safety = sanitize_tool_output_payload(data)
             if not isinstance(safe_data, dict):
                 safe_data = {"result": safe_data}
+            redacted_data, output_redactions = redact_sensitive(data)
+            if not isinstance(redacted_data, dict):
+                redacted_data = {"result": redacted_data}
             logger.info(
                 "mcp_tool_call tool=%s status=ok http_status=%s latency_ms=%.2f context=%s arguments=%s argument_redactions=%s output_redactions=%s output_policy_hits=%s",
                 tool_name,
@@ -181,6 +186,7 @@ class InternalMCPGatewayClient:
             latency_ms = (time.perf_counter() - started_at) * 1000
             safe_error, error_safety = sanitize_tool_output_payload(str(exc))
             redacted_error = safe_error if isinstance(safe_error, str) else str(safe_error)
+            redacted_error, error_redactions = redact_sensitive(str(exc))
             logger.exception(
                 "mcp_tool_call tool=%s status=exception latency_ms=%.2f context=%s arguments=%s argument_redactions=%s error_redactions=%s error_policy_hits=%s",
                 tool_name,

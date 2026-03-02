@@ -99,11 +99,51 @@ def test_policy_enforced_for_internal_mcp_tool_proxy() -> None:
     assert _function_calls(route, "enforce_mcp_tool_policy")
 
 
+def test_workspace_mismatch_guard_is_defined_and_used_on_mcp_routes() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "def _enforce_workspace_match(" in content
+    assert 'context="/v1/mcp"' in content
+    assert 'context="/internal/mcp/tools/call"' in content
+
+
+def test_mcp_tool_policy_rejects_workspace_mismatch_across_sources() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert '"workspace_id mismatch across headers/body/tool arguments"' in content
+
+
+def test_v1_mcp_call_tool_overrides_arguments_workspace_with_resolved_scope() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert 'tool_arguments["workspace_id"] = resolved_workspace_id' in content
+    assert 'payload["arguments"] = tool_arguments' in content
+
+
 def test_policy_engine_is_loaded_in_api_and_returns_policy_denied() -> None:
     content = SOURCE.read_text(encoding="utf-8")
     assert "load_default_tool_policy_engine" in content
     assert "workspace_id is required by tool policy" in content
     assert '"error": "PolicyDenied"' in content
+
+
+def test_mcp_policy_denials_are_returned_as_http_403_payloads() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "status_code=403" in content
+    assert "reason=decision.reason or \"MCP tool call denied by policy\"" in content
+    assert "raise HTTPException(status_code=exc.status_code, detail=detail_payload)" in content
+
+
+def test_internal_proxy_redacts_policy_denied_details_before_returning_response() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "safe_detail_payload, _ = _redact_value_for_audit(detail_payload)" in content
+    assert "detail_data = {k: v for k, v in safe_detail_payload.items() if k not in {\"ok\", \"error\"}}" in content
+    assert 'error=str(safe_detail_payload.get("error") or "PolicyDenied")' in content
+    assert "return JSONResponse(status_code=exc.status_code, content=denied_payload)" in content
+
+
+def test_tool_call_audit_redacts_request_response_and_error_payloads() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "safe_request_payload, request_redactions = _redact_value_for_audit(request_payload or {})" in content
+    assert "safe_response_payload, response_redactions = _redact_value_for_audit(response_payload or {})" in content
+    assert "safe_error, error_redactions = _redact_value_for_audit(error or \"\")" in content
 
 
 def test_internal_proxy_applies_policy_timeout_to_transport_client() -> None:
@@ -134,3 +174,24 @@ def test_admin_policy_management_routes_require_admin_role() -> None:
     assert put_route is not None
     assert _function_calls(get_route, "_require_admin_tool_policy_role")
     assert _function_calls(put_route, "_require_admin_tool_policy_role")
+
+
+def test_tool_policy_identity_prefers_authenticated_role_and_blocks_escalation() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "def _resolve_authenticated_mcp_policy_role(" in content
+    assert "if authenticated_role:" in content
+    assert "_role_priority(requested_role) <= _role_priority(authenticated_role)" in content
+    assert "normalized_role = authenticated_role" in content
+
+
+def test_admin_operations_allow_admin_role_or_break_glass_key() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "def _has_admin_privileges(raw_request: Request) -> bool:" in content
+    assert "return _is_admin_request(raw_request) or _is_admin_role_request(raw_request)" in content
+    assert "if _has_admin_privileges(raw_request):" in content
+
+
+def test_policy_admin_role_check_supports_admin_api_key_override() -> None:
+    content = SOURCE.read_text(encoding="utf-8")
+    assert "if _is_admin_request(raw_request):" in content
+    assert "return \"admin\", resolved_scopes" in content
