@@ -1,4 +1,4 @@
-.PHONY: help install install-modular download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-init-schema graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status grafana grafana-start grafana-stop grafana-ui drift drift-start drift-stop drift-logs drift-check drift-metrics test-unit test-integration test-all codex-help pilot-preflight pilot-demo-rbac pilot-demo-index pilot-demo-incident pilot-demo cost-analyze cost-summary cost-patch cost-workflow cost-archival cost-archival-dryrun cost-dashboard
+.PHONY: help install install-modular download build start stop restart logs health test load-test monitor clean gateway gateway-build gateway-start gateway-stop gateway-test gateway-demo mcpjungle mcpjungle-build mcpjungle-start mcpjungle-stop mcpjungle-logs mcpjungle-test mcpjungle-health jaeger-ui graph-test graph-example graph-init-schema graph-ui neo4j-logs learning learning-start learning-stop learning-logs learning-test learning-train learning-status grafana grafana-start grafana-stop grafana-ui drift drift-start drift-stop drift-logs drift-check drift-metrics test-unit test-integration test-all codex-help pilot-preflight pilot-demo-rbac pilot-demo-index pilot-demo-incident pilot-demo cost-analyze cost-summary cost-patch cost-workflow cost-archival cost-archival-dryrun cost-dashboard smoke-test-token smoke-test smoke-test-full smoke-test-rollback deploy-prod
 
 help:
 	@echo "MAX Serve + Llama 3.3 8B Infrastructure"
@@ -85,6 +85,13 @@ help:
 	@echo "  make cost-archival    - Run Qdrant archival to cold storage"
 	@echo "  make cost-archival-dryrun - Run archival in dry-run mode"
 	@echo "  make cost-dashboard   - Open cost optimization dashboard"
+	@echo ""
+	@echo "Production Deployment & Smoke Tests:"
+	@echo "  make smoke-test-token - Generate JWT token for smoke tests"
+	@echo "  make smoke-test       - Run basic smoke tests"
+	@echo "  make smoke-test-full  - Run full smoke tests with monitoring"
+	@echo "  make smoke-test-rollback - Run smoke tests with auto-rollback"
+	@echo "  make deploy-prod      - Deploy to production with smoke tests"
 
 install:
 	pip install -r requirements.txt
@@ -485,4 +492,48 @@ cost-dashboard:
 	@echo "Opening cost optimization dashboard..."
 	@echo "Dashboard URL: http://localhost:3000/d/cost-optimization/cost-optimization-finops"
 	@xdg-open "http://localhost:3000/d/cost-optimization/cost-optimization-finops" 2>/dev/null || open "http://localhost:3000/d/cost-optimization/cost-optimization-finops" 2>/dev/null || echo "Please open: http://localhost:3000/d/cost-optimization/cost-optimization-finops"
+
+# ============================================================================
+# Production Deployment & Smoke Tests
+# ============================================================================
+
+smoke-test-token:
+	@echo "Generating smoke test token..."
+	@python3 scripts/deploy/generate_smoke_test_token.py \
+		--method rs256 \
+		--private-key kong-jwt-keys/kong-jwt-private.pem \
+		--key-id admin-key \
+		--subject smoke-test-user \
+		--workspace-id prod-workspace
+
+smoke-test:
+	@echo "Running production smoke tests..."
+	@python3 scripts/deploy/prod_smoke_tests.py \
+		--base-url $${BASE_URL:-https://api.example.com} \
+		--workspace-id $${WORKSPACE_ID:-prod-workspace} \
+		--auth-token $${AUTH_TOKEN}
+
+smoke-test-full:
+	@echo "Running full production smoke tests with monitoring..."
+	@python3 scripts/deploy/prod_smoke_tests.py \
+		--base-url $${BASE_URL:-https://api.example.com} \
+		--workspace-id $${WORKSPACE_ID:-prod-workspace} \
+		--auth-token $${AUTH_TOKEN} \
+		--prometheus-url $${PROMETHEUS_URL} \
+		--kong-admin-url $${KONG_ADMIN_URL} \
+		--verbose
+
+smoke-test-rollback:
+	@echo "Running production smoke tests with automatic rollback..."
+	@python3 scripts/deploy/prod_smoke_tests.py \
+		--base-url $${BASE_URL:-https://api.example.com} \
+		--workspace-id $${WORKSPACE_ID:-prod-workspace} \
+		--auth-token $${AUTH_TOKEN} \
+		--enable-rollback \
+		--namespace $${NAMESPACE:-ai-platform-prod} \
+		--release-name $${RELEASE_NAME:-ai-platform}
+
+deploy-prod:
+	@echo "Deploying to production with smoke tests..."
+	@bash scripts/deploy/deploy_with_smoke_tests.sh
 
