@@ -11,6 +11,10 @@ lora:
   rank: 16
   alpha: 32
   dropout: 0.05
+  control_base_url: "http://max-serve-llama:8080"
+  reload_endpoint_path: "/internal/lora/reload"
+  rollback_endpoint_path: "/internal/lora/rollback"
+  operation_timeout_seconds: 120
   target_modules:
     - "q_proj"
     - "v_proj"

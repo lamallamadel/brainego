@@ -13,12 +13,16 @@ Implements continuous learning with:
 import os
 import logging
 import asyncio
+import json
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
-from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from learning_engine.trainer import LoRATrainer
@@ -50,6 +54,10 @@ class LearningEngineConfig(BaseModel):
     lora_alpha: int = Field(default=32)
     lora_dropout: float = Field(default=0.05)
     target_modules: list = Field(default=["q_proj", "v_proj", "k_proj", "o_proj"])
+    lora_control_base_url: Optional[str] = Field(default=None)
+    lora_reload_endpoint_path: str = Field(default="/internal/lora/reload")
+    lora_rollback_endpoint_path: str = Field(default="/internal/lora/rollback")
+    lora_operation_timeout_seconds: float = Field(default=120.0)
     
     # EWC configuration
     ewc_lambda_min: float = Field(default=100.0)
@@ -116,6 +124,10 @@ def load_config() -> LearningEngineConfig:
         lora_rank=int(os.getenv("LORA_RANK", "16")),
         lora_alpha=int(os.getenv("LORA_ALPHA", "32")),
         lora_dropout=float(os.getenv("LORA_DROPOUT", "0.05")),
+        lora_control_base_url=os.getenv("LORA_CONTROL_BASE_URL"),
+        lora_reload_endpoint_path=os.getenv("LORA_RELOAD_ENDPOINT_PATH", "/internal/lora/reload"),
+        lora_rollback_endpoint_path=os.getenv("LORA_ROLLBACK_ENDPOINT_PATH", "/internal/lora/rollback"),
+        lora_operation_timeout_seconds=float(os.getenv("LORA_OPERATION_TIMEOUT_SECONDS", "120")),
         ewc_lambda=float(os.getenv("EWC_LAMBDA", "500.0")),
         fisher_history_days=int(os.getenv("FISHER_HISTORY_DAYS", "30")),
         fisher_num_samples=int(os.getenv("FISHER_NUM_SAMPLES", "1000")),
@@ -174,9 +186,11 @@ class LoRAState:
         self.enabled = enabled
         self.active_adapter_version = active_version
         self.previous_adapter_version: Optional[str] = None
+        self.known_good_adapter_version: Optional[str] = active_version
         self.last_operation: str = "initialized"
         self.last_reason: Optional[str] = None
         self.updated_at = datetime.utcnow()
+        self.activation_history: List[Dict[str, Any]] = []
         self.rollback_history: List[Dict[str, Any]] = []
 
     def as_dict(self) -> Dict[str, Any]:
@@ -184,9 +198,11 @@ class LoRAState:
             "enabled": self.enabled,
             "active_adapter_version": self.active_adapter_version,
             "previous_adapter_version": self.previous_adapter_version,
+            "known_good_adapter_version": self.known_good_adapter_version,
             "last_operation": self.last_operation,
             "last_reason": self.last_reason,
             "updated_at": self.updated_at.isoformat() + "Z",
+            "activation_history": self.activation_history,
             "rollback_history": self.rollback_history,
         }
 
@@ -195,6 +211,155 @@ lora_state = LoRAState(
     enabled=config.lora_enabled,
     active_version=config.initial_adapter_version,
 )
+
+
+MAX_LORA_HISTORY_ENTRIES = 100
+
+
+def _append_history(history: List[Dict[str, Any]], entry: Dict[str, Any]) -> None:
+    history.append(entry)
+    if len(history) > MAX_LORA_HISTORY_ENTRIES:
+        del history[:-MAX_LORA_HISTORY_ENTRIES]
+
+
+def _decode_control_plane_body(raw_body: bytes) -> Any:
+    if not raw_body:
+        return None
+
+    payload = raw_body.decode("utf-8", errors="replace")
+    try:
+        return json.loads(payload)
+    except json.JSONDecodeError:
+        return payload
+
+
+def _build_control_plane_url(endpoint_path: str) -> str:
+    base_url = (config.lora_control_base_url or "").strip()
+    if not base_url:
+        raise HTTPException(
+            status_code=503,
+            detail="LoRA control plane is not configured. Set LORA_CONTROL_BASE_URL."
+        )
+
+    normalized_path = endpoint_path if endpoint_path.startswith("/") else f"/{endpoint_path}"
+    return urllib.parse.urljoin(base_url.rstrip("/") + "/", normalized_path.lstrip("/"))
+
+
+def _request_lora_control_plane(
+    method: str,
+    endpoint_path: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    url = _build_control_plane_url(endpoint_path)
+    body = None
+    headers: Dict[str, str] = {}
+
+    if payload is not None:
+        body = json.dumps(payload).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+
+    request = urllib.request.Request(
+        url=url,
+        data=body,
+        headers=headers,
+        method=method.upper(),
+    )
+
+    try:
+        with urllib.request.urlopen(request, timeout=config.lora_operation_timeout_seconds) as response:  # nosec B310
+            return {
+                "status_code": response.status,
+                "url": url,
+                "body": _decode_control_plane_body(response.read()),
+            }
+    except urllib.error.HTTPError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "error": "lora_control_plane_http_error",
+                "status_code": exc.code,
+                "url": url,
+                "details": _decode_control_plane_body(exc.read()),
+            }
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "lora_control_plane_unreachable",
+                "url": url,
+                "details": str(exc.reason),
+            }
+        ) from exc
+
+
+async def _call_lora_control_plane(
+    method: str,
+    endpoint_path: str,
+    payload: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    return await asyncio.to_thread(
+        _request_lora_control_plane,
+        method,
+        endpoint_path,
+        payload,
+    )
+
+
+async def _activate_adapter_version(
+    version: str,
+    reason: str,
+    operation: str,
+    model_name: Optional[str] = None,
+    project: Optional[str] = None,
+) -> Dict[str, Any]:
+    if not storage:
+        raise HTTPException(status_code=503, detail="Storage not initialized")
+
+    from_version = lora_state.active_adapter_version
+    started_at = time.monotonic()
+
+    local_path = await storage.download_adapter(version, model_name=model_name, project_name=project)
+    control_plane = await _call_lora_control_plane(
+        method="POST",
+        endpoint_path=config.lora_reload_endpoint_path,
+        payload={"adapter_path": local_path, "adapter_version": version},
+    )
+    duration_ms = int((time.monotonic() - started_at) * 1000)
+
+    lora_state.previous_adapter_version = from_version
+    lora_state.active_adapter_version = version
+    lora_state.enabled = True
+    lora_state.last_operation = operation
+    lora_state.last_reason = reason
+    lora_state.updated_at = datetime.utcnow()
+
+    # Previous active adapter becomes the fast rollback target.
+    if from_version and from_version != version:
+        lora_state.known_good_adapter_version = from_version
+    elif lora_state.known_good_adapter_version is None:
+        lora_state.known_good_adapter_version = version
+
+    _append_history(
+        lora_state.activation_history,
+        {
+            "timestamp": lora_state.updated_at.isoformat() + "Z",
+            "operation": operation,
+            "from_version": from_version,
+            "to_version": version,
+            "reason": reason,
+            "duration_ms": duration_ms,
+            "control_plane_status": control_plane["status_code"],
+        },
+    )
+
+    return {
+        "version": version,
+        "path": local_path,
+        "from_version": from_version,
+        "duration_ms": duration_ms,
+        "control_plane": control_plane,
+    }
 
 
 @asynccontextmanager
@@ -346,9 +511,11 @@ class LoRAStatusResponse(BaseModel):
     enabled: bool
     active_adapter_version: Optional[str] = None
     previous_adapter_version: Optional[str] = None
+    known_good_adapter_version: Optional[str] = None
     last_operation: str
     last_reason: Optional[str] = None
     updated_at: str
+    activation_history: List[Dict[str, Any]] = Field(default_factory=list)
     rollback_history: List[Dict[str, Any]] = Field(default_factory=list)
 
 
@@ -358,6 +525,9 @@ class LoRAOperationRequest(BaseModel):
     reason: str = Field(default="manual_operation", description="Reason for the operation")
 
 
+class AdapterDeployRequest(BaseModel):
+    """Payload for adapter deployment / activation."""
+    reason: str = Field(default="manual_deploy", description="Reason for adapter activation")
 class GoldenValidationRequest(BaseModel):
     """Payload for explicit golden-set validation runs."""
 
@@ -409,6 +579,9 @@ async def get_lora_status():
 @app.post("/lora/disable", response_model=LoRAStatusResponse)
 async def disable_lora(request: LoRAOperationRequest):
     """Disable LoRA adapters and route inference back to the base model."""
+    if lora_state.active_adapter_version:
+        lora_state.known_good_adapter_version = lora_state.active_adapter_version
+
     lora_state.previous_adapter_version = lora_state.active_adapter_version
     lora_state.active_adapter_version = None
     lora_state.enabled = False
@@ -422,41 +595,116 @@ async def disable_lora(request: LoRAOperationRequest):
 @app.post("/lora/enable", response_model=LoRAStatusResponse)
 async def enable_lora(request: LoRAOperationRequest):
     """Enable LoRA adapters and optionally pin a specific adapter version."""
-    lora_state.enabled = True
-    lora_state.last_operation = "enabled"
-    lora_state.last_reason = request.reason
-    lora_state.updated_at = datetime.utcnow()
-
     if request.adapter_version:
-        lora_state.previous_adapter_version = lora_state.active_adapter_version
-        lora_state.active_adapter_version = request.adapter_version
+        await _activate_adapter_version(
+            version=request.adapter_version,
+            reason=request.reason,
+            operation="enabled",
+        )
+    else:
+        lora_state.enabled = True
+        lora_state.last_operation = "enabled"
+        lora_state.last_reason = request.reason
+        lora_state.updated_at = datetime.utcnow()
+
+        if lora_state.active_adapter_version and lora_state.known_good_adapter_version is None:
+            lora_state.known_good_adapter_version = lora_state.active_adapter_version
 
     return LoRAStatusResponse(**lora_state.as_dict())
 
 
 @app.post("/lora/rollback", response_model=LoRAStatusResponse)
 async def rollback_lora(request: LoRAOperationRequest):
-    """Rollback the active LoRA adapter version, with base-model fallback."""
+    """Rollback to previous known-good adapter version."""
     from_version = lora_state.active_adapter_version
-    target_version = request.adapter_version if request.adapter_version is not None else lora_state.previous_adapter_version
+    operation_started_at = time.monotonic()
+
+    # Default rollback target is the last known-good adapter.
+    target_version = (
+        request.adapter_version
+        if request.adapter_version is not None
+        else lora_state.known_good_adapter_version or lora_state.previous_adapter_version
+    )
+
+    control_plane: Optional[Dict[str, Any]] = None
+    if target_version is None:
+        control_plane = await _call_lora_control_plane(
+            method="POST",
+            endpoint_path=config.lora_rollback_endpoint_path,
+            payload={},
+        )
+        payload = control_plane.get("body")
+        if isinstance(payload, dict):
+            active_adapter = payload.get("active_adapter", {})
+            if isinstance(active_adapter, dict):
+                target_version = active_adapter.get("adapter_version")
+
+        if target_version is None:
+            raise HTTPException(
+                status_code=409,
+                detail="No known-good adapter available for rollback.",
+            )
+    else:
+        if not storage:
+            raise HTTPException(status_code=503, detail="Storage not initialized")
+        local_path = await storage.download_adapter(target_version)
+        control_plane = await _call_lora_control_plane(
+            method="POST",
+            endpoint_path=config.lora_reload_endpoint_path,
+            payload={"adapter_path": local_path, "adapter_version": target_version},
+        )
+
+    duration_ms = int((time.monotonic() - operation_started_at) * 1000)
+    target_ms = int(config.lora_operation_timeout_seconds * 1000)
+    rollback_within_target = duration_ms <= target_ms
+
+    if not rollback_within_target:
+        logger.warning(
+            "LoRA rollback exceeded expected duration",
+            extra={
+                "duration_ms": duration_ms,
+                "target_ms": target_ms,
+                "from_version": from_version,
+                "to_version": target_version,
+            },
+        )
 
     lora_state.previous_adapter_version = from_version
     lora_state.active_adapter_version = target_version
+    lora_state.known_good_adapter_version = target_version
+    lora_state.enabled = True
     lora_state.last_operation = "rollback"
     lora_state.last_reason = request.reason
     lora_state.updated_at = datetime.utcnow()
 
-    lora_state.rollback_history.append({
-        "timestamp": lora_state.updated_at.isoformat() + "Z",
-        "from_version": from_version,
-        "to_version": target_version,
-        "reason": request.reason,
-    })
+    _append_history(
+        lora_state.rollback_history,
+        {
+            "timestamp": lora_state.updated_at.isoformat() + "Z",
+            "from_version": from_version,
+            "to_version": target_version,
+            "reason": request.reason,
+            "duration_ms": duration_ms,
+            "target_ms": target_ms,
+            "within_target": rollback_within_target,
+            "control_plane_status": control_plane["status_code"] if control_plane else None,
+        },
+    )
 
-    # Rollback to base model when no target adapter is specified/available
-    if target_version is None:
-        lora_state.enabled = False
+    return LoRAStatusResponse(**lora_state.as_dict())
 
+
+@app.post("/lora/activate", response_model=LoRAStatusResponse)
+async def activate_lora(request: LoRAOperationRequest):
+    """Activate a specific adapter version through hot-swap."""
+    if not request.adapter_version:
+        raise HTTPException(status_code=400, detail="adapter_version is required for activation")
+
+    await _activate_adapter_version(
+        version=request.adapter_version,
+        reason=request.reason,
+        operation="activated",
+    )
     return LoRAStatusResponse(**lora_state.as_dict())
 
 
@@ -627,10 +875,13 @@ async def get_adapter_info(version: str, model_name: Optional[str] = None, proje
 
 
 @app.post("/adapters/{version}/deploy")
-async def deploy_adapter(version: str, model_name: Optional[str] = None, project: Optional[str] = None):
+async def deploy_adapter(
+    version: str,
+    request: Optional[AdapterDeployRequest] = None,
+    model_name: Optional[str] = None,
+    project: Optional[str] = None,
+):
     """Deploy an adapter to MAX Serve (hot-swap)"""
-    if not storage:
-        raise HTTPException(status_code=503, detail="Storage not initialized")
     if not lora_state.enabled:
         raise HTTPException(
             status_code=409,
@@ -638,22 +889,29 @@ async def deploy_adapter(version: str, model_name: Optional[str] = None, project
         )
     
     try:
-        # Download adapter
-        local_path = await storage.download_adapter(version, model_name=model_name, project_name=project)
-        
-        # Hot-swap with MAX Serve
-        # This would integrate with MAX Serve API to load the adapter
-        # For now, we just return success
+        operation = await _activate_adapter_version(
+            version=version,
+            reason=request.reason if request else "manual_deploy",
+            operation="hot_swap",
+            model_name=model_name,
+            project=project,
+        )
         
         return {
             "status": "deployed",
             "message": f"Adapter {version} deployed successfully",
             "version": version,
-            "path": local_path
+            "path": operation["path"],
+            "from_version": operation["from_version"],
+            "duration_ms": operation["duration_ms"],
+            "known_good_adapter_version": lora_state.known_good_adapter_version,
+            "control_plane": operation["control_plane"],
         }
         
     except Exception as e:
         logger.error(f"Failed to deploy adapter: {e}", exc_info=True)
+        if isinstance(e, HTTPException):
+            raise
         raise HTTPException(status_code=500, detail=str(e))
 
 
