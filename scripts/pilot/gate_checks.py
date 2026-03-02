@@ -436,8 +436,51 @@ def main() -> int:
         action="store_true",
         help="Skip Gate C (secret leak prevention)",
     )
+    parser.add_argument(
+        "--run-pytest",
+        action="store_true",
+        help="Run integration tests via pytest (tests/integration/ -m integration -v)",
+    )
     
     args = parser.parse_args()
+    
+    # Handle --run-pytest mode
+    if args.run_pytest:
+        import subprocess
+        
+        print("=" * 60)
+        print("Running Integration Tests via pytest")
+        print("=" * 60)
+        
+        pytest_cmd = [
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/integration/",
+            "-m",
+            "integration",
+            "-v"
+        ]
+        
+        print(f"Command: {' '.join(pytest_cmd)}")
+        print()
+        
+        try:
+            result = subprocess.run(pytest_cmd, check=False)
+            exit_code = result.returncode
+            
+            print()
+            print("=" * 60)
+            if exit_code == 0:
+                print("✓ All integration tests passed")
+            else:
+                print(f"✗ Integration tests failed (exit code: {exit_code})")
+            print("=" * 60)
+            
+            return exit_code
+        except Exception as e:
+            print(f"✗ Failed to run pytest: {e}")
+            return 1
     
     api_url = args.api_url.rstrip("/")
     rag_url = args.rag_url.rstrip("/")
