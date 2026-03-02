@@ -1448,6 +1448,26 @@ def _resolve_workspace_scope(
     return resolved_workspace
 
 
+def _enforce_workspace_match(
+    *,
+    context_workspace_id: str,
+    provided_workspace_id: Optional[str],
+    context: str,
+) -> str:
+    """Block explicit workspace selectors that conflict with request context."""
+    normalized_context_workspace = _normalize_workspace_id(context_workspace_id, context)
+    if provided_workspace_id is None:
+        return normalized_context_workspace
+
+    normalized_provided_workspace = _normalize_workspace_id(provided_workspace_id, context)
+    if normalized_provided_workspace != normalized_context_workspace:
+        raise HTTPException(
+            status_code=403,
+            detail=f"{context} cannot access another workspace scope",
+        )
+    return normalized_context_workspace
+
+
 def _record_metering_event(
     *,
     workspace_id: str,
@@ -2204,15 +2224,28 @@ def _resolve_tool_policy_context(
         raw_request.headers.get("x-project-id"),
         _extract_workspace_id_from_tool_arguments(arguments),
     ]
-    resolved_workspace_id = next(
-        (str(value).strip() for value in workspace_id_candidates if isinstance(value, str) and value.strip()),
-        None,
-    )
+    normalized_workspace_candidates = [
+        _normalize_workspace_id(value, "MCP tool policy workspace context")
+        for value in workspace_id_candidates
+        if isinstance(value, str) and value.strip()
+    ]
     resolved_request_id = (
         (explicit_request_id or "").strip()
         or str(getattr(raw_request.state, "audit_request_id", "")).strip()
         or (raw_request.headers.get("x-request-id") or "").strip()
         or str(uuid.uuid4())
+    )
+    if len(set(normalized_workspace_candidates)) > 1:
+        raise HTTPException(
+            status_code=403,
+            detail=_build_policy_denied_detail(
+                reason="workspace_id mismatch across headers/body/tool arguments",
+                workspace_id=normalized_workspace_candidates[0],
+                request_id=resolved_request_id,
+            ),
+        )
+    resolved_workspace_id = (
+        normalized_workspace_candidates[0] if normalized_workspace_candidates else None
     )
     return resolved_workspace_id, resolved_request_id
 
@@ -3123,6 +3156,11 @@ async def health_check():
 async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
     """Proxy MCP calls through the MCPJungle gateway service."""
     workspace_id = get_current_workspace_id()
+    workspace_id = _enforce_workspace_match(
+        context_workspace_id=workspace_id,
+        provided_workspace_id=request.workspace_id,
+        context="/v1/mcp",
+    )
     started_at = time.time()
     payload = request.model_dump(
         exclude_none=True,
@@ -3153,6 +3191,14 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
             payload["workspace_id"] = resolved_workspace_id
             payload.setdefault("request_id", resolved_request_id)
             payload.setdefault("tool_action", resolved_action)
+            tool_arguments = dict(request.arguments or {})
+            tool_arguments["workspace_id"] = resolved_workspace_id
+            metadata_payload = tool_arguments.get("metadata")
+            if isinstance(metadata_payload, dict):
+                normalized_metadata_payload = dict(metadata_payload)
+                normalized_metadata_payload["workspace_id"] = resolved_workspace_id
+                tool_arguments["metadata"] = normalized_metadata_payload
+            payload["arguments"] = tool_arguments
             payload["confirm"] = request.confirm
             if request.confirmation_id:
                 payload["confirmation_id"] = request.confirmation_id
@@ -3532,6 +3578,11 @@ async def get_workspace_metering(
 async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Request):
     """Route internal tool calls to MCP gateway /mcp endpoint with structured result."""
     workspace_id = get_current_workspace_id()
+    workspace_id = _enforce_workspace_match(
+        context_workspace_id=workspace_id,
+        provided_workspace_id=request.workspace_id,
+        context="/internal/mcp/tools/call",
+    )
     started_at = time.time()
     policy_started_at = time.perf_counter()
     request_payload = request.model_dump(exclude_none=True)
@@ -3539,6 +3590,11 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
     effective_timeout_seconds = float(os.getenv("MCP_GATEWAY_TIMEOUT_SECONDS", "10"))
     tool_arguments = dict(request.arguments or {})
     tool_arguments.setdefault("workspace_id", workspace_id)
+    metadata_payload = tool_arguments.get("metadata")
+    if isinstance(metadata_payload, dict):
+        normalized_metadata_payload = dict(metadata_payload)
+        normalized_metadata_payload.setdefault("workspace_id", workspace_id)
+        tool_arguments["metadata"] = normalized_metadata_payload
     redacted_arguments, argument_redactions = _redact_value_for_audit(request.arguments or {})
     logger.info(
         "internal_mcp_tool_call server=%s tool=%s context=%s argument_redactions=%s arguments=%s",
@@ -3570,6 +3626,11 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
         request_payload["request_id"] = resolved_request_id
         request_payload["action"] = resolved_action
         tool_arguments["workspace_id"] = resolved_workspace_id
+        metadata_payload = tool_arguments.get("metadata")
+        if isinstance(metadata_payload, dict):
+            normalized_metadata_payload = dict(metadata_payload)
+            normalized_metadata_payload["workspace_id"] = resolved_workspace_id
+            tool_arguments["metadata"] = normalized_metadata_payload
     except HTTPException as exc:
         latency_ms = (time.perf_counter() - policy_started_at) * 1000
         detail_payload = (
@@ -4486,8 +4547,13 @@ async def rag_delete_document(
         document_id: ID of the document to delete
     """
     try:
+        normalized_workspace_id = _enforce_workspace_match(
+            context_workspace_id=get_current_workspace_id(),
+            provided_workspace_id=workspace_id,
+            context="/v1/rag/documents/{document_id}",
+        )
         normalized_workspace_id = _ensure_workspace_active(
-            workspace_id,
+            normalized_workspace_id,
             context="/v1/rag/documents/{document_id}",
         )
         service = get_rag_service()
