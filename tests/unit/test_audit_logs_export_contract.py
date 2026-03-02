@@ -33,6 +33,8 @@ def test_audit_export_endpoint_supports_required_filters_and_formats() -> None:
     assert "model: Optional[str] = Query(None, description=\"Filter by model identifier\")" in api_server
     assert "status: Optional[str] = Query(None, description=\"Filter by event status\")" in api_server
     assert "tool_name: Optional[str] = Query(None, description=\"Filter by tool name\")" in api_server
+    assert 'pattern="^(request|tool_event|tool_call)$"' in api_server
+    assert "event_type must be one of: request, tool_event, tool_call" in api_server
     assert "pattern=AUDIT_EVENT_TYPE_QUERY_PATTERN" in api_server
     assert "_normalize_audit_event_type(event_type or query_params.get(\"type\"))" in api_server
     assert "start_date: Optional[str] = Query(None, description=\"Start date (ISO-8601)\")" in api_server
@@ -41,6 +43,7 @@ def test_audit_export_endpoint_supports_required_filters_and_formats() -> None:
     assert 'media_type="text/csv"' in api_server
 
 
+def test_tool_call_routes_emit_tool_event_audits() -> None:
 def test_audit_query_endpoint_wraps_json_export_with_same_filters() -> None:
     api_server = _read("api_server.py")
 
@@ -73,6 +76,10 @@ def test_init_sql_declares_audit_table_and_indexes() -> None:
     init_sql = _read("init-scripts/postgres/init.sql")
 
     assert "CREATE TABLE IF NOT EXISTS audit_events" in init_sql
+    assert (
+        "event_type VARCHAR(32) NOT NULL CHECK (event_type IN ('request', 'tool_event', 'tool_call'))"
+        in init_sql
+    )
     assert "event_type IN ('request_event', 'tool_event', 'request', 'tool_call', 'mcp_tool_call')" in init_sql
     assert "workspace_id VARCHAR(255)" in init_sql
     assert "user_id VARCHAR(255)" in init_sql

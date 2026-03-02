@@ -2,7 +2,7 @@
 """
 Audit event persistence and export service.
 
-Stores structured audit events (HTTP requests + tool calls) in PostgreSQL and
+Stores structured audit events (HTTP requests + tool events) in PostgreSQL and
 supports filtered export as JSON/CSV.
 """
 
@@ -20,6 +20,7 @@ from safety_sanitizer import redact_sensitive
 
 logger = logging.getLogger(__name__)
 
+_SUPPORTED_EVENT_TYPES = {"request", "tool_event", "tool_call"}
 _EVENT_TYPE_ALIASES = {
     "request": "request_event",
     "request_event": "request_event",
@@ -99,6 +100,7 @@ class AuditService:
                         id SERIAL PRIMARY KEY,
                         event_id VARCHAR(255) UNIQUE NOT NULL,
                         event_type VARCHAR(32) NOT NULL CHECK (
+                            event_type IN ('request', 'tool_event', 'tool_call')
                             event_type IN ('request_event', 'tool_event', 'request', 'tool_call', 'mcp_tool_call')
                         ),
                         timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -124,6 +126,29 @@ class AuditService:
                     """
                 )
                 cur.execute("ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS role VARCHAR(64)")
+                cur.execute(
+                    """
+                    DO $$
+                    DECLARE
+                        constraint_name TEXT;
+                    BEGIN
+                        FOR constraint_name IN
+                            SELECT conname
+                            FROM pg_constraint
+                            WHERE conrelid = 'audit_events'::regclass
+                              AND contype = 'c'
+                              AND pg_get_constraintdef(oid) ILIKE '%event_type%'
+                        LOOP
+                            EXECUTE format(
+                                'ALTER TABLE audit_events DROP CONSTRAINT %I',
+                                constraint_name
+                            );
+                        END LOOP;
+
+                        ALTER TABLE audit_events
+                        ADD CONSTRAINT audit_events_event_type_check
+                        CHECK (event_type IN ('request', 'tool_event', 'tool_call'));
+                    END $$;
                 cur.execute("ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS model VARCHAR(255)")
                 cur.execute("ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS status VARCHAR(32)")
                 cur.execute("ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS tool_calls JSONB DEFAULT '[]'::JSONB")

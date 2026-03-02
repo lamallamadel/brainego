@@ -2985,7 +2985,7 @@ def _record_tool_call_audit(
     context: Optional[str] = None,
     error: Optional[str] = None,
 ):
-    """Persist explicit tool call audit event."""
+    """Persist explicit tool event audit entry for MCP tool execution."""
     safe_request_payload, request_redactions = _redact_value_for_audit(request_payload or {})
     safe_response_payload, response_redactions = _redact_value_for_audit(response_payload or {})
     safe_error, error_redactions = _redact_value_for_audit(error or "")
@@ -3597,6 +3597,7 @@ async def export_audit_events(
     tool_name: Optional[str] = Query(None, description="Filter by tool name"),
     event_type: Optional[str] = Query(
         None,
+        pattern="^(request|tool_event|tool_call)$",
         pattern=AUDIT_EVENT_TYPE_QUERY_PATTERN,
         description="Filter by event type",
     ),
@@ -3629,6 +3630,13 @@ async def export_audit_events(
     model_filter = model or query_params.get("model")
     status_filter = status or query_params.get("status")
     tool_filter = tool_name or query_params.get("tool")
+    event_filter = event_type or query_params.get("type")
+
+    if event_filter and event_filter not in {"request", "tool_event", "tool_call"}:
+        raise HTTPException(
+            status_code=400,
+            detail="event_type must be one of: request, tool_event, tool_call",
+        )
     event_filter = _normalize_audit_event_type(event_type or query_params.get("type"))
 
     start_filter = _safe_iso_datetime(
@@ -3861,6 +3869,7 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
         redacted_arguments,
     )
     try:
+        # Enforce policy immediately before outbound MCP tool execution.
         (
             resolved_workspace_id,
             resolved_request_id,

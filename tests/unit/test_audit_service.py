@@ -22,7 +22,7 @@ def test_build_filters_supports_workspace_user_date_and_tool():
         model="gpt-4.1-mini",
         status="success",
         tool_name="search_docs",
-        event_type="tool_call",
+        event_type="tool_event",
         start_date=start,
         end_date=end,
     )
@@ -36,6 +36,7 @@ def test_build_filters_supports_workspace_user_date_and_tool():
     assert "event_type = ANY(%s)" in where_sql
     assert "timestamp >= %s" in where_sql
     assert "timestamp <= %s" in where_sql
+    assert params == ["ws-1", "user-1", "workspace_admin", "search_docs", "tool_event", start, end]
     assert params == [
         "ws-1",
         "user-1",

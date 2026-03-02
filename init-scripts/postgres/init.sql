@@ -143,7 +143,7 @@ GRANT SELECT ON model_accuracy_by_intent TO ai_user;
 GRANT EXECUTE ON FUNCTION get_weekly_finetuning_dataset TO ai_user;
 GRANT EXECUTE ON FUNCTION refresh_model_accuracy TO ai_user;
 
--- Structured audit logs (requests + tool calls)
+-- Structured audit logs (requests + tool events)
 CREATE TABLE IF NOT EXISTS audit_events (
     id SERIAL PRIMARY KEY,
     event_id VARCHAR(255) UNIQUE NOT NULL,
