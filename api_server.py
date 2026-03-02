@@ -999,6 +999,23 @@ class RAGIngestBatchRequest(BaseModel):
         ...,
         description="List of documents to ingest (each document.metadata.workspace_id is required).",
     )
+class RAGIngestGitHubRequest(BaseModel):
+    repo: str = Field(..., description="Repository name in format owner/repo")
+    workspace_id: str = Field(..., description="Workspace identifier for partitioning")
+    branch: Optional[str] = Field(None, description="Branch name (defaults to repo default branch)")
+    incremental: bool = Field(True, description="Enable incremental syncing")
+    max_file_size_bytes: int = Field(200_000, ge=1, description="Maximum file size to ingest")
+    include_patterns: Optional[List[str]] = Field(None, description="Optional glob patterns to include")
+    exclude_patterns: Optional[List[str]] = Field(None, description="Optional glob patterns to exclude")
+class RAGIngestGitHubResponse(BaseModel):
+    status: str
+    repo: str
+    workspace_id: str
+    documents_collected: int
+    documents_ingested: int
+    chunks_created: int
+    collection_result: Dict[str, Any]
+    ingest_result: Dict[str, Any]
 class RAGIngestResponse(BaseModel):
     status: str
     document_id: str
@@ -2866,7 +2883,7 @@ def render_rag_citation_section(rag_sources: List[Dict[str, str]]) -> str:
 
     lines = [RAG_CITATION_SECTION_HEADER]
     for source in rag_sources:
-        lines.append(f"- path: {source['path']} | commit: {source['commit']}")
+        lines.append(f"- {source['path']}@{source['commit']}")
     return "\n".join(lines)
 
 
@@ -5208,6 +5225,81 @@ async def rag_ingest_batch(request: RAGIngestBatchRequest):
     except Exception as e:
         logger.error(f"Error in batch ingestion: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Batch ingestion error: {str(e)}")
+@app.post("/v1/rag/ingest/github", response_model=RAGIngestGitHubResponse)
+async def rag_ingest_github(request: RAGIngestGitHubRequest):
+    """
+    Ingest GitHub repository contents into RAG system.
+    
+    Uses GitHubCollector file-walking logic for language detection, binary exclusion,
+    and size limits. Chunks files with path+commit metadata for citation support.
+    
+    Args:
+        repo: Repository name in format "owner/repo"
+        workspace_id: Workspace identifier for partitioning
+        branch: Optional branch name (defaults to repo default branch)
+        incremental: Enable incremental syncing (default: True)
+        max_file_size_bytes: Maximum file size to ingest (default: 200000)
+        include_patterns: Optional glob patterns to include
+        exclude_patterns: Optional glob patterns to exclude
+    
+    Returns:
+        RAGIngestGitHubResponse with ingestion statistics
+    """
+    try:
+        workspace_id = _normalize_workspace_id(
+            request.workspace_id,
+            context="/v1/rag/ingest/github",
+        )
+        workspace_id = _ensure_workspace_active(
+            workspace_id,
+            context="/v1/rag/ingest/github",
+        )
+        
+        from data_collectors.github_repo_rag_worker import GitHubRepoRAGWorker
+        
+        github_token = os.getenv("GITHUB_TOKEN")
+        if not github_token:
+            raise HTTPException(
+                status_code=500,
+                detail="GITHUB_TOKEN environment variable is required",
+            )
+        
+        worker = GitHubRepoRAGWorker(access_token=github_token)
+        
+        result = worker.ingest_repository(
+            repo=request.repo,
+            workspace_id=workspace_id,
+            branch=request.branch,
+            incremental=request.incremental,
+            max_file_size_bytes=request.max_file_size_bytes,
+            include_patterns=request.include_patterns,
+            exclude_patterns=request.exclude_patterns,
+        )
+        
+        _record_metering_event(
+            workspace_id=workspace_id,
+            meter_key="rag.ingest.github_repo",
+            quantity=1,
+            metadata={
+                "repo": request.repo,
+                "documents_collected": result.get("documents_collected", 0),
+            },
+        )
+        
+        logger.info(
+            "Successfully ingested GitHub repo %s: %d documents, %d chunks",
+            request.repo,
+            result.get("documents_ingested", 0),
+            result.get("chunks_created", 0),
+        )
+        return RAGIngestGitHubResponse(**result)
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error ingesting GitHub repository: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"GitHub ingestion error: {str(e)}")
 @app.post("/v1/rag/search", response_model=RAGSearchResponse)
 async def rag_search(request: RAGSearchRequest):
     """
