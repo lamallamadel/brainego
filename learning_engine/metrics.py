@@ -69,6 +69,12 @@ training_runs_total = Counter(
     ['model', 'status']  # status: success, skipped, failed
 )
 
+golden_validation_runs_total = Counter(
+    'golden_validation_runs_total',
+    'Total number of golden-set validation runs',
+    ['model', 'status']  # status: success, failed
+)
+
 training_epochs_total = Counter(
     'training_epochs_total',
     'Total number of training epochs',
@@ -85,6 +91,36 @@ model_perplexity = Gauge(
 model_accuracy = Gauge(
     'model_accuracy',
     'Model accuracy on validation set',
+    ['model', 'version_id']
+)
+
+golden_validation_pass_rate = Gauge(
+    'golden_validation_pass_rate',
+    'Golden-set validation pass rate for candidate adapter',
+    ['model', 'version_id']
+)
+
+golden_validation_mean_score = Gauge(
+    'golden_validation_mean_score',
+    'Golden-set validation mean score for candidate adapter',
+    ['model', 'version_id']
+)
+
+golden_validation_regressions = Gauge(
+    'golden_validation_regressions',
+    'Number of regressions against golden baseline',
+    ['model', 'version_id']
+)
+
+golden_validation_unsafe_cases = Gauge(
+    'golden_validation_unsafe_cases',
+    'Number of unsafe candidate outputs on golden set',
+    ['model', 'version_id']
+)
+
+golden_validation_approved = Gauge(
+    'golden_validation_approved',
+    'Golden-set promotion decision (1 approved, 0 blocked)',
     ['model', 'version_id']
 )
 

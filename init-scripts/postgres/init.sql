@@ -12,6 +12,8 @@ CREATE TABLE IF NOT EXISTS feedback (
     tools_called TEXT[] DEFAULT ARRAY[]::TEXT[],
     rating INTEGER NOT NULL CHECK (rating IN (-1, 1)),
     reason TEXT,
+    category VARCHAR(64),
+    expected_answer TEXT,
     timestamp TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
     user_id VARCHAR(255),
     session_id VARCHAR(255),
@@ -28,8 +30,14 @@ CREATE INDEX IF NOT EXISTS idx_feedback_model ON feedback(model);
 CREATE INDEX IF NOT EXISTS idx_feedback_rating ON feedback(rating);
 CREATE INDEX IF NOT EXISTS idx_feedback_intent ON feedback(intent);
 CREATE INDEX IF NOT EXISTS idx_feedback_project ON feedback(project);
+CREATE INDEX IF NOT EXISTS idx_feedback_category ON feedback(category);
 CREATE INDEX IF NOT EXISTS idx_feedback_user_id ON feedback(user_id);
 CREATE INDEX IF NOT EXISTS idx_feedback_session_id ON feedback(session_id);
+
+-- Backward-compatible schema migration for existing databases
+ALTER TABLE feedback ADD COLUMN IF NOT EXISTS reason TEXT;
+ALTER TABLE feedback ADD COLUMN IF NOT EXISTS category VARCHAR(64);
+ALTER TABLE feedback ADD COLUMN IF NOT EXISTS expected_answer TEXT;
 
 -- Create accuracy tracking materialized view
 CREATE MATERIALIZED VIEW IF NOT EXISTS model_accuracy_by_intent AS
@@ -80,6 +88,8 @@ RETURNS TABLE (
     model VARCHAR,
     rating INTEGER,
     reason TEXT,
+    category VARCHAR,
+    expected_answer TEXT,
     weight NUMERIC,
     timestamp TIMESTAMP WITH TIME ZONE,
     intent VARCHAR,
@@ -93,6 +103,8 @@ BEGIN
         f.model,
         f.rating,
         f.reason,
+        f.category,
+        f.expected_answer,
         CASE 
             WHEN f.rating = 1 THEN 2.0
             WHEN f.rating = -1 THEN 0.5
@@ -131,21 +143,28 @@ GRANT SELECT ON model_accuracy_by_intent TO ai_user;
 GRANT EXECUTE ON FUNCTION get_weekly_finetuning_dataset TO ai_user;
 GRANT EXECUTE ON FUNCTION refresh_model_accuracy TO ai_user;
 
--- Structured audit logs (requests + tool calls)
+-- Structured audit logs (requests + tool events)
 CREATE TABLE IF NOT EXISTS audit_events (
     id SERIAL PRIMARY KEY,
     event_id VARCHAR(255) UNIQUE NOT NULL,
-    event_type VARCHAR(32) NOT NULL CHECK (event_type IN ('request', 'tool_call')),
+    event_type VARCHAR(32) NOT NULL CHECK (
+        event_type IN ('request_event', 'tool_event', 'request', 'tool_call', 'mcp_tool_call')
+    ),
     timestamp TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
     request_id VARCHAR(255),
     workspace_id VARCHAR(255),
     user_id VARCHAR(255),
     role VARCHAR(64),
+    model VARCHAR(255),
+    status VARCHAR(32),
     tool_name VARCHAR(255),
+    tool_calls JSONB DEFAULT '[]'::JSONB,
     endpoint TEXT,
     method VARCHAR(16),
     status_code INTEGER,
+    latency_ms DOUBLE PRECISION,
     duration_ms DOUBLE PRECISION,
+    redacted_arguments JSONB DEFAULT '{}'::JSONB,
     request_payload JSONB DEFAULT '{}'::JSONB,
     response_payload JSONB DEFAULT '{}'::JSONB,
     metadata JSONB DEFAULT '{}'::JSONB,
@@ -153,11 +172,26 @@ CREATE TABLE IF NOT EXISTS audit_events (
 );
 
 ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS role VARCHAR(64);
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS model VARCHAR(255);
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS status VARCHAR(32);
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS tool_calls JSONB DEFAULT '[]'::JSONB;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS latency_ms DOUBLE PRECISION;
+ALTER TABLE audit_events ADD COLUMN IF NOT EXISTS redacted_arguments JSONB DEFAULT '{}'::JSONB;
+ALTER TABLE audit_events DROP CONSTRAINT IF EXISTS audit_events_event_type_check;
+ALTER TABLE audit_events
+    ADD CONSTRAINT audit_events_event_type_check
+    CHECK (event_type IN ('request_event', 'tool_event', 'request', 'tool_call', 'mcp_tool_call'));
+UPDATE audit_events
+SET latency_ms = duration_ms
+WHERE latency_ms IS NULL
+  AND duration_ms IS NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_audit_events_timestamp ON audit_events(timestamp);
 CREATE INDEX IF NOT EXISTS idx_audit_events_workspace_id ON audit_events(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_user_id ON audit_events(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_events_role ON audit_events(role);
+CREATE INDEX IF NOT EXISTS idx_audit_events_model ON audit_events(model);
+CREATE INDEX IF NOT EXISTS idx_audit_events_status ON audit_events(status);
 CREATE INDEX IF NOT EXISTS idx_audit_events_tool_name ON audit_events(tool_name);
 CREATE INDEX IF NOT EXISTS idx_audit_events_event_type ON audit_events(event_type);
 CREATE INDEX IF NOT EXISTS idx_audit_events_request_id ON audit_events(request_id);
@@ -189,11 +223,12 @@ CREATE TRIGGER trigger_update_workspaces_timestamp
 GRANT ALL PRIVILEGES ON TABLE workspaces TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE workspaces_id_seq TO ai_user;
 
--- Workspace-scoped metering events
+-- Workspace/user-scoped metering events
 CREATE TABLE IF NOT EXISTS workspace_metering_events (
     id SERIAL PRIMARY KEY,
     event_id VARCHAR(255) UNIQUE NOT NULL,
     workspace_id VARCHAR(255) NOT NULL,
+    user_id VARCHAR(255),
     meter_key VARCHAR(128) NOT NULL,
     quantity DOUBLE PRECISION NOT NULL DEFAULT 1,
     request_id VARCHAR(255),
@@ -201,11 +236,17 @@ CREATE TABLE IF NOT EXISTS workspace_metering_events (
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE workspace_metering_events
+    ADD COLUMN IF NOT EXISTS user_id VARCHAR(255);
+
 CREATE INDEX IF NOT EXISTS idx_metering_workspace_id ON workspace_metering_events(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_metering_user_id ON workspace_metering_events(user_id);
 CREATE INDEX IF NOT EXISTS idx_metering_meter_key ON workspace_metering_events(meter_key);
 CREATE INDEX IF NOT EXISTS idx_metering_created_at ON workspace_metering_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_metering_workspace_meter_key
     ON workspace_metering_events(workspace_id, meter_key);
+CREATE INDEX IF NOT EXISTS idx_metering_workspace_user_meter_key
+    ON workspace_metering_events(workspace_id, user_id, meter_key);
 
 GRANT ALL PRIVILEGES ON TABLE workspace_metering_events TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE workspace_metering_events_id_seq TO ai_user;
@@ -249,11 +290,32 @@ CREATE TABLE IF NOT EXISTS finetuning_triggers (
 CREATE INDEX IF NOT EXISTS idx_finetuning_triggers_timestamp ON finetuning_triggers(trigger_timestamp);
 CREATE INDEX IF NOT EXISTS idx_finetuning_triggers_job_id ON finetuning_triggers(job_id);
 
+-- Create drift_incidents table for eval-drop incidents and retraining recommendations
+CREATE TABLE IF NOT EXISTS drift_incidents (
+    id SERIAL PRIMARY KEY,
+    incident_id VARCHAR(255) UNIQUE NOT NULL,
+    status VARCHAR(32) NOT NULL DEFAULT 'open',
+    severity VARCHAR(20) NOT NULL,
+    scope_type VARCHAR(50),
+    scope_value VARCHAR(255),
+    summary TEXT NOT NULL,
+    recommendation TEXT NOT NULL,
+    payload JSONB DEFAULT '{}'::JSONB,
+    opened_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_drift_incidents_opened_at ON drift_incidents(opened_at);
+CREATE INDEX IF NOT EXISTS idx_drift_incidents_status ON drift_incidents(status);
+CREATE INDEX IF NOT EXISTS idx_drift_incidents_scope ON drift_incidents(scope_type, scope_value);
+
 -- Grant permissions to ai_user for drift monitoring tables
 GRANT ALL PRIVILEGES ON TABLE drift_metrics TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE drift_metrics_id_seq TO ai_user;
 GRANT ALL PRIVILEGES ON TABLE finetuning_triggers TO ai_user;
 GRANT ALL PRIVILEGES ON SEQUENCE finetuning_triggers_id_seq TO ai_user;
+GRANT ALL PRIVILEGES ON TABLE drift_incidents TO ai_user;
+GRANT ALL PRIVILEGES ON SEQUENCE drift_incidents_id_seq TO ai_user;
 
 -- LoRA adapter version tracking
 CREATE TABLE IF NOT EXISTS lora_adapters (

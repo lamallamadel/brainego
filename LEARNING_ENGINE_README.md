@@ -54,6 +54,12 @@ BASE_MODEL_PATH=/models/llama-3.3-8b-instruct-q4_k_m.gguf
 LORA_RANK=16
 LORA_ALPHA=32
 LORA_DROPOUT=0.05
+LORA_ENABLED=true
+ACTIVE_LORA_ADAPTER=
+LORA_CONTROL_BASE_URL=http://max-serve-llama:8080
+LORA_RELOAD_ENDPOINT_PATH=/internal/lora/reload
+LORA_ROLLBACK_ENDPOINT_PATH=/internal/lora/rollback
+LORA_OPERATION_TIMEOUT_SECONDS=120
 
 # EWC Configuration
 EWC_LAMBDA=500.0  # Range: 100-1000
@@ -99,6 +105,17 @@ Returns service health status and component states.
   }
 }
 ```
+
+### LoRA Runtime Controls (hot-swap + rollback)
+```bash
+GET /lora/status
+POST /lora/disable
+POST /lora/enable
+POST /lora/activate
+POST /lora/rollback
+```
+
+These endpoints provide zero-downtime adapter activation via the LoRA control plane and fast rollback to the previous known-good adapter version.
 
 ### Trigger Training
 ```bash
@@ -219,7 +236,10 @@ Deploy an adapter to MAX Serve (hot-swap).
   "status": "deployed",
   "message": "Adapter v1.0 deployed successfully",
   "version": "v1.0",
-  "path": "/tmp/adapters/v1.0"
+  "path": "/tmp/adapters/v1.0",
+  "from_version": "v0.9",
+  "duration_ms": 1342,
+  "known_good_adapter_version": "v0.9"
 }
 ```
 

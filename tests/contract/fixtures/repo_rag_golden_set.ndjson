@@ -1,0 +1,242 @@
+{
+  "metadata": {
+    "issue_id": "AFR-111",
+    "title": "Pilot Repo-RAG golden set",
+    "version": "1.0.0",
+    "total_cases": 20,
+    "evaluation_axes": [
+      "retrieval_relevance",
+      "citation_correctness"
+    ],
+    "indexed_source_set": [
+      "README.md",
+      "QUICKSTART.md",
+      "MCP_QUICKSTART.md",
+      "SECURITY_QUICKSTART.md",
+      "DISASTER_RECOVERY_RUNBOOK.md",
+      "MCP_AFR32_MANUAL_TEST.md"
+    ],
+    "citation_policy": "Answers must cite sources with [source:<path>] using file paths from indexed_source_set."
+  },
+  "cases": [
+    {
+      "id": "repo-rag-001",
+      "category": "ci_cd",
+      "question": "In QUICKSTART.md, what is the exact GitHub Actions secret name required for Testcontainers Cloud?",
+      "expected_sources": ["QUICKSTART.md"],
+      "expected_answer_keywords": ["TESTCONTAINERS_CLOUD_TOKEN"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["Name: `TESTCONTAINERS_CLOUD_TOKEN`"]
+    },
+    {
+      "id": "repo-rag-002",
+      "category": "ci_cd",
+      "question": "Which workflow file should exist under .github/workflows for the Codex build pipeline?",
+      "expected_sources": ["QUICKSTART.md"],
+      "expected_answer_keywords": ["codex-build.yml", ".github/workflows/codex-build.yml"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": [
+        "Check that `.github/workflows/codex-build.yml` exists in your repo:",
+        "# Should show: codex-build.yml"
+      ]
+    },
+    {
+      "id": "repo-rag-003",
+      "category": "ci_cd",
+      "question": "What branch naming pattern is required when Codex pushes generated changes?",
+      "expected_sources": ["QUICKSTART.md"],
+      "expected_answer_keywords": ["feature/codex/*", "NOT main"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["Push to `feature/codex/*` (NOT main!)"]
+    },
+    {
+      "id": "repo-rag-004",
+      "category": "ci_cd",
+      "question": "What Python base image version is recommended to avoid Docker build rate limits?",
+      "expected_sources": ["QUICKSTART.md"],
+      "expected_answer_keywords": ["python:3.11.8-slim"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["FROM python:3.11.8-slim"]
+    },
+    {
+      "id": "repo-rag-005",
+      "category": "pilot_flow",
+      "question": "From README.md, which command runs the full pilot demo flow end-to-end?",
+      "expected_sources": ["README.md"],
+      "expected_answer_keywords": ["bash scripts/pilot/run_pilot_demo.sh"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["- `bash scripts/pilot/run_pilot_demo.sh`"]
+    },
+    {
+      "id": "repo-rag-006",
+      "category": "pilot_flow",
+      "question": "Which make target runs only the repository indexing step for pilot readiness?",
+      "expected_sources": ["README.md"],
+      "expected_answer_keywords": ["make pilot-demo-index"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["make pilot-demo-index"]
+    },
+    {
+      "id": "repo-rag-007",
+      "category": "platform_endpoints",
+      "question": "What is the local endpoint for the Mem0 service?",
+      "expected_sources": ["README.md"],
+      "expected_answer_keywords": ["http://localhost:8006", "Mem0 Service"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["| **Mem0 Service** | http://localhost:8006 | Memory service backed by Qdrant |"]
+    },
+    {
+      "id": "repo-rag-008",
+      "category": "rag",
+      "question": "What is the default embedding model used by the local embedding-service?",
+      "expected_sources": ["README.md"],
+      "expected_answer_keywords": ["nomic-ai/nomic-embed-text-v1.5"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["- Default model: `nomic-ai/nomic-embed-text-v1.5`"]
+    },
+    {
+      "id": "repo-rag-009",
+      "category": "mcp",
+      "question": "What command copies the MCP environment template before adding credentials?",
+      "expected_sources": ["MCP_QUICKSTART.md"],
+      "expected_answer_keywords": ["cp .env.mcpjungle.example .env.mcpjungle"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["cp .env.mcpjungle.example .env.mcpjungle"]
+    },
+    {
+      "id": "repo-rag-010",
+      "category": "mcp",
+      "question": "Which GitHub OAuth token scopes are listed in MCP_QUICKSTART.md?",
+      "expected_sources": ["MCP_QUICKSTART.md"],
+      "expected_answer_keywords": ["repo", "read:org", "read:user"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["Select scopes: `repo`, `read:org`, `read:user`"]
+    },
+    {
+      "id": "repo-rag-011",
+      "category": "mcp",
+      "question": "Which command validates MCP integrations, and what passing summary is expected?",
+      "expected_sources": ["MCP_QUICKSTART.md"],
+      "expected_answer_keywords": ["python test_mcp_integrations.py", "All integration tests passed! (5/5)"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["python test_mcp_integrations.py", "All integration tests passed! (5/5)"]
+    },
+    {
+      "id": "repo-rag-012",
+      "category": "mcp",
+      "question": "What endpoint is used to list available MCP servers in the quick start examples?",
+      "expected_sources": ["MCP_QUICKSTART.md"],
+      "expected_answer_keywords": ["http://localhost:9100/mcp/servers"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["curl -X GET http://localhost:9100/mcp/servers"]
+    },
+    {
+      "id": "repo-rag-013",
+      "category": "security",
+      "question": "In the security quick start Helm command, which flags enable network policies, RBAC, and AES-GCM secret encryption?",
+      "expected_sources": ["SECURITY_QUICKSTART.md"],
+      "expected_answer_keywords": [
+        "networkPolicies.enabled=true",
+        "rbac.enabled=true",
+        "secrets.encryption.provider=aesgcm"
+      ],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": [
+        "--set networkPolicies.enabled=true",
+        "--set rbac.enabled=true",
+        "--set secrets.encryption.provider=aesgcm"
+      ]
+    },
+    {
+      "id": "repo-rag-014",
+      "category": "security",
+      "question": "When verifying encrypted secrets in etcd, what prefix should encrypted values start with?",
+      "expected_sources": ["SECURITY_QUICKSTART.md"],
+      "expected_answer_keywords": ["k8s:enc:aesgcm:v1:key1:"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["# Should start with 'k8s:enc:aesgcm:v1:key1:' or similar"]
+    },
+    {
+      "id": "repo-rag-015",
+      "category": "security",
+      "question": "In RBAC verification, should gateway-sa be able to delete ConfigMaps?",
+      "expected_sources": ["SECURITY_QUICKSTART.md"],
+      "expected_answer_keywords": ["no", "Gateway should NOT be able to delete ConfigMaps"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["# Gateway should NOT be able to delete ConfigMaps", "# Expected: no"]
+    },
+    {
+      "id": "repo-rag-016",
+      "category": "disaster_recovery",
+      "question": "According to the DR runbook, when are backups executed, how long are they retained, and which bucket stores them?",
+      "expected_sources": ["DISASTER_RECOVERY_RUNBOOK.md"],
+      "expected_answer_keywords": ["2:00 AM UTC", "30 days", "backups"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": [
+        "- **Daily backups**: 2:00 AM UTC",
+        "- **Retention**: 30 days",
+        "- **Storage**: MinIO bucket `backups`"
+      ]
+    },
+    {
+      "id": "repo-rag-017",
+      "category": "disaster_recovery",
+      "question": "What are the RTO targets for Qdrant and full-system recovery in the DR runbook?",
+      "expected_sources": ["DISASTER_RECOVERY_RUNBOOK.md"],
+      "expected_answer_keywords": ["Qdrant: < 15 minutes", "Full system: < 60 minutes"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["- Qdrant: < 15 minutes", "- Full system: < 60 minutes"]
+    },
+    {
+      "id": "repo-rag-018",
+      "category": "disaster_recovery",
+      "question": "Which command lists all available backups before executing a restore?",
+      "expected_sources": ["DISASTER_RECOVERY_RUNBOOK.md"],
+      "expected_answer_keywords": ["python restore_backup.py --list"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["# List all backups", "python restore_backup.py --list"]
+    },
+    {
+      "id": "repo-rag-019",
+      "category": "mcp_acl",
+      "question": "In AFR-32 manual testing, which endpoint and API key are used to verify the project-agent role mapping?",
+      "expected_sources": ["MCP_AFR32_MANUAL_TEST.md"],
+      "expected_answer_keywords": ["/mcp/acl/role", "sk-project-agent-key-321", "project-agent"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": [
+        "curl -s -H \"Authorization: Bearer sk-project-agent-key-321\" \\",
+        "http://localhost:9100/mcp/acl/role | jq",
+        "- `role` is `project-agent`"
+      ]
+    },
+    {
+      "id": "repo-rag-020",
+      "category": "mcp_acl",
+      "question": "What is the expected result of the AFR-32 negative ACL check when project-agent calls notion_create_page?",
+      "expected_sources": ["MCP_AFR32_MANUAL_TEST.md"],
+      "expected_answer_keywords": ["HTTP 403", "ACL restriction", "notion_create_page"],
+      "citation_required": true,
+      "citation_format": "[source:<path>]",
+      "citation_anchors": ["\"tool_name\":\"notion_create_page\"", "- HTTP 403 due to ACL restriction"]
+    }
+  ]
+}

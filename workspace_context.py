@@ -142,6 +142,109 @@ def ensure_workspace_filter(
     return merged_filters
 
 
+def _normalize_filter_selector_values(
+    value: Any,
+    *,
+    context: str,
+    key_name: str,
+) -> list[str]:
+    """Normalize scalar or any-filter values into a deduplicated non-empty list."""
+    if isinstance(value, dict):
+        if "any" not in value:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{context}.{key_name} must be a scalar or {{'any': [...]}}",
+            )
+        any_values = value.get("any")
+        if not isinstance(any_values, list) or not any_values:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{context}.{key_name} any-filter must include at least one value",
+            )
+        raw_values = any_values
+    elif isinstance(value, (list, tuple, set)):
+        if not value:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{context}.{key_name} list filter must include at least one value",
+            )
+        raw_values = list(value)
+    else:
+        raw_values = [value]
+
+    normalized_values: list[str] = []
+    seen_values: set[str] = set()
+    for item in raw_values:
+        normalized_item = str(item).strip() if item is not None else ""
+        if not normalized_item:
+            raise HTTPException(
+                status_code=400,
+                detail=f"{context}.{key_name} contains an empty value",
+            )
+        if normalized_item not in seen_values:
+            seen_values.add(normalized_item)
+            normalized_values.append(normalized_item)
+    return normalized_values
+
+
+def _selector_values_to_filter_value(values: list[str]) -> Any:
+    """Convert normalized selector values to scalar or Qdrant any-filter."""
+    if len(values) == 1:
+        return values[0]
+    return {"any": values}
+
+
+def build_rag_retrieval_filters(
+    filters: Optional[Dict[str, Any]],
+    workspace_id: str,
+    *,
+    repo: Optional[Any] = None,
+    path: Optional[Any] = None,
+    lang: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """
+    Build normalized RAG retrieval filters and enforce workspace scope.
+
+    Supports dedicated repo/path/lang selectors (scalar, list, or {"any": [...]})
+    while preserving backwards compatibility with the generic `filters` object.
+    """
+    merged_filters: Dict[str, Any] = dict(filters or {})
+    retrieval_selectors = {
+        "repo": repo,
+        "path": path,
+        "lang": lang,
+    }
+
+    for key_name, selector_value in retrieval_selectors.items():
+        if selector_value is None:
+            continue
+
+        selector_values = _normalize_filter_selector_values(
+            selector_value,
+            context="retrieval",
+            key_name=key_name,
+        )
+        existing_value = merged_filters.get(key_name)
+        if existing_value is None:
+            merged_filters[key_name] = _selector_values_to_filter_value(selector_values)
+            continue
+
+        existing_values = _normalize_filter_selector_values(
+            existing_value,
+            context="filters",
+            key_name=key_name,
+        )
+        if set(existing_values) != set(selector_values):
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"filters.{key_name} conflicts with retrieval {key_name} filter"
+                ),
+            )
+
+    return ensure_workspace_filter(merged_filters, workspace_id)
+
+
 def ensure_workspace_metadata(
     metadata: Optional[Dict[str, Any]],
     workspace_id: str,

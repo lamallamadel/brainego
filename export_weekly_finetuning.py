@@ -28,6 +28,14 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+def _env_flag(name: str, default: bool) -> bool:
+    """Parse boolean flags from environment variables."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Export weekly fine-tuning dataset from feedback",
@@ -95,8 +103,64 @@ def main():
         action="store_true",
         help="Disable deduplication of query/response pairs"
     )
+    parser.add_argument(
+        "--minio-endpoint",
+        default=os.getenv("MINIO_ENDPOINT", "minio:9000"),
+        help="MinIO endpoint (host:port)"
+    )
+    parser.add_argument(
+        "--minio-access-key",
+        default=os.getenv("MINIO_ACCESS_KEY", "minioadmin"),
+        help="MinIO access key"
+    )
+    parser.add_argument(
+        "--minio-secret-key",
+        default=os.getenv("MINIO_SECRET_KEY", "minioadmin123"),
+        help="MinIO secret key"
+    )
+    parser.add_argument(
+        "--minio-bucket",
+        default=os.getenv("FINETUNING_DATASET_BUCKET", "finetuning-datasets"),
+        help="MinIO bucket used to store exported JSONL files"
+    )
+    parser.add_argument(
+        "--minio-prefix",
+        default=os.getenv("FINETUNING_DATASET_PREFIX", "weekly"),
+        help="MinIO object key prefix for exports"
+    )
+    parser.add_argument(
+        "--minio-secure",
+        dest="minio_secure",
+        action="store_true",
+        help="Use HTTPS to connect to MinIO"
+    )
+    parser.add_argument(
+        "--minio-insecure",
+        dest="minio_secure",
+        action="store_false",
+        help="Use HTTP to connect to MinIO"
+    )
+    parser.add_argument(
+        "--upload-minio",
+        dest="upload_minio",
+        action="store_true",
+        help="Upload exported dataset to MinIO (default)"
+    )
+    parser.add_argument(
+        "--no-minio-upload",
+        dest="upload_minio",
+        action="store_false",
+        help="Skip MinIO upload and only write local file"
+    )
+    parser.set_defaults(
+        minio_secure=None,
+        upload_minio=_env_flag("EXPORT_UPLOAD_TO_MINIO", True),
+    )
     
     args = parser.parse_args()
+
+    if args.minio_secure is None:
+        args.minio_secure = _env_flag("MINIO_SECURE", False)
     
     # Generate output path if not provided
     if args.output_path is None:
@@ -120,6 +184,15 @@ def main():
         args.min_response_chars,
         not args.no_deduplicate,
     )
+    logger.info("Upload to MinIO: %s", args.upload_minio)
+    if args.upload_minio:
+        logger.info(
+            "MinIO target: endpoint=%s bucket=%s prefix=%s secure=%s",
+            args.minio_endpoint,
+            args.minio_bucket,
+            args.minio_prefix,
+            args.minio_secure,
+        )
     logger.info("=" * 60)
     
     try:
@@ -144,6 +217,13 @@ def main():
             min_query_chars=args.min_query_chars,
             min_response_chars=args.min_response_chars,
             deduplicate=not args.no_deduplicate,
+            upload_to_minio=args.upload_minio,
+            minio_bucket=args.minio_bucket,
+            minio_prefix=args.minio_prefix,
+            minio_endpoint=args.minio_endpoint,
+            minio_access_key=args.minio_access_key,
+            minio_secret_key=args.minio_secret_key,
+            minio_secure=args.minio_secure,
         )
         
         logger.info("=" * 60)
@@ -156,6 +236,8 @@ def main():
         logger.info(f"  - Negative (👎): {result['negative_samples']} samples (0.5x weight each)")
         logger.info(f"Total Weight: {result['total_weight']:.2f}")
         logger.info(f"Filtered Out: {result['filtered_out_samples']}")
+        if result.get("minio_uri"):
+            logger.info("MinIO URI: %s", result["minio_uri"])
         logger.info("=" * 60)
         
         # Calculate statistics

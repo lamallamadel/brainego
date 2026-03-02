@@ -1,0 +1,27 @@
+{
+  "cases": [
+    {
+      "id": "rag-grounded-answer",
+      "prompt": "Comment fonctionne le pipeline RAG?",
+      "expected_answer": "RAG combine la recuperation de documents pertinents puis la generation d'une reponse ancree sur ces documents.",
+      "answer_keywords": ["recuperation", "documents", "generation"],
+      "expected_tools": ["retriever.search", "llm.generate"],
+      "expected_citations": ["doc://rag-overview", "doc://retrieval-flow"]
+    },
+    {
+      "id": "smalltalk-no-tool",
+      "prompt": "Dis bonjour simplement.",
+      "expected_answer": "Bonjour !",
+      "answer_keywords": ["bonjour"],
+      "expected_tools": [],
+      "expected_citations": []
+    },
+    {
+      "id": "citation-required",
+      "prompt": "Quelle est la politique de sauvegarde?",
+      "answer_keywords": ["sauvegarde", "retention"],
+      "expected_tools": ["policy.lookup"],
+      "expected_citations": ["doc://backup-policy-v2"]
+    }
+  ]
+}
