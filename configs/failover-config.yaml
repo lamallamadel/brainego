@@ -1,0 +1,65 @@
+# Multi-Region DNS Failover Configuration
+#
+# This configuration defines regions, health thresholds, and DNS provider settings
+# for automatic failover automation.
+
+# DNS provider: route53 (AWS) or cloud_dns (Google Cloud)
+dns_provider: route53
+
+# AWS Route53 configuration
+hosted_zone_id: Z1234567890ABC  # Replace with your Route53 hosted zone ID
+
+# Google Cloud DNS configuration (if using cloud_dns)
+gcp_project_id: my-gcp-project
+gcp_dns_zone_name: ai-platform-zone
+
+# Notification webhook (Slack, Discord, etc.)
+notification_webhook: https://hooks.slack.com/services/YOUR/WEBHOOK/URL
+
+# Region definitions
+regions:
+  us-west-1:
+    priority: 1  # Primary region (lowest number = highest priority)
+    endpoint: https://us-west-1.ai-platform.example.com
+    load_balancer: us-west-1-lb.elb.amazonaws.com
+    prometheus_labels:
+      region: us-west-1
+  
+  us-east-1:
+    priority: 2  # Secondary region
+    endpoint: https://us-east-1.ai-platform.example.com
+    load_balancer: us-east-1-lb.elb.amazonaws.com
+    prometheus_labels:
+      region: us-east-1
+  
+  eu-west-1:
+    priority: 3  # Tertiary region
+    endpoint: https://eu-west-1.ai-platform.example.com
+    load_balancer: eu-west-1-lb.elb.amazonaws.com
+    prometheus_labels:
+      region: eu-west-1
+
+# Health check thresholds
+thresholds:
+  # Maximum acceptable error rate (5%)
+  max_error_rate: 0.05
+  
+  # Maximum acceptable p95 latency in milliseconds
+  max_latency_ms: 1000
+  
+  # Minimum availability (99%)
+  min_availability: 0.99
+  
+  # Number of consecutive failures before triggering failover
+  consecutive_failures: 3
+  
+  # Number of consecutive successes before triggering rollback to primary
+  consecutive_successes: 5
+
+# Prometheus alert names that trigger failover
+critical_alerts:
+  - HighErrorRate
+  - HighLatency
+  - ServiceDown
+  - GatewayUnhealthy
+  - DatabaseConnectionFailure

@@ -11,3 +11,9 @@ kubernetes>=28.1.0
 
 # HTTP requests for smoke tests and API validation
 requests>=2.31.0
+
+# AWS Route53 DNS management (for multi-region failover)
+boto3>=1.26.0
+
+# Google Cloud DNS management (for multi-region failover)
+google-cloud-dns>=0.34.0

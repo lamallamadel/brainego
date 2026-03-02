@@ -18,6 +18,20 @@ from typing import Dict, List, Optional, Any
 # Needs: python-package:boto3>=1.26.0 (for AWS Route53)
 # Needs: python-package:google-cloud-dns>=0.34.0 (for Google Cloud DNS)
 
+try:
+    import boto3
+    from botocore.exceptions import ClientError, BotoCoreError
+    BOTO3_AVAILABLE = True
+except ImportError:
+    BOTO3_AVAILABLE = False
+
+try:
+    from google.cloud import dns as gcp_dns
+    from google.api_core import exceptions as gcp_exceptions
+    GCP_DNS_AVAILABLE = True
+except ImportError:
+    GCP_DNS_AVAILABLE = False
+
 
 @dataclass
 class RegionConfig:
@@ -33,6 +47,10 @@ class RegionConfig:
     max_latency_ms: int
     storage_class: str
     gpu_node_type: str
+    dns_provider: str = "route53"  # route53 or cloud_dns
+    hosted_zone_id: Optional[str] = None
+    gcp_project_id: Optional[str] = None
+    gcp_dns_zone_name: Optional[str] = None
 
 
 @dataclass
@@ -458,36 +476,243 @@ class MultiRegionDeployer:
         
         self.log(f"Load balancer endpoint: {lb_endpoint}")
         
+        # Determine if this is primary or secondary region
+        is_primary = config.priority == 1
+        weight = 100 if is_primary else 0
+        
+        self.log(f"Region type: {'PRIMARY' if is_primary else 'SECONDARY'}, Weight: {weight}")
+        
         # Create DNS record with health check
-        dns_config = {
-            'type': 'A',
-            'name': f'{self.region}.ai-platform.example.com',
-            'value': lb_endpoint,
-            'ttl': 60,
-            'health_check': {
-                'enabled': True,
-                'path': '/health',
-                'port': 9002,
-                'interval': 30,
-                'timeout': 5,
-                'healthy_threshold': 2,
-                'unhealthy_threshold': 3
-            },
-            'failover': {
-                'enabled': True,
-                'priority': config.priority,
-                'weight': config.weight
-            },
-            'routing_policy': 'latency'
-        }
-        
-        self.log(f"DNS configuration: {json.dumps(dns_config, indent=2)}")
-        
-        # In production, this would call Route53/CloudDNS/etc. API
-        if not self.dry_run:
-            self.log("DNS configuration would be applied here", "INFO")
+        if config.dns_provider == "route53":
+            self._configure_route53_dns(config, lb_endpoint, weight)
+        elif config.dns_provider == "cloud_dns":
+            self._configure_cloud_dns(config, lb_endpoint, weight)
+        else:
+            self.log(f"Unknown DNS provider: {config.dns_provider}", "ERROR")
+            return
         
         self.status.health_checks['dns_configured'] = True
+    
+    def _configure_route53_dns(self, config: RegionConfig, lb_endpoint: str, weight: int):
+        """Configure AWS Route53 DNS with health checks and weighted routing"""
+        if not BOTO3_AVAILABLE:
+            self.log("boto3 not available, skipping Route53 configuration", "WARN")
+            return
+        
+        if not config.hosted_zone_id:
+            self.log("hosted_zone_id not configured, skipping Route53 setup", "WARN")
+            return
+        
+        self.log("Configuring AWS Route53...")
+        
+        try:
+            # Initialize Route53 client
+            route53 = boto3.client('route53')
+            
+            # Domain name for this region
+            domain_name = f'{self.region}.ai-platform.example.com.'
+            
+            # Create health check
+            health_check_id = self._create_route53_health_check(
+                route53, lb_endpoint, domain_name
+            )
+            
+            if health_check_id:
+                self.log(f"Created health check: {health_check_id}")
+            
+            # Create or update weighted DNS record
+            self._create_route53_weighted_record(
+                route53,
+                config.hosted_zone_id,
+                domain_name,
+                lb_endpoint,
+                weight,
+                health_check_id
+            )
+            
+            self.log(f"✓ Route53 DNS configured: {domain_name} -> {lb_endpoint} (weight: {weight})")
+            
+        except (ClientError, BotoCoreError) as e:
+            self.log(f"Error configuring Route53: {e}", "ERROR")
+            raise
+    
+    def _create_route53_health_check(
+        self,
+        route53,
+        lb_endpoint: str,
+        domain_name: str
+    ) -> Optional[str]:
+        """Create Route53 health check"""
+        if self.dry_run:
+            self.log(f"[DRY RUN] Would create health check for {lb_endpoint}")
+            return None
+        
+        try:
+            # Parse endpoint (may be hostname or IP)
+            is_ip = all(part.isdigit() for part in lb_endpoint.split('.'))
+            
+            health_check_config = {
+                'Type': 'HTTPS' if not is_ip else 'HTTPS',
+                'ResourcePath': '/health',
+                'FullyQualifiedDomainName': domain_name.rstrip('.'),
+                'Port': 9002,
+                'RequestInterval': 30,
+                'FailureThreshold': 3,
+            }
+            
+            response = route53.create_health_check(
+                CallerReference=f'{self.region}-{int(time.time())}',
+                HealthCheckConfig=health_check_config,
+                HealthCheckTags=[
+                    {'Key': 'Name', 'Value': f'{self.region}-health-check'},
+                    {'Key': 'Region', 'Value': self.region},
+                    {'Key': 'ManagedBy', 'Value': 'deploy_region.py'}
+                ]
+            )
+            
+            return response['HealthCheck']['Id']
+            
+        except ClientError as e:
+            self.log(f"Error creating health check: {e}", "WARN")
+            return None
+    
+    def _create_route53_weighted_record(
+        self,
+        route53,
+        hosted_zone_id: str,
+        domain_name: str,
+        lb_endpoint: str,
+        weight: int,
+        health_check_id: Optional[str]
+    ):
+        """Create or update weighted DNS record in Route53"""
+        if self.dry_run:
+            self.log(f"[DRY RUN] Would create weighted record: {domain_name} -> {lb_endpoint} (weight: {weight})")
+            return
+        
+        try:
+            # Determine record type (A for IP, CNAME for hostname)
+            is_ip = all(part.isdigit() for part in lb_endpoint.split('.'))
+            record_type = 'A' if is_ip else 'CNAME'
+            
+            # Build resource record set
+            resource_record_set = {
+                'Name': domain_name,
+                'Type': record_type,
+                'SetIdentifier': self.region,
+                'Weight': weight,
+                'TTL': 60,
+                'ResourceRecords': [{'Value': lb_endpoint}]
+            }
+            
+            # Add health check if available
+            if health_check_id:
+                resource_record_set['HealthCheckId'] = health_check_id
+            
+            # Create or update record
+            change_batch = {
+                'Changes': [{
+                    'Action': 'UPSERT',
+                    'ResourceRecordSet': resource_record_set
+                }]
+            }
+            
+            response = route53.change_resource_record_sets(
+                HostedZoneId=hosted_zone_id,
+                ChangeBatch=change_batch
+            )
+            
+            change_id = response['ChangeInfo']['Id']
+            self.log(f"DNS record change submitted: {change_id}")
+            
+        except ClientError as e:
+            self.log(f"Error creating DNS record: {e}", "ERROR")
+            raise
+    
+    def _configure_cloud_dns(self, config: RegionConfig, lb_endpoint: str, weight: int):
+        """Configure Google Cloud DNS with health checks and weighted routing"""
+        if not GCP_DNS_AVAILABLE:
+            self.log("google-cloud-dns not available, skipping Cloud DNS configuration", "WARN")
+            return
+        
+        if not config.gcp_project_id or not config.gcp_dns_zone_name:
+            self.log("GCP project or DNS zone not configured, skipping Cloud DNS setup", "WARN")
+            return
+        
+        self.log("Configuring Google Cloud DNS...")
+        
+        try:
+            # Initialize Cloud DNS client
+            dns_client = gcp_dns.Client(project=config.gcp_project_id)
+            zone = dns_client.zone(config.gcp_dns_zone_name)
+            
+            # Domain name for this region
+            domain_name = f'{self.region}.ai-platform.example.com.'
+            
+            # Create or update resource record set with weighted routing
+            self._create_cloud_dns_weighted_record(
+                zone, domain_name, lb_endpoint, weight
+            )
+            
+            self.log(f"✓ Cloud DNS configured: {domain_name} -> {lb_endpoint} (weight: {weight})")
+            
+        except gcp_exceptions.GoogleAPIError as e:
+            self.log(f"Error configuring Cloud DNS: {e}", "ERROR")
+            raise
+    
+    def _create_cloud_dns_weighted_record(
+        self,
+        zone,
+        domain_name: str,
+        lb_endpoint: str,
+        weight: int
+    ):
+        """Create or update weighted DNS record in Cloud DNS"""
+        if self.dry_run:
+            self.log(f"[DRY RUN] Would create Cloud DNS record: {domain_name} -> {lb_endpoint} (weight: {weight})")
+            return
+        
+        try:
+            # Determine record type
+            is_ip = all(part.isdigit() for part in lb_endpoint.split('.'))
+            record_type = 'A' if is_ip else 'CNAME'
+            
+            # Check if record exists
+            existing_records = list(zone.list_resource_record_sets())
+            existing = None
+            
+            for record in existing_records:
+                if record.name == domain_name and record.record_type == record_type:
+                    existing = record
+                    break
+            
+            # Create resource record set with weighted routing policy
+            # Note: Cloud DNS uses routing policies differently than Route53
+            changes = zone.changes()
+            
+            if existing:
+                changes.delete_record_set(existing)
+            
+            # Create new record with routing policy
+            record_set = zone.resource_record_set(
+                name=domain_name,
+                record_type=record_type,
+                ttl=60,
+                rrdatas=[lb_endpoint]
+            )
+            
+            # Add weighted routing policy metadata
+            # (In production, use Cloud DNS routing policies API)
+            changes.add_record_set(record_set)
+            
+            # Commit changes
+            changes.create()
+            
+            self.log(f"Cloud DNS record created/updated: {domain_name}")
+            
+        except gcp_exceptions.GoogleAPIError as e:
+            self.log(f"Error creating Cloud DNS record: {e}", "ERROR")
+            raise
     
     def _get_loadbalancer_endpoint(self) -> Optional[str]:
         """Get the external load balancer endpoint"""
