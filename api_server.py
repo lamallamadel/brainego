@@ -54,6 +54,7 @@ from safety_sanitizer import (
     redact_secrets_in_text,
     redact_secrets_in_prompt,
     redact_secrets_in_response,
+    redact_secrets_in_logs,
     sanitize_retrieved_context_chunks,
     sanitize_tool_output_payload,
     sanitize_untrusted_context_text,
@@ -66,8 +67,57 @@ logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
-logger = logging.getLogger(__name__)
+_base_logger = logging.getLogger(__name__)
+
+
+class SafeLogger:
+    """Logger wrapper that automatically redacts secrets from log messages."""
+    
+    def __init__(self, base_logger):
+        self._logger = base_logger
+    
+    def _safe_log(self, level, msg, *args, **kwargs):
+        """Apply secret redaction before logging."""
+        import sys
+        import traceback
+        
+        exc_info = kwargs.get('exc_info', False)
+        redacted_msg, redacted_args = redact_secrets_in_logs(msg, *args)
+        
+        if exc_info:
+            if exc_info is True:
+                exc_info = sys.exc_info()
+            
+            if isinstance(exc_info, tuple) and exc_info[0] is not None:
+                tb_lines = traceback.format_exception(*exc_info)
+                tb_str = ''.join(tb_lines)
+                redacted_tb, _ = redact_secrets_in_text(tb_str)
+                kwargs = dict(kwargs)
+                kwargs.pop('exc_info', None)
+                self._logger.log(level, redacted_msg + "\n[SANITIZED TRACEBACK]\n" + redacted_tb, *redacted_args, **kwargs)
+                return
+        
+        self._logger.log(level, redacted_msg, *redacted_args, **kwargs)
+    
+    def debug(self, msg, *args, **kwargs):
+        self._safe_log(logging.DEBUG, msg, *args, **kwargs)
+    
+    def info(self, msg, *args, **kwargs):
+        self._safe_log(logging.INFO, msg, *args, **kwargs)
+    
+    def warning(self, msg, *args, **kwargs):
+        self._safe_log(logging.WARNING, msg, *args, **kwargs)
+    
+    def error(self, msg, *args, **kwargs):
+        self._safe_log(logging.ERROR, msg, *args, **kwargs)
+    
+    def critical(self, msg, *args, **kwargs):
+        self._safe_log(logging.CRITICAL, msg, *args, **kwargs)
+
+
+logger = SafeLogger(_base_logger)
 # Configuration
+LOG_REQUEST_BODIES = os.getenv("LOG_REQUEST_BODIES", "false").lower() in ("true", "1", "yes")
 AGENT_ROUTER_CONFIG = os.getenv("AGENT_ROUTER_CONFIG", "configs/agent-router.yaml")
 QDRANT_HOST = os.getenv("QDRANT_HOST", "localhost")
 QDRANT_PORT = int(os.getenv("QDRANT_PORT", "6333"))
@@ -3409,8 +3459,8 @@ def _record_tool_call_audit(
             latency_ms=duration_ms,
             duration_ms=duration_ms,
             redacted_arguments=redacted_arguments,
-            request_payload=safe_request_payload,
-            response_payload=safe_response_payload,
+            request_payload=safe_request_payload if LOG_REQUEST_BODIES else {},
+            response_payload=safe_response_payload if LOG_REQUEST_BODIES else {},
             metadata=metadata,
         )
         _record_metering_event(
@@ -3535,7 +3585,7 @@ async def audit_request_middleware(request: Request, call_next):
                 latency_ms=duration_ms,
                 duration_ms=duration_ms,
                 redacted_arguments=redacted_arguments,
-                request_payload=safe_request_payload,
+                request_payload=safe_request_payload if LOG_REQUEST_BODIES else {},
                 metadata=metadata,
             )
             _record_metering_event(
@@ -3823,8 +3873,8 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
                 status_code=exc.status_code,
                 duration_ms=round((time.time() - started_at) * 1000, 2),
                 ok=False,
-                request_payload=payload,
-                response_payload=detail_payload,
+                request_payload=payload if LOG_REQUEST_BODIES else {},
+                response_payload=detail_payload if LOG_REQUEST_BODIES else {},
                 context=request.context or "api.v1.mcp",
                 error=str(detail_payload.get("reason") or detail_payload.get("error") or exc.detail),
             )
@@ -3889,8 +3939,8 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
                     status_code=status_code,
                     duration_ms=round((time.time() - started_at) * 1000, 2),
                     ok=True,
-                    request_payload=safe_request_payload,
-                    response_payload=guarded_payload,
+                    request_payload=safe_request_payload if LOG_REQUEST_BODIES else {},
+                    response_payload=guarded_payload if LOG_REQUEST_BODIES else {},
                     context=request.context or "api.v1.mcp",
                 )
             return guarded_payload
@@ -3928,8 +3978,8 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
                 status_code=exc.response.status_code,
                 duration_ms=round((time.time() - started_at) * 1000, 2),
                 ok=False,
-                request_payload=safe_request_payload,
-                response_payload={"error": safe_error_text},
+                request_payload=safe_request_payload if LOG_REQUEST_BODIES else {},
+                response_payload={"error": safe_error_text} if LOG_REQUEST_BODIES else {},
                 context=request.context or "api.v1.mcp",
                 error=safe_error_text,
             )
@@ -3950,8 +4000,8 @@ async def proxy_mcp_gateway(request: MCPGatewayRequest, raw_request: Request):
                 status_code=502,
                 duration_ms=round((time.time() - started_at) * 1000, 2),
                 ok=False,
-                request_payload=safe_request_payload,
-                response_payload={"error": safe_error_text},
+                request_payload=safe_request_payload if LOG_REQUEST_BODIES else {},
+                response_payload={"error": safe_error_text} if LOG_REQUEST_BODIES else {},
                 context=request.context or "api.v1.mcp",
                 error=safe_error_text,
             )
@@ -4413,8 +4463,8 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
             status_code=exc.status_code,
             duration_ms=round(latency_ms, 2),
             ok=False,
-            request_payload=safe_request_payload,
-            response_payload=denied_payload,
+            request_payload=safe_request_payload if LOG_REQUEST_BODIES else {},
+            response_payload=denied_payload if LOG_REQUEST_BODIES else {},
             context=request.context or "api.internal",
             error=str(
                 safe_detail_payload.get("reason")
@@ -4461,8 +4511,8 @@ async def internal_mcp_tool_call(request: MCPToolProxyRequest, raw_request: Requ
         status_code=result.status_code,
         duration_ms=round((time.time() - started_at) * 1000, 2),
         ok=result.ok,
-        request_payload=safe_request_payload,
-        response_payload=guarded_payload,
+        request_payload=safe_request_payload if LOG_REQUEST_BODIES else {},
+        response_payload=guarded_payload if LOG_REQUEST_BODIES else {},
         context=request.context or "api.internal",
         error=guarded_payload.get("error") if not result.ok else None,
     )

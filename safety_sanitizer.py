@@ -15,12 +15,22 @@ SECRET_PATTERNS = [
     re.compile(r"\bglpat-[A-Za-z0-9_-]{20,}\b"),
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}\b"),
     re.compile(r"\b(?:ghp|gho|ghu|ghs|github_pat)_[A-Za-z0-9_]{20,}\b"),
-    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
+    re.compile(r"\bbearer\s+[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b", re.IGNORECASE),
     re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"),
     re.compile(
-        r"(?i)\b(api[_ -]?key|token|secret|password|client_secret|aws_secret_access_key)\b"
-        r"\s*[:=]\s*[\"']?[A-Za-z0-9_\-\/+=]{6,}[\"']?"
+        r"\b(api[_ -]?key|token|secret|password|client_secret|aws_secret_access_key)\b"
+        r"\s*[:=]\s*[\"']?[A-Za-z0-9_\-\/+=]{6,}[\"']?",
+        re.IGNORECASE,
     ),
+    re.compile(r"\bTEST_SECRET_MARKER_[A-Za-z0-9_-]{10,}\b"),
+    re.compile(r"\bnpat-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bslack_[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bsq0atp-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bsq0csp-[A-Za-z0-9_-]{20,}\b"),
+    re.compile(r"\bEAA[A-Za-z0-9]{60,}\b"),
+    re.compile(r"\byarn_v1_[A-Za-z0-9_-]{40,}\b"),
+    re.compile(r"\b[A-Za-z0-9]{32,}\.atlasv1\.[A-Za-z0-9_-]{40,}\b"),
+    re.compile(r"\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b"),
 ]
 
 PII_PATTERNS = [
@@ -440,3 +450,33 @@ def wrap_rag_chunk_with_fence(chunk_text: str, chunk_index: int, chunk_id: str) 
         f"{chunk_text}\n"
         f"{RETRIEVED_CONTEXT_INSTRUCTION_FENCE}"
     )
+
+
+def redact_secrets_in_logs(message: str, *args: Any) -> Tuple[str, tuple]:
+    """
+    Redact secrets from log messages and arguments before writing to logs.
+    
+    Applied to all logger calls to prevent accidental leakage of secrets
+    in application logs, tool outputs, and LLM prompts/responses.
+    
+    Args:
+        message: Log message format string
+        *args: Arguments to be formatted into the message
+        
+    Returns:
+        Tuple of (redacted message format string, redacted args tuple)
+    """
+    redacted_message, _ = redact_secrets_in_text(str(message))
+    
+    redacted_args = []
+    for arg in args:
+        if isinstance(arg, str):
+            redacted_arg, _ = redact_secrets_in_text(arg)
+            redacted_args.append(redacted_arg)
+        elif isinstance(arg, (dict, list, tuple)):
+            redacted_arg, _ = redact_secrets(arg)
+            redacted_args.append(redacted_arg)
+        else:
+            redacted_args.append(arg)
+    
+    return redacted_message, tuple(redacted_args)
