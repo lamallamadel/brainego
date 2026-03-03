@@ -1,0 +1,655 @@
+{
+  "version": "hard_missing_context_v1",
+  "cases": [
+    {
+      "id": "eng_hard_mc_001",
+      "category": "config",
+      "question": "[config] Donne le détail non ingéré #1 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_002",
+      "category": "contracts",
+      "question": "[contracts] Donne le détail non ingéré #2 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_003",
+      "category": "ownership",
+      "question": "[ownership] Donne le détail non ingéré #3 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_004",
+      "category": "onboarding",
+      "question": "[onboarding] Donne le détail non ingéré #4 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_005",
+      "category": "code_navigation",
+      "question": "[code_navigation] Donne le détail non ingéré #5 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_006",
+      "category": "incidents",
+      "question": "[incidents] Donne le détail non ingéré #6 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_007",
+      "category": "config",
+      "question": "[config] Donne le détail non ingéré #7 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_008",
+      "category": "contracts",
+      "question": "[contracts] Donne le détail non ingéré #8 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_009",
+      "category": "ownership",
+      "question": "[ownership] Donne le détail non ingéré #9 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_010",
+      "category": "onboarding",
+      "question": "[onboarding] Donne le détail non ingéré #10 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_011",
+      "category": "code_navigation",
+      "question": "[code_navigation] Donne le détail non ingéré #11 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_012",
+      "category": "incidents",
+      "question": "[incidents] Donne le détail non ingéré #12 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_013",
+      "category": "config",
+      "question": "[config] Donne le détail non ingéré #13 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_014",
+      "category": "contracts",
+      "question": "[contracts] Donne le détail non ingéré #14 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_015",
+      "category": "ownership",
+      "question": "[ownership] Donne le détail non ingéré #15 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_016",
+      "category": "onboarding",
+      "question": "[onboarding] Donne le détail non ingéré #16 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_017",
+      "category": "code_navigation",
+      "question": "[code_navigation] Donne le détail non ingéré #17 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_018",
+      "category": "incidents",
+      "question": "[incidents] Donne le détail non ingéré #18 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_019",
+      "category": "config",
+      "question": "[config] Donne le détail non ingéré #19 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_020",
+      "category": "contracts",
+      "question": "[contracts] Donne le détail non ingéré #20 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_021",
+      "category": "ownership",
+      "question": "[ownership] Donne le détail non ingéré #21 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_022",
+      "category": "onboarding",
+      "question": "[onboarding] Donne le détail non ingéré #22 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_023",
+      "category": "code_navigation",
+      "question": "[code_navigation] Donne le détail non ingéré #23 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_024",
+      "category": "incidents",
+      "question": "[incidents] Donne le détail non ingéré #24 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_025",
+      "category": "config",
+      "question": "[config] Donne le détail non ingéré #25 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_026",
+      "category": "contracts",
+      "question": "[contracts] Donne le détail non ingéré #26 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_027",
+      "category": "ownership",
+      "question": "[ownership] Donne le détail non ingéré #27 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_028",
+      "category": "onboarding",
+      "question": "[onboarding] Donne le détail non ingéré #28 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_029",
+      "category": "code_navigation",
+      "question": "[code_navigation] Donne le détail non ingéré #29 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_030",
+      "category": "incidents",
+      "question": "[incidents] Donne le détail non ingéré #30 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_031",
+      "category": "config",
+      "question": "[config] Donne le détail non ingéré #31 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_032",
+      "category": "contracts",
+      "question": "[contracts] Donne le détail non ingéré #32 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_033",
+      "category": "ownership",
+      "question": "[ownership] Donne le détail non ingéré #33 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_034",
+      "category": "onboarding",
+      "question": "[onboarding] Donne le détail non ingéré #34 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_035",
+      "category": "code_navigation",
+      "question": "[code_navigation] Donne le détail non ingéré #35 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_036",
+      "category": "incidents",
+      "question": "[incidents] Donne le détail non ingéré #36 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_037",
+      "category": "config",
+      "question": "[config] Donne le détail non ingéré #37 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_038",
+      "category": "contracts",
+      "question": "[contracts] Donne le détail non ingéré #38 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_039",
+      "category": "ownership",
+      "question": "[ownership] Donne le détail non ingéré #39 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_040",
+      "category": "onboarding",
+      "question": "[onboarding] Donne le détail non ingéré #40 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_041",
+      "category": "code_navigation",
+      "question": "[code_navigation] Donne le détail non ingéré #41 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_042",
+      "category": "incidents",
+      "question": "[incidents] Donne le détail non ingéré #42 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_043",
+      "category": "config",
+      "question": "[config] Donne le détail non ingéré #43 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_044",
+      "category": "contracts",
+      "question": "[contracts] Donne le détail non ingéré #44 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_045",
+      "category": "ownership",
+      "question": "[ownership] Donne le détail non ingéré #45 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_046",
+      "category": "onboarding",
+      "question": "[onboarding] Donne le détail non ingéré #46 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_047",
+      "category": "code_navigation",
+      "question": "[code_navigation] Donne le détail non ingéré #47 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_048",
+      "category": "incidents",
+      "question": "[incidents] Donne le détail non ingéré #48 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_049",
+      "category": "config",
+      "question": "[config] Donne le détail non ingéré #49 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    },
+    {
+      "id": "eng_hard_mc_050",
+      "category": "contracts",
+      "question": "[contracts] Donne le détail non ingéré #50 (cas volontairement incomplet)",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_missing_context": {
+        "max_questions": 3,
+        "min_questions": 2,
+        "requires_ingestion_suggestion": true
+      }
+    }
+  ]
+}
