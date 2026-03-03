@@ -1,0 +1,2805 @@
+{
+  "version": "eng_v2",
+  "cases": [
+    {
+      "id": "eng_v2_q001",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #1 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q002",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #2 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q003",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #3 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q004",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #4 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q005",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #5 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q006",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #6 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q007",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #7 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q008",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #8 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q009",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #9 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q010",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #10 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q011",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #11 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q012",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #12 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q013",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #13 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q014",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #14 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q015",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #15 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q016",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #16 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q017",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #17 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q018",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #18 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q019",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #19 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q020",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #20 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q021",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #21 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q022",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #22 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q023",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #23 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q024",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #24 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q025",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #25 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q026",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #26 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q027",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #27 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q028",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #28 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q029",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #29 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q030",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #30 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q031",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #31 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q032",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #32 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q033",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #33 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q034",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #34 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q035",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #35 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q036",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #36 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q037",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #37 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q038",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #38 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q039",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #39 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q040",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #40 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q041",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #41 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q042",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #42 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q043",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #43 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q044",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #44 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q045",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #45 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q046",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #46 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q047",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #47 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q048",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #48 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q049",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #49 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q050",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #50 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q051",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #51 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q052",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #52 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q053",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #53 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q054",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #54 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q055",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #55 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q056",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #56 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q057",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #57 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q058",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #58 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q059",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #59 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q060",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #60 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q061",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #61 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q062",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #62 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q063",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #63 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q064",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #64 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q065",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #65 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q066",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #66 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q067",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #67 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q068",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #68 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q069",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #69 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q070",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #70 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q071",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #71 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q072",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #72 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q073",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #73 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q074",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #74 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q075",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #75 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q076",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #76 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q077",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #77 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q078",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #78 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q079",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #79 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q080",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #80 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q081",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #81 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q082",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #82 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q083",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #83 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q084",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #84 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q085",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #85 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q086",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #86 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q087",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #87 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q088",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #88 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q089",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #89 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q090",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #90 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q091",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #91 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q092",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #92 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q093",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #93 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q094",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #94 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q095",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #95 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q096",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #96 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q097",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #97 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q098",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #98 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q099",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #99 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q100",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #100 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q101",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #101 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q102",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #102 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q103",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #103 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q104",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #104 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q105",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #105 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q106",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #106 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q107",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #107 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q108",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #108 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q109",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #109 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q110",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #110 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q111",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #111 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q112",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #112 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q113",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #113 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q114",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #114 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q115",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #115 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q116",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #116 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q117",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #117 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q118",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #118 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q119",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #119 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q120",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #120 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q121",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #121 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q122",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #122 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q123",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #123 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q124",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #124 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q125",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #125 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q126",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #126 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q127",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #127 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q128",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #128 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q129",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #129 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q130",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #130 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q131",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #131 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q132",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #132 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q133",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #133 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q134",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #134 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q135",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #135 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q136",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #136 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q137",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #137 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q138",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #138 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q139",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #139 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q140",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #140 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q141",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #141 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q142",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #142 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q143",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #143 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q144",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #144 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q145",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #145 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q146",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #146 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q147",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #147 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q148",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #148 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q149",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #149 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q150",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #150 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q151",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #151 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q152",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #152 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q153",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #153 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q154",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #154 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q155",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #155 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q156",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #156 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q157",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #157 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q158",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #158 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q159",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #159 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q160",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #160 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q161",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #161 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q162",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #162 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q163",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #163 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q164",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #164 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q165",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #165 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q166",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #166 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q167",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #167 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q168",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #168 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q169",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #169 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q170",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #170 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q171",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #171 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q172",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #172 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q173",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #173 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q174",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #174 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q175",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #175 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q176",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #176 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q177",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #177 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q178",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #178 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q179",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #179 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q180",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #180 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q181",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #181 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q182",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #182 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q183",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #183 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q184",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #184 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q185",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #185 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q186",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #186 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q187",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #187 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q188",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #188 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q189",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #189 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q190",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #190 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q191",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #191 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "api_server.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q192",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #192 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "rag_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q193",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #193 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "document_ingestion_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q194",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #194 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "workspace_service.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q195",
+      "category": "incidents",
+      "question": "[incidents] Où est défini l'élément engineering #195 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    },
+    {
+      "id": "eng_v2_q196",
+      "category": "config",
+      "question": "[config] Où est défini l'élément engineering #196 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "CONTRATS.md",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q197",
+      "category": "contracts",
+      "question": "[contracts] Où est défini l'élément engineering #197 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "configs/agent-router.yaml",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q198",
+      "category": "ownership",
+      "question": "[ownership] Où est défini l'élément engineering #198 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "Makefile.max",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q199",
+      "category": "onboarding",
+      "question": "[onboarding] Où est défini l'élément engineering #199 et comment est-il utilisé ?",
+      "answerable": true,
+      "workspace_id": "ws-eng-a",
+      "expected_behavior": "grounded_answer",
+      "expected_citation_type": "path@commit",
+      "expected_sources": [
+        {
+          "path": "tests/unit/test_citation_support_validator.py",
+          "commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    },
+    {
+      "id": "eng_v2_q200",
+      "category": "code_navigation",
+      "question": "[code_navigation] Où est défini l'élément engineering #200 et comment est-il utilisé ?",
+      "answerable": false,
+      "workspace_id": "ws-eng-b",
+      "expected_behavior": "missing_context",
+      "expected_citation_type": null,
+      "expected_sources": []
+    }
+  ]
+}
