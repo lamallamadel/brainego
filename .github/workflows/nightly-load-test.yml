@@ -1,0 +1,264 @@
+name: K6 Load Testing - Nightly Extended Suite
+
+on:
+  schedule:
+    # Run at 2 AM UTC every day
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Target environment'
+        required: false
+        default: 'staging'
+        type: choice
+        options:
+          - staging
+          - production
+      force_run:
+        description: 'Force run even if health checks fail'
+        required: false
+        default: false
+        type: boolean
+
+env:
+  STAGING_BASE_URL: ${{ secrets.STAGING_BASE_URL || 'https://api-staging.brainego.io' }}
+  STAGING_GATEWAY_URL: ${{ secrets.STAGING_GATEWAY_URL || 'https://gateway-staging.brainego.io' }}
+  STAGING_MCP_URL: ${{ secrets.STAGING_MCP_URL || 'https://mcp-staging.brainego.io' }}
+  PROMETHEUS_PUSHGATEWAY: ${{ secrets.PROMETHEUS_PUSHGATEWAY || 'http://pushgateway.brainego.io:9091' }}
+  SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+jobs:
+  nightly-load-test:
+    name: K6 Nightly Extended Load Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install dependencies
+        run: |
+          # Install k6
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6 jq bc curl
+          
+          # Verify installations
+          k6 version
+          jq --version
+          bc --version
+      
+      - name: Display test configuration
+        run: |
+          echo "=== Nightly Load Test Configuration ==="
+          echo "Suite: nightly"
+          echo "Environment: ${{ github.event.inputs.environment || 'staging' }}"
+          echo "Base URL: $STAGING_BASE_URL"
+          echo "Gateway URL: $STAGING_GATEWAY_URL"
+          echo "MCP URL: $STAGING_MCP_URL"
+          echo "Pushgateway: $PROMETHEUS_PUSHGATEWAY"
+          echo "Scheduled: ${{ github.event_name == 'schedule' }}"
+          echo "Timestamp: $(date -u +"%Y-%m-%d %H:%M:%S UTC")"
+          echo "======================================="
+      
+      - name: Run k6 nightly extended load test suite
+        id: load_test
+        continue-on-error: true
+        env:
+          STAGING_BASE_URL: ${{ env.STAGING_BASE_URL }}
+          STAGING_GATEWAY_URL: ${{ env.STAGING_GATEWAY_URL }}
+          STAGING_MCP_URL: ${{ env.STAGING_MCP_URL }}
+          PROMETHEUS_PUSHGATEWAY: ${{ env.PROMETHEUS_PUSHGATEWAY }}
+          SUITE_TYPE: nightly
+        run: |
+          chmod +x ./scripts/load_test/run_k6_nightly_suite.sh
+          ./scripts/load_test/run_k6_nightly_suite.sh
+      
+      - name: Upload test results as JSON artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: nightly-load-test-results-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            load_test_results/*.json
+            load_test_results/*.txt
+            load_test_results/*.md
+          retention-days: 90
+          compression-level: 9
+      
+      - name: Set artifact URL
+        if: always()
+        id: artifact_url
+        run: |
+          ARTIFACT_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}#artifacts"
+          echo "artifact_url=$ARTIFACT_URL" >> $GITHUB_OUTPUT
+          echo "Artifact URL: $ARTIFACT_URL"
+      
+      - name: Send Slack notification on failure
+        if: failure()
+        env:
+          SLACK_WEBHOOK_URL: ${{ env.SLACK_WEBHOOK_URL }}
+          ARTIFACT_URL: ${{ steps.artifact_url.outputs.artifact_url }}
+        run: |
+          if [ -z "$SLACK_WEBHOOK_URL" ]; then
+            echo "⚠️  SLACK_WEBHOOK_URL not configured, skipping Slack notification"
+            exit 0
+          fi
+          
+          # Read failure report if exists
+          REPORT_FILE="load_test_results/slo_failure_report.md"
+          
+          # Extract key metrics from report
+          if [ -f "$REPORT_FILE" ]; then
+            SUCCESS_RATIO=$(grep -oP 'Success Ratio.*?\|\s*\K[0-9.]+(?=%)' "$REPORT_FILE" | head -1 || echo "N/A")
+            ERROR_RATE=$(grep -oP 'Error Rate.*?\|\s*\K[0-9.]+(?=%)' "$REPORT_FILE" | head -1 || echo "N/A")
+            CHAT_P99=$(grep -oP 'Chat P99 Latency.*?\|\s*\K[0-9.]+(?=ms)' "$REPORT_FILE" | head -1 || echo "N/A")
+            RAG_P99=$(grep -oP 'RAG P99 Latency.*?\|\s*\K[0-9.]+(?=ms)' "$REPORT_FILE" | head -1 || echo "N/A")
+            MCP_P99=$(grep -oP 'MCP/Tools P99 Latency.*?\|\s*\K[0-9.]+(?=ms)' "$REPORT_FILE" | head -1 || echo "N/A")
+            VIOLATIONS=$(grep -oP 'FAILED - \K[0-9]+' "$REPORT_FILE" | head -1 || echo "Unknown")
+          else
+            SUCCESS_RATIO="N/A"
+            ERROR_RATE="N/A"
+            CHAT_P99="N/A"
+            RAG_P99="N/A"
+            MCP_P99="N/A"
+            VIOLATIONS="Unknown"
+          fi
+          
+          # Build Slack message payload
+          TIMESTAMP=$(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          
+          SLACK_PAYLOAD=$(cat <<EOF
+          {
+            "username": "K6 Nightly Load Test",
+            "icon_emoji": ":warning:",
+            "attachments": [
+              {
+                "color": "danger",
+                "title": "🚨 Nightly Load Test Failed - SLO Violations Detected",
+                "title_link": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+                "fields": [
+                  {
+                    "title": "Suite",
+                    "value": "nightly",
+                    "short": true
+                  },
+                  {
+                    "title": "Environment",
+                    "value": "${{ github.event.inputs.environment || 'staging' }}",
+                    "short": true
+                  },
+                  {
+                    "title": "Violations",
+                    "value": "${VIOLATIONS} SLO violation(s)",
+                    "short": true
+                  },
+                  {
+                    "title": "Timestamp",
+                    "value": "${TIMESTAMP}",
+                    "short": true
+                  },
+                  {
+                    "title": "Success Ratio (Target: ≥99.8%)",
+                    "value": "${SUCCESS_RATIO}%",
+                    "short": true
+                  },
+                  {
+                    "title": "Error Rate (Target: <0.2%)",
+                    "value": "${ERROR_RATE}%",
+                    "short": true
+                  },
+                  {
+                    "title": "Chat P99 (Target: <8s)",
+                    "value": "${CHAT_P99}ms",
+                    "short": true
+                  },
+                  {
+                    "title": "RAG P99 (Target: <1.5s)",
+                    "value": "${RAG_P99}ms",
+                    "short": true
+                  },
+                  {
+                    "title": "MCP/Tools P99 (Target: <1.5s)",
+                    "value": "${MCP_P99}ms",
+                    "short": true
+                  }
+                ],
+                "actions": [
+                  {
+                    "type": "button",
+                    "text": "View Workflow Run",
+                    "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+                  },
+                  {
+                    "type": "button",
+                    "text": "Download Artifacts",
+                    "url": "${ARTIFACT_URL}"
+                  }
+                ],
+                "footer": "brainego K6 Load Testing",
+                "footer_icon": "https://k6.io/favicon.ico",
+                "ts": $(date +%s)
+              }
+            ]
+          }
+          EOF
+          )
+          
+          # Send to Slack
+          HTTP_CODE=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H 'Content-Type: application/json' \
+            -d "$SLACK_PAYLOAD" \
+            "$SLACK_WEBHOOK_URL")
+          
+          if [ "$HTTP_CODE" = "200" ]; then
+            echo "✅ Slack notification sent successfully"
+          else
+            echo "⚠️  Failed to send Slack notification (HTTP $HTTP_CODE)"
+            echo "This is not a critical failure, continuing..."
+          fi
+      
+      - name: Create issue on SLO failure
+        if: failure()
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            
+            // Find and read the failure report
+            const resultsDir = 'load_test_results';
+            const reportPath = path.join(resultsDir, 'slo_failure_report.md');
+            
+            let reportBody = '';
+            if (fs.existsSync(reportPath)) {
+              reportBody = fs.readFileSync(reportPath, 'utf8');
+            } else {
+              reportBody = `## 🚨 Nightly Load Test Failed\n\n` +
+                `**Severity:** WARNING\n` +
+                `**Suite:** nightly\n` +
+                `**Environment:** ${{ github.event.inputs.environment || 'staging' }}\n` +
+                `**Scheduled:** ${{ github.event_name == 'schedule' }}\n` +
+                `**Workflow:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n` +
+                `**Artifacts:** ${{ steps.artifact_url.outputs.artifact_url }}\n` +
+                `**Timestamp:** ${new Date().toISOString()}\n\n` +
+                `Nightly extended load test SLO thresholds were violated. See workflow logs and artifacts for details.\n`;
+            }
+            
+            const title = `🚨 Nightly Load Test SLO Failure - ${new Date().toISOString().split('T')[0]}`;
+            
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: title,
+              body: reportBody,
+              labels: ['performance', 'slo-violation', 'nightly-test', 'load-test']
+            });
