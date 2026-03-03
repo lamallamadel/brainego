@@ -11,14 +11,15 @@ dashboards = [
     "drift-kl-divergence.json",
     "drift-psi-trends.json",
     "drift-accuracy-tracking.json",
-    "lora-version-tracking.json"
+    "lora-version-tracking.json",
+    "sre-incident-response.json"
 ]
 
 all_valid = True
 for dashboard in dashboards:
     dashboard_path = dashboard_dir / dashboard
     try:
-        with open(dashboard_path, 'r') as f:
+        with open(dashboard_path, 'r', encoding='utf-8') as f:
             json.load(f)
         print(f"✓ {dashboard}: Valid JSON")
     except Exception as e:

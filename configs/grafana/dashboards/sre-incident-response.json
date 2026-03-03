@@ -47,511 +47,8 @@
   "panels": [
     {
       "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1
-              },
-              {
-                "color": "red",
-                "value": 5
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 6,
-        "x": 0,
-        "y": 0
-      },
-      "id": 1,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "values": false,
-          "calcs": ["lastNotNull"],
-          "fields": ""
-        },
-        "textMode": "value_and_name"
-      },
-      "pluginVersion": "10.2.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "Prometheus"
-          },
-          "expr": "count(ALERTS{alertstate=\"firing\"})",
-          "legendFormat": "Firing Alerts",
-          "refId": "A"
-        }
-      ],
-      "title": "Current Firing Alerts",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "orange",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 6,
-        "x": 6,
-        "y": 0
-      },
-      "id": 2,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "values": false,
-          "calcs": ["lastNotNull"],
-          "fields": ""
-        },
-        "textMode": "value_and_name"
-      },
-      "pluginVersion": "10.2.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "Prometheus"
-          },
-          "expr": "count(ALERTS{alertstate=\"firing\", severity=\"critical\"})",
-          "legendFormat": "Critical Alerts",
-          "refId": "A"
-        }
-      ],
-      "title": "Critical Alerts",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 6,
-        "x": 12,
-        "y": 0
-      },
-      "id": 3,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "values": false,
-          "calcs": ["lastNotNull"],
-          "fields": ""
-        },
-        "textMode": "value_and_name"
-      },
-      "pluginVersion": "10.2.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "Prometheus"
-          },
-          "expr": "count(ALERTS{alertstate=\"firing\", severity=\"warning\"})",
-          "legendFormat": "Warning Alerts",
-          "refId": "A"
-        }
-      ],
-      "title": "Warning Alerts",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [
-            {
-              "options": {
-                "0": {
-                  "color": "green",
-                  "index": 0,
-                  "text": "Healthy"
-                }
-              },
-              "type": "value"
-            },
-            {
-              "options": {
-                "from": 1,
-                "result": {
-                  "color": "red",
-                  "index": 1,
-                  "text": "Incident"
-                },
-                "to": 999
-              },
-              "type": "range"
-            }
-          ],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "red",
-                "value": 1
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 6,
-        "w": 6,
-        "x": 18,
-        "y": 0
-      },
-      "id": 4,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": {
-          "values": false,
-          "calcs": ["lastNotNull"],
-          "fields": ""
-        },
-        "textMode": "value_and_name"
-      },
-      "pluginVersion": "10.2.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "Prometheus"
-          },
-          "expr": "count(ALERTS{alertstate=\"firing\", severity=\"critical\", incident=\"true\"})",
-          "legendFormat": "Active Incidents",
-          "refId": "A"
-        }
-      ],
-      "title": "System Status",
-      "type": "stat"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            }
-          },
-          "mappings": []
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "critical"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "red",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          },
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "warning"
-            },
-            "properties": [
-              {
-                "id": "color",
-                "value": {
-                  "fixedColor": "yellow",
-                  "mode": "fixed"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 0,
-        "y": 6
-      },
-      "id": 5,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "values": ["value"]
-        },
-        "pieType": "donut",
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "Prometheus"
-          },
-          "expr": "count(ALERTS{alertstate=\"firing\"}) by (severity)",
-          "legendFormat": "{{severity}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Alerts by Severity",
-      "type": "piechart"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            }
-          },
-          "mappings": []
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 8,
-        "y": 6
-      },
-      "id": 6,
-      "options": {
-        "legend": {
-          "displayMode": "table",
-          "placement": "right",
-          "showLegend": true,
-          "values": ["value"]
-        },
-        "pieType": "donut",
-        "tooltip": {
-          "mode": "single",
-          "sort": "none"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "Prometheus"
-          },
-          "expr": "count(ALERTS{alertstate=\"firing\"}) by (component)",
-          "legendFormat": "{{component}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Alerts by Component",
-      "type": "piechart"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "palette-classic"
-          },
-          "custom": {
-            "axisCenteredZero": false,
-            "axisColorMode": "text",
-            "axisLabel": "",
-            "axisPlacement": "auto",
-            "barAlignment": 0,
-            "drawStyle": "line",
-            "fillOpacity": 20,
-            "gradientMode": "opacity",
-            "hideFrom": {
-              "tooltip": false,
-              "viz": false,
-              "legend": false
-            },
-            "lineInterpolation": "smooth",
-            "lineWidth": 2,
-            "pointSize": 5,
-            "scaleDistribution": {
-              "type": "linear"
-            },
-            "showPoints": "never",
-            "spanNulls": false,
-            "stacking": {
-              "group": "A",
-              "mode": "none"
-            },
-            "thresholdsStyle": {
-              "mode": "off"
-            }
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              }
-            ]
-          },
-          "unit": "short"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 8,
-        "x": 16,
-        "y": 6
-      },
-      "id": 7,
-      "options": {
-        "legend": {
-          "calcs": ["mean", "max"],
-          "displayMode": "table",
-          "placement": "bottom",
-          "showLegend": true
-        },
-        "tooltip": {
-          "mode": "multi",
-          "sort": "desc"
-        }
-      },
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "Prometheus"
-          },
-          "expr": "sum(rate(ALERTS_total[5m])) by (severity)",
-          "legendFormat": "{{severity}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Alert Rate (Last 5m)",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
+        "type": "alertmanager",
+        "uid": "Alertmanager"
       },
       "fieldConfig": {
         "defaults": {
@@ -601,6 +98,10 @@
                       "warning": {
                         "color": "yellow",
                         "index": 1
+                      },
+                      "info": {
+                        "color": "blue",
+                        "index": 2
                       }
                     },
                     "type": "value"
@@ -612,15 +113,30 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Runbook"
+              "options": "State"
             },
             "properties": [
               {
-                "id": "links",
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-background"
+                }
+              },
+              {
+                "id": "mappings",
                 "value": [
                   {
-                    "title": "View Runbook",
-                    "url": "${__data.fields.runbook_url}"
+                    "options": {
+                      "active": {
+                        "color": "red",
+                        "index": 0
+                      },
+                      "suppressed": {
+                        "color": "orange",
+                        "index": 1
+                      }
+                    },
+                    "type": "value"
                   }
                 ]
               }
@@ -632,9 +148,9 @@
         "h": 10,
         "w": 24,
         "x": 0,
-        "y": 14
+        "y": 0
       },
-      "id": 8,
+      "id": 1,
       "options": {
         "cellHeight": "sm",
         "footer": {
@@ -655,42 +171,35 @@
       "targets": [
         {
           "datasource": {
-            "type": "prometheus",
-            "uid": "Prometheus"
+            "type": "alertmanager",
+            "uid": "Alertmanager"
           },
-          "expr": "ALERTS{alertstate=\"firing\"}",
-          "format": "table",
-          "instant": true,
           "refId": "A"
         }
       ],
-      "title": "Active Alerts",
+      "title": "Current Alert List (Alertmanager)",
       "transformations": [
         {
           "id": "organize",
           "options": {
-            "excludeByName": {
-              "Time": true,
-              "__name__": true,
-              "alertstate": true,
-              "job": true,
-              "instance": true
-            },
+            "excludeByName": {},
             "indexByName": {
               "alertname": 0,
               "severity": 1,
-              "component": 2,
-              "summary": 3,
-              "description": 4,
-              "runbook_url": 5
+              "state": 2,
+              "labels.service": 3,
+              "labels.instance": 4,
+              "summary": 5,
+              "startsAt": 6
             },
             "renameByName": {
               "alertname": "Alert",
               "severity": "Severity",
-              "component": "Component",
+              "state": "State",
+              "labels.service": "Service",
+              "labels.instance": "Instance",
               "summary": "Summary",
-              "description": "Description",
-              "runbook_url": "Runbook"
+              "startsAt": "Started At"
             }
           }
         }
@@ -710,7 +219,247 @@
           "custom": {
             "axisCenteredZero": false,
             "axisColorMode": "text",
-            "axisLabel": "Minutes",
+            "axisLabel": "Error Rate",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "opacity",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "mappings": [],
+          "max": 1,
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 0.01
+              },
+              {
+                "color": "red",
+                "value": 0.05
+              }
+            ]
+          },
+          "unit": "percentunit"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "id": 2,
+      "options": {
+        "legend": {
+          "calcs": ["last", "mean", "max"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "expr": "sum(rate(http_requests_total{status=~\"5..\"}[5m])) by (service) / sum(rate(http_requests_total[5m])) by (service)",
+          "legendFormat": "{{service}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Error Rate by Service (5xx / Total)",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Latency (s)",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "drawStyle": "line",
+            "fillOpacity": 20,
+            "gradientMode": "opacity",
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "lineInterpolation": "smooth",
+            "lineWidth": 2,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "never",
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "line"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 2
+              }
+            ]
+          },
+          "unit": "s"
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "P99.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "red",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 3
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "P95.*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "orange",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.lineWidth",
+                "value": 2
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "id": 3,
+      "options": {
+        "legend": {
+          "calcs": ["last", "mean", "max"],
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, endpoint))",
+          "legendFormat": "P99 - {{endpoint}}",
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket[5m])) by (le, endpoint))",
+          "legendFormat": "P95 - {{endpoint}}",
+          "refId": "B"
+        }
+      ],
+      "title": "Latency P95/P99 by Endpoint",
+      "type": "timeseries"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "Restarts",
             "axisPlacement": "auto",
             "barAlignment": 0,
             "drawStyle": "bars",
@@ -747,15 +496,15 @@
               },
               {
                 "color": "yellow",
-                "value": 15
+                "value": 1
               },
               {
                 "color": "red",
-                "value": 30
+                "value": 3
               }
             ]
           },
-          "unit": "m"
+          "unit": "short"
         },
         "overrides": []
       },
@@ -763,12 +512,12 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 24
+        "y": 18
       },
-      "id": 9,
+      "id": 4,
       "options": {
         "legend": {
-          "calcs": ["mean", "max", "last"],
+          "calcs": ["sum", "max"],
           "displayMode": "table",
           "placement": "bottom",
           "showLegend": true
@@ -784,12 +533,12 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "avg(incident_mttr_minutes) by (incident_type)",
-          "legendFormat": "{{incident_type}}",
+          "expr": "sum(changes(container_last_seen{container!=\"POD\",container!=\"\"}[1h])) by (container, pod)",
+          "legendFormat": "{{pod}}/{{container}}",
           "refId": "A"
         }
       ],
-      "title": "Mean Time to Recovery (MTTR) by Incident Type",
+      "title": "Container Restart Count (Last 1h)",
       "type": "timeseries"
     },
     {
@@ -802,152 +551,12 @@
           "color": {
             "mode": "thresholds"
           },
-          "mappings": [],
-          "max": 60,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 15
-              },
-              {
-                "color": "orange",
-                "value": 30
-              },
-              {
-                "color": "red",
-                "value": 45
-              }
-            ]
-          },
-          "unit": "m"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 12,
-        "y": 24
-      },
-      "id": 10,
-      "options": {
-        "orientation": "auto",
-        "reduceOptions": {
-          "values": false,
-          "calcs": ["mean"],
-          "fields": ""
-        },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
-      },
-      "pluginVersion": "10.2.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "Prometheus"
-          },
-          "expr": "avg(incident_mttr_minutes{incident_type=\"latency_spike\"})",
-          "legendFormat": "Latency Spike",
-          "refId": "A"
-        }
-      ],
-      "title": "MTTR - Latency Spikes",
-      "type": "gauge"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
-          "mappings": [],
-          "max": 60,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": null
-              },
-              {
-                "color": "yellow",
-                "value": 15
-              },
-              {
-                "color": "orange",
-                "value": 30
-              },
-              {
-                "color": "red",
-                "value": 45
-              }
-            ]
-          },
-          "unit": "m"
-        },
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 18,
-        "y": 24
-      },
-      "id": 11,
-      "options": {
-        "orientation": "auto",
-        "reduceOptions": {
-          "values": false,
-          "calcs": ["mean"],
-          "fields": ""
-        },
-        "showThresholdLabels": false,
-        "showThresholdMarkers": true
-      },
-      "pluginVersion": "10.2.2",
-      "targets": [
-        {
-          "datasource": {
-            "type": "prometheus",
-            "uid": "Prometheus"
-          },
-          "expr": "avg(incident_mttr_minutes{incident_type=\"memory_leak\"})",
-          "legendFormat": "Memory Leak",
-          "refId": "A"
-        }
-      ],
-      "title": "MTTR - Memory Leaks",
-      "type": "gauge"
-    },
-    {
-      "datasource": {
-        "type": "prometheus",
-        "uid": "Prometheus"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": {
-            "mode": "thresholds"
-          },
           "custom": {
-            "align": "left",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "inspect": false
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            }
           },
           "mappings": [],
           "thresholds": {
@@ -956,56 +565,28 @@
               {
                 "color": "green",
                 "value": null
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Status"
-            },
-            "properties": [
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-background"
-                }
               },
               {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "investigating": {
-                        "color": "orange",
-                        "index": 0
-                      },
-                      "mitigating": {
-                        "color": "yellow",
-                        "index": 1
-                      },
-                      "resolved": {
-                        "color": "green",
-                        "index": 2
-                      }
-                    },
-                    "type": "value"
-                  }
-                ]
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "red",
+                "value": 3
               }
             ]
-          }
-        ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
       },
       "gridPos": {
-        "h": 10,
-        "w": 24,
-        "x": 0,
-        "y": 32
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
       },
-      "id": 12,
+      "id": 5,
       "options": {
         "cellHeight": "sm",
         "footer": {
@@ -1018,7 +599,7 @@
         "sortBy": [
           {
             "desc": true,
-            "displayName": "Started"
+            "displayName": "Restarts"
           }
         ]
       },
@@ -1029,43 +610,30 @@
             "type": "prometheus",
             "uid": "Prometheus"
           },
-          "expr": "ALERTS{alertstate=\"firing\", incident=\"true\"}",
+          "expr": "sum(changes(container_last_seen{container!=\"POD\",container!=\"\"}[1h])) by (container, pod)",
           "format": "table",
           "instant": true,
+          "legendFormat": "{{pod}}/{{container}}",
           "refId": "A"
         }
       ],
-      "title": "Ongoing Incidents",
+      "title": "Container Restarts - Table View",
       "transformations": [
         {
           "id": "organize",
           "options": {
             "excludeByName": {
-              "Time": true,
-              "__name__": true,
-              "alertstate": true,
-              "job": true,
-              "instance": true
+              "Time": true
             },
             "indexByName": {
-              "incident_id": 0,
-              "alertname": 1,
-              "incident_type": 2,
-              "severity": 3,
-              "started_at": 4,
-              "status": 5,
-              "assigned_to": 6,
-              "runbook_url": 7
+              "pod": 0,
+              "container": 1,
+              "Value": 2
             },
             "renameByName": {
-              "incident_id": "Incident ID",
-              "alertname": "Alert",
-              "incident_type": "Type",
-              "severity": "Severity",
-              "started_at": "Started",
-              "status": "Status",
-              "assigned_to": "Assigned To",
-              "runbook_url": "Runbook"
+              "pod": "Pod",
+              "container": "Container",
+              "Value": "Restarts"
             }
           }
         }
@@ -1077,42 +645,252 @@
         "type": "prometheus",
         "uid": "Prometheus"
       },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "orange",
+                "value": 85
+              },
+              {
+                "color": "red",
+                "value": 95
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
       "gridPos": {
-        "h": 12,
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 26
+      },
+      "id": 6,
+      "options": {
+        "calculate": false,
+        "cellGap": 2,
+        "cellValues": {
+          "decimals": 1
+        },
+        "color": {
+          "exponent": 0.5,
+          "fill": "dark-orange",
+          "max": 100,
+          "min": 0,
+          "mode": "scheme",
+          "reverse": false,
+          "scale": "exponential",
+          "scheme": "RdYlGn",
+          "steps": 128
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        },
+        "filterValues": {
+          "le": 1e-9
+        },
+        "legend": {
+          "show": true
+        },
+        "rowsFrame": {
+          "layout": "auto"
+        },
+        "tooltip": {
+          "show": true,
+          "yHistogram": false
+        },
+        "yAxis": {
+          "axisPlacement": "left",
+          "reverse": false,
+          "unit": "short"
+        }
+      },
+      "pluginVersion": "10.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "expr": "avg(rate(container_cpu_usage_seconds_total{container!=\"POD\",container!=\"\"}[5m])) by (container, pod) * 100",
+          "format": "time_series",
+          "legendFormat": "{{pod}}/{{container}}",
+          "refId": "A"
+        }
+      ],
+      "title": "CPU Saturation Heatmap per Container",
+      "type": "heatmap"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "hideFrom": {
+              "tooltip": false,
+              "viz": false,
+              "legend": false
+            },
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "orange",
+                "value": 85
+              },
+              {
+                "color": "red",
+                "value": 95
+              }
+            ]
+          },
+          "unit": "percent"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 26
+      },
+      "id": 7,
+      "options": {
+        "calculate": false,
+        "cellGap": 2,
+        "cellValues": {
+          "decimals": 1
+        },
+        "color": {
+          "exponent": 0.5,
+          "fill": "dark-orange",
+          "max": 100,
+          "min": 0,
+          "mode": "scheme",
+          "reverse": false,
+          "scale": "exponential",
+          "scheme": "RdYlGn",
+          "steps": 128
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        },
+        "filterValues": {
+          "le": 1e-9
+        },
+        "legend": {
+          "show": true
+        },
+        "rowsFrame": {
+          "layout": "auto"
+        },
+        "tooltip": {
+          "show": true,
+          "yHistogram": false
+        },
+        "yAxis": {
+          "axisPlacement": "left",
+          "reverse": false,
+          "unit": "short"
+        }
+      },
+      "pluginVersion": "10.2.2",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "expr": "(avg(container_memory_working_set_bytes{container!=\"POD\",container!=\"\"}) by (container, pod) / avg(container_spec_memory_limit_bytes{container!=\"POD\",container!=\"\"}) by (container, pod)) * 100",
+          "format": "time_series",
+          "legendFormat": "{{pod}}/{{container}}",
+          "refId": "A"
+        }
+      ],
+      "title": "Memory Saturation Heatmap per Container",
+      "type": "heatmap"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "gridPos": {
+        "h": 14,
         "w": 24,
         "x": 0,
-        "y": 42
+        "y": 36
       },
-      "id": 13,
+      "id": 8,
       "options": {
         "code": {
           "language": "markdown",
           "showLineNumbers": false,
           "showMiniMap": false
         },
-        "content": "## 📚 SRE Runbooks\n\n### Incident Response Procedures\n- [Incident Response Guide](https://github.com/organization/repo/blob/main/docs/runbooks/INCIDENT_RESPONSE.md) - Escalation matrix, on-call procedures, incident lifecycle\n- [Rollback Procedures](https://github.com/organization/repo/blob/main/docs/runbooks/ROLLBACK_PROCEDURES.md) - Blue-green rollback, config rollback, database rollback\n\n### Debug Playbooks\n- [Latency Spike Debugging](https://github.com/organization/repo/blob/main/docs/runbooks/DEBUG_LATENCY_SPIKE.md) - Investigate and resolve high latency issues\n- [Memory Leak Debugging](https://github.com/organization/repo/blob/main/docs/runbooks/DEBUG_MEMORY_LEAK.md) - Identify and fix memory leak problems\n- [Circuit Breaker Debugging](https://github.com/organization/repo/blob/main/docs/runbooks/DEBUG_CIRCUIT_BREAKER.md) - Troubleshoot circuit breaker failures\n\n### Additional Resources\n- [Disaster Recovery Runbook](https://github.com/organization/repo/blob/main/DISASTER_RECOVERY_RUNBOOK.md)\n- [Multi-Region Failover Runbook](https://github.com/organization/repo/blob/main/docs/MULTI_REGION_FAILOVER_RUNBOOK.md)\n- [Platform Overview Dashboard](../platform-overview)\n- [Alertmanager Console](http://localhost:9093)\n\n---\n\n**On-Call Contact**: Check PagerDuty or internal wiki for current on-call rotation\n\n**Escalation**: For critical incidents, escalate to Platform Architect after 30 minutes",
+        "content": "# 📚 SRE Runbook Quick Links\n\n## Critical Incident Response\n\n### 🚨 Immediate Actions\n- **[Incident Response Guide](https://github.com/organization/repo/blob/main/docs/runbooks/INCIDENT_RESPONSE.md)** - Start here for any critical incident\n  - Escalation matrix and contact information\n  - On-call procedures and handoff protocols\n  - Incident lifecycle management\n  - Post-mortem templates\n\n- **[Rollback Procedures](https://github.com/organization/repo/blob/main/docs/runbooks/ROLLBACK_PROCEDURES.md)** - Rapid recovery procedures\n  - Blue-green deployment rollback\n  - Configuration rollback procedures\n  - Database migration rollback\n  - Feature flag emergency disable\n\n---\n\n## Debug Playbooks by Symptom\n\n### ⏱️ Performance Issues\n- **[Latency Spike Debugging](https://github.com/organization/repo/blob/main/docs/runbooks/DEBUG_LATENCY_SPIKE.md)**\n  - Check database connection pools\n  - Analyze slow query logs\n  - Review recent deployments\n  - Inspect downstream service health\n\n- **[High CPU Usage](https://github.com/organization/repo/blob/main/docs/runbooks/DEBUG_CPU_SPIKE.md)**\n  - Profile application CPU usage\n  - Identify runaway threads\n  - Check for infinite loops\n  - Review recent code changes\n\n### 💾 Memory Issues\n- **[Memory Leak Debugging](https://github.com/organization/repo/blob/main/docs/runbooks/DEBUG_MEMORY_LEAK.md)**\n  - Heap dump analysis procedures\n  - Memory profiling tools\n  - Common leak patterns\n  - JVM/Python memory tuning\n\n- **[OOM Killer Events](https://github.com/organization/repo/blob/main/docs/runbooks/DEBUG_OOM.md)**\n  - Container memory limit analysis\n  - Memory request/limit tuning\n  - Application memory optimization\n\n### 🔌 Service Connectivity\n- **[Circuit Breaker Debugging](https://github.com/organization/repo/blob/main/docs/runbooks/DEBUG_CIRCUIT_BREAKER.md)**\n  - Check downstream service health\n  - Review circuit breaker thresholds\n  - Analyze timeout configurations\n  - Test manual circuit reset\n\n- **[Service Mesh Issues](https://github.com/organization/repo/blob/main/docs/runbooks/DEBUG_SERVICE_MESH.md)**\n  - Envoy proxy debugging\n  - mTLS certificate verification\n  - Network policy troubleshooting\n\n### 🔥 Container/Pod Issues\n- **[Container Restart Loop](https://github.com/organization/repo/blob/main/docs/runbooks/DEBUG_RESTART_LOOP.md)**\n  - Check liveness/readiness probes\n  - Review container logs\n  - Analyze resource constraints\n  - Verify environment variables\n\n- **[Pod Eviction](https://github.com/organization/repo/blob/main/docs/runbooks/DEBUG_POD_EVICTION.md)**\n  - Node pressure conditions\n  - Resource quota exceeded\n  - Priority and preemption rules\n\n---\n\n## Additional Resources\n\n### 📊 Related Dashboards\n- [Platform Overview Dashboard](../platform-overview) - High-level system health\n- [Kong API Gateway Dashboard](../kong-dashboard) - API traffic and errors\n- [Memory Telemetry Dashboard](../memory-telemetry) - Detailed memory analysis\n- [Cost Optimization Dashboard](../cost-optimization) - Resource efficiency\n\n### 🔧 External Tools\n- **[Alertmanager Console](http://localhost:9093)** - Manage alert silences and routing\n- **[Prometheus Targets](http://localhost:9090/targets)** - Check scrape target health\n- **[Grafana Alerting](http://localhost:3000/alerting/list)** - Configure dashboard alerts\n\n### 📖 Documentation\n- **[Disaster Recovery Runbook](https://github.com/organization/repo/blob/main/DISASTER_RECOVERY_RUNBOOK.md)** - Complete system recovery procedures\n- **[Multi-Region Failover](https://github.com/organization/repo/blob/main/docs/MULTI_REGION_FAILOVER_RUNBOOK.md)** - Geographic failover protocols\n- **[On-Call Playbook](https://github.com/organization/repo/blob/main/docs/runbooks/ON_CALL_PLAYBOOK.md)** - On-call engineer responsibilities\n\n---\n\n## 🆘 Escalation\n\n**On-Call Contact**: Check PagerDuty or internal wiki for current on-call rotation\n\n**Escalation Path**:\n1. **0-15 min**: On-call SRE investigates\n2. **15-30 min**: Alert team lead and relevant service owners\n3. **30+ min**: Escalate to Platform Architect and Engineering Manager\n4. **Critical incidents**: Immediately notify incident commander\n\n**Emergency Contact**: `emergency@organization.com` | **Slack**: `#incident-response`",
         "mode": "markdown"
       },
       "pluginVersion": "10.2.2",
-      "title": "Runbook Quick Links",
+      "title": "Runbook Links & Debug Playbooks",
       "type": "text"
     }
   ],
   "refresh": "30s",
   "schemaVersion": 38,
   "style": "dark",
-  "tags": ["sre", "incident-response", "runbooks", "operations"],
+  "tags": ["sre", "incident-response", "runbooks", "operations", "debugging"],
   "templating": {
     "list": []
   },
   "time": {
-    "from": "now-6h",
+    "from": "now-1h",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "",
   "title": "SRE Incident Response",
   "uid": "sre-incident-response",
-  "version": 1,
+  "version": 2,
   "weekStart": ""
 }
