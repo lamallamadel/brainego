@@ -6,12 +6,15 @@ set -euo pipefail
 # Target: ≤30s downtime or measure/log actual downtime
 
 # Configuration
-DEPLOY_ROOT="/opt/brainego"
+DEPLOY_ROOT="${DEPLOY_ROOT:-/opt/brainego}"
 RELEASES_DIR="${DEPLOY_ROOT}/releases"
 CURRENT_SYMLINK="${DEPLOY_ROOT}/current"
-ENV_FILE="${DEPLOY_ROOT}/env/prod.env"
+ENV_FILE="${ENV_FILE:-${DEPLOY_ROOT}/env/prod.env}"
 DEPLOYMENT_LOG="${DEPLOY_ROOT}/logs/deployment.log"
 DOWNTIME_LOG="${DEPLOY_ROOT}/logs/downtime.log"
+ROLLBACK_LOG="${DEPLOY_ROOT}/logs/rollback.log"
+AUDIT_DIR="${DEPLOY_ROOT}/audit"
+SKIP_SMOKE_LOG="${AUDIT_DIR}/skip-smoke.log"
 
 # Colors for output
 RED='\033[0;31m'
@@ -64,6 +67,45 @@ measure_time() {
     return $exit_code
 }
 
+# Send Slack notification
+send_slack_notification() {
+    local message=$1
+    local color=${2:-"warning"}  # default to warning
+    local webhook_url="${SLACK_WEBHOOK_URL:-}"
+    
+    if [[ -z "$webhook_url" ]]; then
+        log_warn "SLACK_WEBHOOK_URL not set, skipping Slack notification"
+        return 0
+    fi
+    
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    local hostname=$(hostname)
+    
+    local payload=$(cat <<EOF
+{
+    "attachments": [
+        {
+            "color": "${color}",
+            "title": "Deployment Alert - ${hostname}",
+            "text": "${message}",
+            "footer": "brainego deployment",
+            "ts": $(date +%s)
+        }
+    ]
+}
+EOF
+)
+    
+    if curl -X POST -H 'Content-type: application/json' \
+        --data "${payload}" \
+        --max-time 5 \
+        "${webhook_url}" &> /dev/null; then
+        log_info "Slack notification sent successfully"
+    else
+        log_warn "Failed to send Slack notification (non-critical)"
+    fi
+}
+
 # Check prerequisites
 check_prerequisites() {
     log_info "Checking prerequisites..."
@@ -75,7 +117,7 @@ check_prerequisites() {
     fi
     
     # Check for required commands
-    local required_cmds=("docker" "docker-compose" "git" "bc")
+    local required_cmds=("docker" "docker-compose" "git" "bc" "python3" "curl")
     for cmd in "${required_cmds[@]}"; do
         if ! command -v "$cmd" &> /dev/null; then
             log_error "Required command not found: $cmd"
@@ -93,6 +135,7 @@ check_prerequisites() {
     mkdir -p "${RELEASES_DIR}"
     mkdir -p "${DEPLOY_ROOT}/logs"
     mkdir -p "${DEPLOY_ROOT}/env"
+    mkdir -p "${AUDIT_DIR}"
     
     log_success "Prerequisites check passed"
 }
@@ -178,6 +221,162 @@ EOF
     log_success "Release ${sha} marked as successful"
 }
 
+# Log skip-smoke decision to audit trail
+log_skip_smoke() {
+    local sha=$1
+    local reason=$2
+    local actor=${3:-$(whoami)}
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    
+    local audit_entry="${timestamp}|${sha}|${actor}|${reason}"
+    
+    echo "${audit_entry}" >> "${SKIP_SMOKE_LOG}"
+    
+    log_warn "RISK ACCEPTED: Smoke tests skipped for ${sha}"
+    log_warn "Reason: ${reason}"
+    log_warn "Actor: ${actor}"
+    log_warn "Audit logged to: ${SKIP_SMOKE_LOG}"
+}
+
+# Run smoke tests
+run_smoke_tests() {
+    local sha=$1
+    local release_dir=$2
+    local smoke_script="${release_dir}/scripts/deploy/prod_smoke_tests.py"
+    local smoke_log="${DEPLOY_ROOT}/logs/smoke_tests_${sha}.log"
+    
+    log_info "Running post-deployment smoke tests..."
+    
+    # Check if smoke test script exists
+    if [[ ! -f "${smoke_script}" ]]; then
+        log_error "Smoke test script not found: ${smoke_script}"
+        return 1
+    fi
+    
+    # Determine base URL (fallback to localhost if not set)
+    local base_url="${SMOKE_TEST_BASE_URL:-http://localhost:8000}"
+    local workspace_id="${SMOKE_TEST_WORKSPACE_ID:-default}"
+    local auth_token="${SMOKE_TEST_AUTH_TOKEN:-}"
+    
+    log_info "Smoke test configuration:"
+    log_info "  Base URL: ${base_url}"
+    log_info "  Workspace ID: ${workspace_id}"
+    log_info "  Log file: ${smoke_log}"
+    
+    # Build smoke test command
+    local smoke_cmd=(
+        python3 "${smoke_script}"
+        --base-url "${base_url}"
+        --workspace-id "${workspace_id}"
+    )
+    
+    # Add optional parameters
+    if [[ -n "${auth_token}" ]]; then
+        smoke_cmd+=(--auth-token "${auth_token}")
+    fi
+    
+    if [[ -n "${PROMETHEUS_URL:-}" ]]; then
+        smoke_cmd+=(--prometheus-url "${PROMETHEUS_URL}")
+    fi
+    
+    if [[ -n "${KONG_ADMIN_URL:-}" ]]; then
+        smoke_cmd+=(--kong-admin-url "${KONG_ADMIN_URL}")
+    fi
+    
+    # Run smoke tests
+    if "${smoke_cmd[@]}" > "${smoke_log}" 2>&1; then
+        log_success "Smoke tests passed"
+        log_info "Smoke test log: ${smoke_log}"
+        return 0
+    else
+        local exit_code=$?
+        log_error "Smoke tests failed with exit code: ${exit_code}"
+        log_error "Smoke test log: ${smoke_log}"
+        
+        # Show last 30 lines of smoke test output
+        log_error "Smoke test failures (last 30 lines):"
+        tail -n 30 "${smoke_log}" | while IFS= read -r line; do
+            log_error "  ${line}"
+        done
+        
+        return 1
+    fi
+}
+
+# Perform rollback due to smoke test failure
+perform_smoke_rollback() {
+    local failed_sha=$1
+    local previous_sha=$2
+    local failure_reason=$3
+    local timestamp=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+    
+    log_error "=" * 70
+    log_error "INITIATING AUTO-ROLLBACK DUE TO SMOKE TEST FAILURE"
+    log_error "=" * 70
+    log_error "Failed release: ${failed_sha}"
+    log_error "Rolling back to: ${previous_sha}"
+    log_error "Reason: ${failure_reason}"
+    log_error ""
+    
+    # Log rollback to audit trail
+    local rollback_entry="${timestamp}|${failed_sha}|${previous_sha}|smoke_test_failure|${failure_reason}"
+    echo "${rollback_entry}" >> "${ROLLBACK_LOG}"
+    
+    # Restore symlink to previous release
+    local previous_dir="${RELEASES_DIR}/${previous_sha}"
+    
+    if [[ ! -d "${previous_dir}" ]]; then
+        log_error "Previous release directory not found: ${previous_dir}"
+        log_error "CRITICAL: Cannot rollback - manual intervention required!"
+        mark_release_failed "${failed_sha}" "rollback_failed_no_previous_release"
+        return 1
+    fi
+    
+    log_info "Stopping services from failed release ${failed_sha}..."
+    cd "${CURRENT_SYMLINK}"
+    docker-compose -f docker-compose.yaml down --remove-orphans || true
+    
+    log_info "Restoring symlink to previous release ${previous_sha}..."
+    local temp_symlink="${CURRENT_SYMLINK}.rollback_tmp"
+    ln -sfn "${previous_dir}" "${temp_symlink}"
+    mv -Tf "${temp_symlink}" "${CURRENT_SYMLINK}"
+    
+    log_info "Restarting services from previous release..."
+    cd "${CURRENT_SYMLINK}"
+    export IMAGE_TAG="${previous_sha}"
+    
+    if docker-compose -f docker-compose.yaml restart; then
+        log_success "Services restarted successfully"
+        
+        # Wait for services to stabilize
+        log_info "Waiting for services to stabilize..."
+        sleep 10
+        
+        # Verify services are running
+        if docker-compose -f docker-compose.yaml ps | grep -q "Up"; then
+            log_success "Rollback completed successfully"
+            log_success "Active release: ${previous_sha}"
+            
+            # Mark failed release in metadata
+            mark_release_failed "${failed_sha}" "smoke_test_failure_auto_rollback"
+            
+            # Log successful rollback
+            local success_entry="${timestamp}|${failed_sha}|${previous_sha}|rollback_success"
+            echo "${success_entry}" >> "${ROLLBACK_LOG}"
+            
+            return 0
+        else
+            log_error "Services failed to start after rollback"
+            log_error "CRITICAL: Manual intervention required!"
+            return 1
+        fi
+    else
+        log_error "Failed to restart services after rollback"
+        log_error "CRITICAL: Manual intervention required!"
+        return 1
+    fi
+}
+
 # Run migrations as preflight step
 run_preflight_migrations() {
     local sha=$1
@@ -255,15 +454,21 @@ EOF
 # Deploy a specific version
 deploy() {
     local sha=$1
+    local skip_smoke=${2:-false}
+    local skip_reason=${3:-""}
+    local skip_actor=${4:-$(whoami)}
+    
     validate_sha "$sha"
     
     check_prerequisites
     
     local release_dir="${RELEASES_DIR}/${sha}"
     local current_version=$(get_current_version)
+    local previous_version=$(get_previous_version)
     
     log_info "Starting deployment of version: ${sha}"
     log_info "Current version: ${current_version}"
+    log_info "Previous version: ${previous_version}"
     
     # Check if release already exists
     if [[ -d "${release_dir}" ]]; then
@@ -343,12 +548,81 @@ deploy() {
         exit 1
     fi
     
+    # Run smoke tests (post-deploy hook)
+    if [[ "${skip_smoke}" == "true" ]]; then
+        log_warn "=" * 70
+        log_warn "SMOKE TESTS SKIPPED - RISK ACCEPTED"
+        log_warn "=" * 70
+        
+        # Log skip decision to audit trail
+        log_skip_smoke "${sha}" "${skip_reason}" "${skip_actor}"
+        
+        # Send Slack warning
+        local slack_msg="⚠️ DEPLOYMENT WARNING: Smoke tests skipped for release ${sha}\nReason: ${skip_reason}\nActor: ${skip_actor}\nHost: $(hostname)\n\n⚠️ This deployment has NOT been validated via smoke tests."
+        send_slack_notification "${slack_msg}" "warning"
+        
+        log_warn "Proceeding without smoke test validation"
+    else
+        log_info "=" * 70
+        log_info "POST-DEPLOY HOOK: Running Smoke Tests"
+        log_info "=" * 70
+        
+        if ! run_smoke_tests "${sha}" "${release_dir}"; then
+            log_error "=" * 70
+            log_error "SMOKE TESTS FAILED - INITIATING AUTO-ROLLBACK"
+            log_error "=" * 70
+            
+            # Attempt automatic rollback
+            if [[ "${previous_version}" != "none" ]]; then
+                if perform_smoke_rollback "${sha}" "${previous_version}" "smoke_tests_failed"; then
+                    log_error "Deployment FAILED and ROLLED BACK to ${previous_version}"
+                    log_error "Review smoke test logs before redeploying"
+                    
+                    # Send Slack alert
+                    local slack_msg="🚨 DEPLOYMENT FAILED: Release ${sha} failed smoke tests and was auto-rolled back to ${previous_version}\nHost: $(hostname)\n\nAction required: Review smoke test logs and fix issues before redeploying."
+                    send_slack_notification "${slack_msg}" "danger"
+                    
+                    exit 1
+                else
+                    log_error "=" * 70
+                    log_error "CRITICAL: ROLLBACK FAILED!"
+                    log_error "=" * 70
+                    log_error "Deployment failed AND rollback failed"
+                    log_error "Manual intervention required immediately"
+                    
+                    # Send critical Slack alert
+                    local slack_msg="🔥 CRITICAL: Deployment ${sha} failed smoke tests AND rollback failed\nHost: $(hostname)\n\n⚠️ IMMEDIATE ACTION REQUIRED - System may be unstable!"
+                    send_slack_notification "${slack_msg}" "danger"
+                    
+                    exit 1
+                fi
+            else
+                log_error "No previous version available for rollback"
+                mark_release_failed "${sha}" "smoke_test_failed_no_rollback"
+                
+                # Send Slack alert
+                local slack_msg="🚨 DEPLOYMENT FAILED: Release ${sha} failed smoke tests\nHost: $(hostname)\n\nNo previous version available for rollback. Manual intervention required."
+                send_slack_notification "${slack_msg}" "danger"
+                
+                exit 1
+            fi
+        fi
+        
+        log_success "Smoke tests passed - deployment validated"
+    fi
+    
     # Mark release as successful
     mark_release_success "${sha}"
     
+    log_success "=" * 70
     log_success "Deployment of ${sha} completed successfully!"
+    log_success "=" * 70
     log_info "Release directory: ${release_dir}"
     log_info "Current symlink: ${CURRENT_SYMLINK} -> ${release_dir}"
+    
+    # Send success notification to Slack
+    local success_msg="✅ DEPLOYMENT SUCCESS: Release ${sha} deployed and validated\nHost: $(hostname)\nPrevious: ${previous_version}"
+    send_slack_notification "${success_msg}" "good"
 }
 
 # Perform the actual switchover
@@ -462,6 +736,24 @@ status() {
     else
         echo "  No downtime records"
     fi
+    
+    echo ""
+    echo "Recent rollback log (last 10 entries):"
+    if [[ -f "${ROLLBACK_LOG}" ]]; then
+        echo "Timestamp|Failed SHA|Restored SHA|Trigger|Reason" | column -t -s '|'
+        tail -n 10 "${ROLLBACK_LOG}" | column -t -s '|'
+    else
+        echo "  No rollback records"
+    fi
+    
+    echo ""
+    echo "Smoke test skip audit (last 10 entries):"
+    if [[ -f "${SKIP_SMOKE_LOG}" ]]; then
+        echo "Timestamp|SHA|Actor|Reason" | column -t -s '|'
+        tail -n 10 "${SKIP_SMOKE_LOG}" | column -t -s '|'
+    else
+        echo "  No skip-smoke records"
+    fi
 }
 
 # Rollback to a previous version
@@ -541,36 +833,64 @@ usage() {
 Usage: $0 <command> [arguments]
 
 Commands:
-    deploy <sha>              Deploy a specific git SHA
-    status                    Show current deployment status
-    rollback previous         Rollback to previous version
-    rollback <sha>            Rollback to specific version
-    logs <service> [lines]    Show logs for a service (default: all services, 100 lines)
+    deploy <sha> [--skip-smoke]              Deploy a specific git SHA with optional smoke test skip
+    status                                   Show current deployment status
+    rollback previous                        Rollback to previous version
+    rollback <sha>                           Rollback to specific version
+    logs <service> [lines]                   Show logs for a service (default: all services, 100 lines)
+    
+Deploy Options:
+    --skip-smoke                             Skip smoke tests (requires --skip-reason)
+    --skip-reason <reason>                   Reason for skipping smoke tests
+    --skip-actor <actor>                     Actor requesting skip (default: current user)
     
 Examples:
+    # Normal deployment with smoke tests
     $0 deploy abc123f
+    
+    # Deploy with smoke tests skipped (emergency hotfix)
+    $0 deploy abc123f --skip-smoke --skip-reason "Emergency hotfix for P0 incident"
+    
+    # Other commands
     $0 status
     $0 rollback previous
     $0 rollback def456a
     $0 logs api-server 50
     $0 logs
 
-Environment:
-    DEPLOY_ROOT              Deployment root directory (default: /opt/brainego)
-    ENV_FILE                 Production environment file (default: /opt/brainego/env/prod.env)
+Environment Variables:
+    DEPLOY_ROOT                    Deployment root directory (default: /opt/brainego)
+    ENV_FILE                       Production environment file (default: /opt/brainego/env/prod.env)
+    SMOKE_TEST_BASE_URL            Base URL for smoke tests (default: http://localhost:8000)
+    SMOKE_TEST_WORKSPACE_ID        Workspace ID for smoke tests (default: default)
+    SMOKE_TEST_AUTH_TOKEN          Auth token for smoke tests (optional)
+    PROMETHEUS_URL                 Prometheus URL for metrics validation (optional)
+    KONG_ADMIN_URL                 Kong Admin API URL (optional)
+    SLACK_WEBHOOK_URL              Slack webhook for deployment notifications (optional)
 
 Deployment Structure:
     /opt/brainego/
     ├── releases/
-    │   ├── <sha1>/          Versioned release directories
+    │   ├── <sha1>/                   Versioned release directories
     │   ├── <sha2>/
     │   └── <sha3>/
     ├── current -> releases/<active_sha>/  Symlink to active release
     ├── env/
-    │   └── prod.env         Production environment configuration
-    └── logs/
-        ├── deployment.log   Deployment actions log
-        └── downtime.log     Downtime measurements (CSV format)
+    │   └── prod.env                  Production environment configuration
+    ├── logs/
+    │   ├── deployment.log            Deployment actions log
+    │   ├── downtime.log              Downtime measurements (CSV format)
+    │   ├── rollback.log              Rollback audit trail
+    │   └── smoke_tests_<sha>.log     Smoke test results per release
+    └── audit/
+        └── skip-smoke.log            Audit trail for skipped smoke tests
+
+Smoke Test Auto-Rollback:
+    If smoke tests fail after deployment, the script automatically:
+    1. Restores symlink to previous release
+    2. Restarts services via 'docker-compose restart'
+    3. Logs rollback with release ID, timestamp, and failure reason
+    4. Sends Slack alert (if configured)
 
 EOF
 }
@@ -587,12 +907,60 @@ main() {
     
     case "$command" in
         deploy)
-            if [[ $# -ne 1 ]]; then
+            if [[ $# -lt 1 ]]; then
                 log_error "deploy command requires a git SHA argument"
                 usage
                 exit 1
             fi
-            deploy "$1"
+            
+            local sha=$1
+            shift
+            
+            # Parse deploy options
+            local skip_smoke=false
+            local skip_reason=""
+            local skip_actor=$(whoami)
+            
+            while [[ $# -gt 0 ]]; do
+                case "$1" in
+                    --skip-smoke)
+                        skip_smoke=true
+                        shift
+                        ;;
+                    --skip-reason)
+                        if [[ $# -lt 2 ]]; then
+                            log_error "--skip-reason requires an argument"
+                            usage
+                            exit 1
+                        fi
+                        skip_reason="$2"
+                        shift 2
+                        ;;
+                    --skip-actor)
+                        if [[ $# -lt 2 ]]; then
+                            log_error "--skip-actor requires an argument"
+                            usage
+                            exit 1
+                        fi
+                        skip_actor="$2"
+                        shift 2
+                        ;;
+                    *)
+                        log_error "Unknown option: $1"
+                        usage
+                        exit 1
+                        ;;
+                esac
+            done
+            
+            # Validate skip-smoke requirements
+            if [[ "${skip_smoke}" == "true" ]] && [[ -z "${skip_reason}" ]]; then
+                log_error "--skip-smoke requires --skip-reason to be specified"
+                log_error "Example: $0 deploy ${sha} --skip-smoke --skip-reason 'Emergency P0 hotfix'"
+                exit 1
+            fi
+            
+            deploy "${sha}" "${skip_smoke}" "${skip_reason}" "${skip_actor}"
             ;;
         status)
             status
