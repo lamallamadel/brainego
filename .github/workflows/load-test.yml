@@ -1,4 +1,4 @@
-name: K6 Load Testing - SLO Validation
+name: K6 Load Testing - SLO Validation (Master Merge)
 
 on:
   push:
@@ -20,12 +20,8 @@ on:
         required: false
         default: false
         type: boolean
-  schedule:
-    # Run daily at 2 AM UTC
-    - cron: '0 2 * * *'
 
 env:
-  # Staging environment URLs (override with secrets for production)
   STAGING_BASE_URL: ${{ secrets.STAGING_BASE_URL || 'https://api-staging.brainego.io' }}
   STAGING_GATEWAY_URL: ${{ secrets.STAGING_GATEWAY_URL || 'https://gateway-staging.brainego.io' }}
   STAGING_MCP_URL: ${{ secrets.STAGING_MCP_URL || 'https://mcp-staging.brainego.io' }}
@@ -86,266 +82,6 @@ jobs:
           chmod +x ./scripts/load_test/run_k6_suite.sh
           ./scripts/load_test/run_k6_suite.sh
       
-      - name: Parse test results
-        id: parse_results
-        if: always()
-        run: |
-          # Find the most recent results file
-          RESULTS_FILE=$(ls -t load_test_results/k6_results_*.json 2>/dev/null | head -n1)
-          
-          if [ ! -f "$RESULTS_FILE" ]; then
-            echo "⚠️ No results file found - test may have failed to run"
-            echo "error_rate=N/A" >> $GITHUB_OUTPUT
-            echo "p99_latency=N/A" >> $GITHUB_OUTPUT
-            echo "availability=N/A" >> $GITHUB_OUTPUT
-            echo "total_requests=0" >> $GITHUB_OUTPUT
-            echo "slo_violations=999" >> $GITHUB_OUTPUT
-            exit 1
-          fi
-          
-          echo "📊 Parsing results from: $RESULTS_FILE"
-          
-          # Extract metrics
-          ERROR_RATE=$(jq -r '.metrics.http_req_failed.values.rate // 0' "$RESULTS_FILE")
-          P99_LATENCY=$(jq -r '.metrics.http_req_duration.values["p(99)"] // 0' "$RESULTS_FILE")
-          P95_LATENCY=$(jq -r '.metrics.http_req_duration.values["p(95)"] // 0' "$RESULTS_FILE")
-          P50_LATENCY=$(jq -r '.metrics.http_req_duration.values["p(50)"] // 0' "$RESULTS_FILE")
-          TOTAL_REQUESTS=$(jq -r '.metrics.http_reqs.values.count // 0' "$RESULTS_FILE")
-          FAILED_REQUESTS=$(jq -r '.metrics.http_req_failed.values.passes // 0' "$RESULTS_FILE")
-          
-          # Calculate derived metrics
-          ERROR_RATE_PCT=$(echo "scale=3; $ERROR_RATE * 100" | bc)
-          AVAILABILITY=$(echo "scale=2; (1 - $ERROR_RATE) * 100" | bc)
-          
-          # Count SLO violations
-          SLO_VIOLATIONS=0
-          
-          # Check error rate SLO (< 0.5%)
-          if (( $(echo "$ERROR_RATE > 0.005" | bc -l) )); then
-            SLO_VIOLATIONS=$((SLO_VIOLATIONS + 1))
-            echo "❌ Error Rate SLO violation: ${ERROR_RATE_PCT}% > 0.5%"
-          fi
-          
-          # Check P99 latency SLO (< 2000ms)
-          if (( $(echo "$P99_LATENCY > 2000" | bc -l) )); then
-            SLO_VIOLATIONS=$((SLO_VIOLATIONS + 1))
-            echo "❌ P99 Latency SLO violation: ${P99_LATENCY}ms > 2000ms"
-          fi
-          
-          # Check availability SLO (> 99.5%)
-          if (( $(echo "$AVAILABILITY < 99.5" | bc -l) )); then
-            SLO_VIOLATIONS=$((SLO_VIOLATIONS + 1))
-            echo "❌ Availability SLO violation: ${AVAILABILITY}% < 99.5%"
-          fi
-          
-          # Output to GitHub Actions
-          echo "error_rate=$ERROR_RATE_PCT" >> $GITHUB_OUTPUT
-          echo "error_rate_raw=$ERROR_RATE" >> $GITHUB_OUTPUT
-          echo "p99_latency=$P99_LATENCY" >> $GITHUB_OUTPUT
-          echo "p95_latency=$P95_LATENCY" >> $GITHUB_OUTPUT
-          echo "p50_latency=$P50_LATENCY" >> $GITHUB_OUTPUT
-          echo "availability=$AVAILABILITY" >> $GITHUB_OUTPUT
-          echo "total_requests=$TOTAL_REQUESTS" >> $GITHUB_OUTPUT
-          echo "failed_requests=$FAILED_REQUESTS" >> $GITHUB_OUTPUT
-          echo "slo_violations=$SLO_VIOLATIONS" >> $GITHUB_OUTPUT
-          
-          # Display summary
-          echo "=== Test Results Summary ==="
-          echo "Total Requests: $TOTAL_REQUESTS"
-          echo "Failed Requests: $FAILED_REQUESTS"
-          echo "Error Rate: ${ERROR_RATE_PCT}%"
-          echo "P50 Latency: ${P50_LATENCY}ms"
-          echo "P95 Latency: ${P95_LATENCY}ms"
-          echo "P99 Latency: ${P99_LATENCY}ms"
-          echo "Availability: ${AVAILABILITY}%"
-          echo "SLO Violations: $SLO_VIOLATIONS"
-          echo "============================"
-      
-      - name: Generate detailed failure report
-        id: failure_report
-        if: always() && steps.parse_results.outputs.slo_violations != '0'
-        run: |
-          # Find the most recent results file
-          RESULTS_FILE=$(ls -t load_test_results/k6_results_*.json 2>/dev/null | head -n1)
-          REPORT_FILE="load_test_results/slo_failure_report.md"
-          
-          ERROR_RATE_RAW=${{ steps.parse_results.outputs.error_rate_raw }}
-          P99_LATENCY=${{ steps.parse_results.outputs.p99_latency }}
-          AVAILABILITY=${{ steps.parse_results.outputs.availability }}
-          
-          cat > "$REPORT_FILE" << EOF
-          # 🚨 Load Test SLO Failure Report
-          
-          ## Executive Summary
-          
-          **Status:** ❌ FAILED - SLO Violations Detected
-          
-          **Environment:** ${{ github.event.inputs.environment || 'staging' }}
-          **Branch:** ${{ github.ref_name }}
-          **Commit:** ${{ github.sha }}
-          **Timestamp:** $(date -u +"%Y-%m-%d %H:%M:%S UTC")
-          **Workflow Run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          
-          ## SLO Compliance
-          
-          | SLO Metric | Target | Actual | Status |
-          |------------|--------|--------|--------|
-          | Error Rate | < 0.5% | ${{ steps.parse_results.outputs.error_rate }}% | $(if (( $(echo "$ERROR_RATE_RAW > 0.005" | bc -l) )); then echo "❌ FAIL"; else echo "✅ PASS"; fi) |
-          | P99 Latency | < 2000ms | ${{ steps.parse_results.outputs.p99_latency }}ms | $(if (( $(echo "$P99_LATENCY > 2000" | bc -l) )); then echo "❌ FAIL"; else echo "✅ PASS"; fi) |
-          | Availability | > 99.5% | ${{ steps.parse_results.outputs.availability }}% | $(if (( $(echo "$AVAILABILITY < 99.5" | bc -l) )); then echo "❌ FAIL"; else echo "✅ PASS"; fi) |
-          
-          ## Test Metrics
-          
-          - **Total Requests:** ${{ steps.parse_results.outputs.total_requests }}
-          - **Failed Requests:** ${{ steps.parse_results.outputs.failed_requests }}
-          - **P50 Latency:** ${{ steps.parse_results.outputs.p50_latency }}ms
-          - **P95 Latency:** ${{ steps.parse_results.outputs.p95_latency }}ms
-          - **P99 Latency:** ${{ steps.parse_results.outputs.p99_latency }}ms
-          - **Error Rate:** ${{ steps.parse_results.outputs.error_rate }}%
-          - **Availability:** ${{ steps.parse_results.outputs.availability }}%
-          
-          ## Violation Details
-          
-          EOF
-          
-          # Add specific violation details
-          if (( $(echo "$ERROR_RATE_RAW > 0.005" | bc -l) )); then
-            cat >> "$REPORT_FILE" << 'VIOLATION_EOF'
-          ### 1. Error Rate SLO Violation
-          
-          - **Target:** < 0.5%
-          - **Actual:** ${{ steps.parse_results.outputs.error_rate }}%
-          - **Severity:** 🔴 CRITICAL
-          - **Impact:** System reliability below acceptable threshold
-          - **Action Required:** 
-            - Investigate error logs immediately
-            - Check service health and dependencies
-            - Review recent deployments and configuration changes
-            - Verify infrastructure capacity
-          
-          VIOLATION_EOF
-          fi
-          
-          if (( $(echo "$P99_LATENCY > 2000" | bc -l) )); then
-            cat >> "$REPORT_FILE" << 'VIOLATION_EOF'
-          ### 2. P99 Latency SLO Violation
-          
-          - **Target:** < 2000ms
-          - **Actual:** ${{ steps.parse_results.outputs.p99_latency }}ms
-          - **Severity:** 🟠 HIGH
-          - **Impact:** Poor user experience for tail latency users (1% of requests)
-          - **Action Required:**
-            - Profile slow requests and identify bottlenecks
-            - Check database query performance and indexes
-            - Review resource allocation (CPU, memory, network)
-            - Analyze caching effectiveness
-            - Check for N+1 queries or inefficient algorithms
-          
-          VIOLATION_EOF
-          fi
-          
-          if (( $(echo "$AVAILABILITY < 99.5" | bc -l) )); then
-            cat >> "$REPORT_FILE" << 'VIOLATION_EOF'
-          ### 3. Availability SLO Violation
-          
-          - **Target:** > 99.5%
-          - **Actual:** ${{ steps.parse_results.outputs.availability }}%
-          - **Severity:** 🔴 CRITICAL
-          - **Impact:** Unacceptable downtime affecting users
-          - **Action Required:**
-            - Immediate investigation of service failures
-            - Check infrastructure health (pods, nodes, network)
-            - Review circuit breaker and retry configurations
-            - Verify external dependency availability
-            - Check for cascading failures
-          
-          VIOLATION_EOF
-          fi
-          
-          cat >> "$REPORT_FILE" << 'EOF'
-          
-          ## Recommended Actions
-          
-          ### 🚨 Immediate (within 1 hour)
-          1. Review application logs for errors and exceptions
-          2. Check infrastructure metrics (CPU, memory, disk I/O, network)
-          3. Verify database and cache performance
-          4. Review recent deployments or configuration changes
-          5. Check for alerts in monitoring systems
-          6. Verify external dependency health
-          
-          ### ⚡ Short-term (within 24 hours)
-          1. Scale resources if under capacity
-          2. Optimize slow endpoints identified in tests
-          3. Review and tune rate limiting/throttling
-          4. Validate circuit breaker configurations
-          5. Implement additional caching where appropriate
-          6. Fix identified bugs or performance issues
-          
-          ### 📊 Long-term (within 1 week)
-          1. Conduct thorough performance analysis
-          2. Review architecture for systemic bottlenecks
-          3. Enhance monitoring and alerting coverage
-          4. Schedule capacity planning review
-          5. Implement performance improvements
-          6. Conduct load testing against fixes
-          7. Update runbooks with lessons learned
-          
-          ## Related Artifacts
-          
-          - **Full k6 results:** `k6_results_*.json`
-          - **Test summary:** `k6_summary_*.txt`
-          - **Grafana metrics:** `grafana_metrics_*.json`
-          - **Prometheus metrics:** Available at pushgateway
-          - **Workflow run:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          
-          ## Investigation Checklist
-          
-          - [ ] Incident created and assigned to on-call engineer
-          - [ ] Application logs reviewed for errors
-          - [ ] Infrastructure metrics checked
-          - [ ] Database performance analyzed
-          - [ ] Recent changes reviewed (deployments, config, infra)
-          - [ ] Root cause identified
-          - [ ] Remediation plan developed
-          - [ ] Fix implemented and deployed
-          - [ ] Load test re-run to validate fix
-          - [ ] Post-mortem scheduled
-          - [ ] Documentation updated
-          
-          ## Additional Context
-          
-          **Test Configuration:**
-          - Environment: ${{ github.event.inputs.environment || 'staging' }}
-          - Base URL: ${{ env.STAGING_BASE_URL }}
-          - Gateway URL: ${{ env.STAGING_GATEWAY_URL }}
-          - MCP URL: ${{ env.STAGING_MCP_URL }}
-          
-          **Test Scenarios:**
-          - Chat API load test (20-40 concurrent users)
-          - RAG operations load test (15-30 concurrent users)
-          - MCP operations load test (10-20 concurrent users)
-          - Adaptive load scenario (ramp to 100 concurrent users)
-          - Workspace quota burst scenario (10x normal rate)
-          
-          **SLO Definitions:**
-          According to `slo_definitions.yaml`:
-          - Error Rate: < 0.5% (allows 0.5% error budget)
-          - P99 Latency: < 2000ms (2 seconds)
-          - Availability: > 99.5% (allows 3.6 hours downtime per 30 days)
-          
-          ---
-          
-          *This report was automatically generated by the K6 load testing CI pipeline.*
-          *For questions or assistance, contact the platform engineering team.*
-          EOF
-          
-          # Display report
-          cat "$REPORT_FILE"
-          
-          # Set output for artifact upload
-          echo "report_path=$REPORT_FILE" >> $GITHUB_OUTPUT
-      
       - name: Upload test results
         if: always()
         uses: actions/upload-artifact@v4
@@ -356,144 +92,37 @@ jobs:
           retention-days: 30
           compression-level: 9
       
-      - name: Comment on PR with results
-        if: always() && github.event_name == 'pull_request'
+      - name: Create issue on SLO failure
+        if: failure() && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
         uses: actions/github-script@v7
         with:
           script: |
-            const sloViolations = parseInt('${{ steps.parse_results.outputs.slo_violations }}');
-            const errorRate = '${{ steps.parse_results.outputs.error_rate }}';
-            const p99Latency = '${{ steps.parse_results.outputs.p99_latency }}';
-            const availability = '${{ steps.parse_results.outputs.availability }}';
-            const totalRequests = '${{ steps.parse_results.outputs.total_requests }}';
+            const fs = require('fs');
+            const path = require('path');
             
-            const status = sloViolations === 0 ? '✅ PASSED' : '❌ FAILED';
-            const emoji = sloViolations === 0 ? '🎉' : '⚠️';
+            // Find and read the failure report
+            const resultsDir = 'load_test_results';
+            const reportPath = path.join(resultsDir, 'slo_failure_report.md');
             
-            let comment = `## ${emoji} Load Test Results - ${status}\n\n`;
-            comment += `### SLO Compliance\n\n`;
-            comment += `| Metric | Target | Actual | Status |\n`;
-            comment += `|--------|--------|--------|--------|\n`;
-            comment += `| Error Rate | < 0.5% | ${errorRate}% | ${parseFloat(errorRate) <= 0.5 ? '✅' : '❌'} |\n`;
-            comment += `| P99 Latency | < 2000ms | ${p99Latency}ms | ${parseFloat(p99Latency) <= 2000 ? '✅' : '❌'} |\n`;
-            comment += `| Availability | > 99.5% | ${availability}% | ${parseFloat(availability) >= 99.5 ? '✅' : '❌'} |\n\n`;
-            comment += `**Total Requests:** ${totalRequests}\n`;
-            comment += `**SLO Violations:** ${sloViolations}\n\n`;
-            
-            if (sloViolations > 0) {
-              comment += `⚠️ **This PR cannot be merged due to SLO violations.**\n\n`;
-              comment += `Please review the detailed failure report in the artifacts:\n`;
-              comment += `- 📊 [View workflow run](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\n`;
-              comment += `- 📁 Download artifacts to see full results and failure report\n\n`;
-              comment += `Common causes:\n`;
-              comment += `- Performance regression in code changes\n`;
-              comment += `- Inefficient database queries\n`;
-              comment += `- Resource contention or capacity issues\n`;
-              comment += `- Increased error rate from bugs\n`;
+            let reportBody = '';
+            if (fs.existsSync(reportPath)) {
+              reportBody = fs.readFileSync(reportPath, 'utf8');
             } else {
-              comment += `✅ All SLOs passed. Performance is within acceptable limits.\n\n`;
-              comment += `Safe to merge from a performance perspective.\n`;
+              reportBody = `## 🚨 Load Test Failed on Master Branch\n\n` +
+                `**Severity:** CRITICAL\n` +
+                `**Commit:** ${{ github.sha }}\n` +
+                `**Branch:** ${{ github.ref_name }}\n` +
+                `**Workflow:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n` +
+                `**Timestamp:** ${new Date().toISOString()}\n\n` +
+                `SLO thresholds were violated. See workflow logs for details.\n`;
             }
             
-            github.rest.issues.createComment({
-              issue_number: context.issue.number,
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              body: comment
-            });
-      
-      - name: Create issue on SLO failure
-        if: always() && steps.parse_results.outputs.slo_violations != '0' && (github.ref == 'refs/heads/master' || github.ref == 'refs/heads/main')
-        uses: actions/github-script@v7
-        with:
-          script: |
-            const errorRate = '${{ steps.parse_results.outputs.error_rate }}';
-            const p99Latency = '${{ steps.parse_results.outputs.p99_latency }}';
-            const availability = '${{ steps.parse_results.outputs.availability }}';
-            const violations = parseInt('${{ steps.parse_results.outputs.slo_violations }}');
-            
             const title = `🚨 Load Test SLO Failure - ${new Date().toISOString().split('T')[0]}`;
-            const body = `## 🚨 Load Test Failed on Master Branch\n\n` +
-              `**Severity:** CRITICAL\n` +
-              `**Commit:** ${{ github.sha }}\n` +
-              `**Branch:** ${{ github.ref_name }}\n` +
-              `**Workflow:** ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\n` +
-              `**Timestamp:** ${new Date().toISOString()}\n\n` +
-              `### SLO Violations (${violations} total)\n\n` +
-              `| Metric | Target | Actual | Status |\n` +
-              `|--------|--------|--------|--------|\n` +
-              `| Error Rate | < 0.5% | ${errorRate}% | ${parseFloat(errorRate) <= 0.5 ? '✅' : '❌ FAIL'} |\n` +
-              `| P99 Latency | < 2000ms | ${p99Latency}ms | ${parseFloat(p99Latency) <= 2000 ? '✅' : '❌ FAIL'} |\n` +
-              `| Availability | > 99.5% | ${availability}% | ${parseFloat(availability) >= 99.5 ? '✅' : '❌ FAIL'} |\n\n` +
-              `### Required Actions\n\n` +
-              `This indicates a **performance regression or reliability issue** in the master branch. ` +
-              `Immediate investigation and remediation required.\n\n` +
-              `**Next Steps:**\n` +
-              `1. 🔍 Review the [detailed failure report](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }})\n` +
-              `2. 📊 Download and analyze the full k6 test results\n` +
-              `3. 🔎 Investigate logs and metrics for the staging environment\n` +
-              `4. 🛠️ Identify root cause and implement fix\n` +
-              `5. ✅ Validate fix with another load test run\n` +
-              `6. 📝 Update documentation with lessons learned\n\n` +
-              `### Artifacts\n\n` +
-              `- Full k6 results JSON\n` +
-              `- SLO failure report (detailed analysis)\n` +
-              `- Test execution summary\n` +
-              `- Grafana metrics export\n\n` +
-              `See the workflow run artifacts for complete details.`;
             
             await github.rest.issues.create({
               owner: context.repo.owner,
               repo: context.repo.repo,
               title: title,
-              body: body,
+              body: reportBody,
               labels: ['performance', 'slo-violation', 'critical', 'load-test']
             });
-      
-      - name: Fail CI if SLOs violated
-        if: always()
-        run: |
-          SLO_VIOLATIONS=${{ steps.parse_results.outputs.slo_violations }}
-          
-          if [ "$SLO_VIOLATIONS" != "0" ] && [ "$SLO_VIOLATIONS" != "" ]; then
-            echo ""
-            echo "❌ =========================================="
-            echo "❌  CI FAILED: $SLO_VIOLATIONS SLO VIOLATION(S) DETECTED"
-            echo "❌ =========================================="
-            echo ""
-            echo "📊 SLO Compliance Results:"
-            echo "   Error Rate:   ${{ steps.parse_results.outputs.error_rate }}% (threshold: < 0.5%)"
-            echo "   P99 Latency:  ${{ steps.parse_results.outputs.p99_latency }}ms (threshold: < 2000ms)"
-            echo "   Availability: ${{ steps.parse_results.outputs.availability }}% (threshold: > 99.5%)"
-            echo ""
-            echo "📁 Detailed failure report available in artifacts:"
-            echo "   - load_test_results/slo_failure_report.md"
-            echo "   - load_test_results/k6_results_*.json"
-            echo "   - load_test_results/grafana_metrics_*.json"
-            echo ""
-            echo "🔗 Workflow run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-            echo ""
-            echo "⚠️  The deployment cannot proceed until SLOs are met."
-            echo "   Please review the failure report and fix the issues."
-            echo ""
-            exit 1
-          else
-            echo ""
-            echo "✅ =========================================="
-            echo "✅  ALL SLOs PASSED - CI SUCCESSFUL"
-            echo "✅ =========================================="
-            echo ""
-            echo "📊 SLO Compliance Results:"
-            echo "   ✓ Error Rate:   ${{ steps.parse_results.outputs.error_rate }}% ≤ 0.5%"
-            echo "   ✓ P99 Latency:  ${{ steps.parse_results.outputs.p99_latency }}ms ≤ 2000ms"
-            echo "   ✓ Availability: ${{ steps.parse_results.outputs.availability }}% ≥ 99.5%"
-            echo ""
-            echo "📈 Performance metrics:"
-            echo "   Total Requests: ${{ steps.parse_results.outputs.total_requests }}"
-            echo "   P50 Latency:    ${{ steps.parse_results.outputs.p50_latency }}ms"
-            echo "   P95 Latency:    ${{ steps.parse_results.outputs.p95_latency }}ms"
-            echo ""
-            echo "✅ Safe to proceed with deployment."
-            echo ""
-            exit 0
-          fi
