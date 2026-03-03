@@ -2,17 +2,19 @@
 
 ## Table of Contents
 1. [Overview](#overview)
-2. [Quick Diagnosis](#quick-diagnosis)
-3. [Investigation Steps](#investigation-steps)
-4. [Common Causes and Solutions](#common-causes-and-solutions)
-5. [Mitigation Strategies](#mitigation-strategies)
-6. [Prevention](#prevention)
+2. [Component Identification](#component-identification)
+3. [Prometheus Queries for Latency Breakdown](#prometheus-queries-for-latency-breakdown)
+4. [Resource Saturation Diagnostics](#resource-saturation-diagnostics)
+5. [Database Diagnostics](#database-diagnostics)
+6. [Model Inference Diagnostics](#model-inference-diagnostics)
+7. [Actionable Mitigation Steps](#actionable-mitigation-steps)
+8. [Prevention](#prevention)
 
 ---
 
 ## Overview
 
-This playbook guides you through investigating and resolving latency spikes in the AI Platform.
+This playbook guides you through diagnosing and resolving latency spikes in the AI Platform by systematically identifying the bottleneck component and applying targeted fixes.
 
 ### Latency SLA Thresholds
 
@@ -31,635 +33,1016 @@ This playbook guides you through investigating and resolving latency spikes in t
 
 ---
 
-## Quick Diagnosis
+## Component Identification
 
-### Step 1: Verify the Problem (2 minutes)
+### Step 1: Determine Which Component is Slow
+
+Use this decision tree to identify the bottleneck:
 
 ```bash
-# Check current latency in Grafana
-open http://localhost:3000/d/platform-overview
-
-# Quick Prometheus query
-curl -s 'http://localhost:9090/api/v1/query?query=histogram_quantile(0.99,rate(http_request_duration_seconds_bucket[5m]))' | jq
-
-# Check if affecting all endpoints or specific ones
-curl -s 'http://localhost:9090/api/v1/query?query=histogram_quantile(0.99,rate(http_request_duration_seconds_bucket[5m])) by (endpoint)' | jq
+# Check overall platform latency by service
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) by (job)
 ```
 
-### Step 2: Identify Scope (3 minutes)
+**Expected Response Times:**
+- Kong Gateway: <50ms
+- API Server: <200ms
+- Database (Postgres): <100ms per query
+- Model Inference: <500ms (Llama), <300ms (Qwen/DeepSeek)
 
-**Questions to Answer**:
-- Is latency high for all endpoints or specific ones?
-- Is it affecting all users or specific regions?
-- When did it start? (correlate with deployments)
-- Is error rate also elevated?
+### Step 2: Quick Component Health Check
 
 ```bash
-# Check by endpoint
-kubectl logs -l app=api-server --tail=100 -n production | grep "duration_ms" | sort -k3 -n | tail -20
+# Kong Gateway health
+curl -s http://localhost:8001/status | jq
 
-# Check by region (if multi-region)
-curl -s 'http://localhost:9090/api/v1/query?query=histogram_quantile(0.99,rate(http_request_duration_seconds_bucket[5m])) by (region)' | jq
+# API Server health
+curl -s http://localhost:8000/health | jq
 
-# Timeline: when did spike start?
-# Check Grafana for correlation with deployments
+# Postgres health
+docker exec postgres pg_isready
+
+# Qdrant health
+curl -s http://localhost:6333/health | jq
+
+# Model servers health
+curl -s http://localhost:8080/health | jq  # Llama
+curl -s http://localhost:8081/health | jq  # Qwen
+curl -s http://localhost:8082/health | jq  # DeepSeek
 ```
 
-### Step 3: Quick Wins (5 minutes)
+### Step 3: Identify Latency Layer
 
-Before deep investigation, try these quick fixes:
+**Kong vs API vs DB vs Model**
 
-**A. Check for Resource Exhaustion**
-
-```bash
-# CPU usage
-kubectl top pods -n production | grep api-server
-
-# Memory usage
-kubectl top pods -n production | grep api-server
-
-# If CPU >80% or Memory >80%, scale up immediately
-kubectl scale deployment/api-server --replicas=10 -n production
+```mermaid
+graph TD
+    A[User Request] -->|Kong| B[Gateway Layer]
+    B -->|API| C[Application Layer]
+    C -->|DB| D[Database Layer]
+    C -->|Model| E[Inference Layer]
 ```
 
-**B. Check Database Performance**
+Run this sequence to isolate:
 
 ```bash
-# PostgreSQL slow queries
-docker exec postgres psql -U ai_user -d ai_platform -c "
-  SELECT pid, now() - query_start as duration, query 
-  FROM pg_stat_activity 
-  WHERE state = 'active' AND now() - query_start > interval '5 seconds'
-  ORDER BY duration DESC;
-"
+# 1. Kong latency (proxy overhead)
+histogram_quantile(0.95, rate(kong_latency_bucket[5m]))
 
-# Qdrant performance
-curl http://localhost:6333/metrics | grep qdrant_request_duration
+# 2. API latency (application logic)
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="api-server"}[5m]))
 
-# Neo4j slow queries
-docker exec neo4j cypher-shell -u neo4j -p neo4j_password "
-  CALL dbms.listQueries() 
-  YIELD queryId, query, elapsedTimeMillis 
-  WHERE elapsedTimeMillis > 5000 
-  RETURN queryId, query, elapsedTimeMillis;
-"
-```
+# 3. Database latency (query execution)
+histogram_quantile(0.95, rate(pg_stat_statements_mean_exec_time_bucket[5m]))
 
-**C. Check External Dependencies**
-
-```bash
-# Check external API latency (if applicable)
-curl -w "\nTime: %{time_total}s\n" -o /dev/null -s http://external-api.example.com/health
-
-# Check DNS resolution time
-time nslookup qdrant
-time nslookup postgres
+# 4. Model latency (inference time)
+histogram_quantile(0.95, rate(model_inference_duration_seconds_bucket[5m])) by (model)
 ```
 
 ---
 
-## Investigation Steps
+## Prometheus Queries for Latency Breakdown
 
-### Phase 1: Application Layer
+### Copy-Paste Ready Queries
 
-#### 1.1 Analyze Request Traces
+All queries below are ready to paste into Prometheus UI (`http://localhost:9090/graph`) or Grafana.
 
-```bash
-# Get slow request samples
-kubectl logs -l app=api-server --tail=1000 -n production | \
-  grep "duration_ms" | \
-  awk '$NF > 1000 {print}' | \
-  head -20
+#### Overall Platform Latency
 
-# Look for patterns
-# - Same endpoint?
-# - Same user?
-# - Specific request parameters?
+```promql
+# P95 latency across all services
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
 ```
 
-#### 1.2 Check Thread/Worker Saturation
-
-```bash
-# Check if workers are saturated
-curl http://localhost:8000/metrics | grep "worker_busy_count"
-curl http://localhost:8000/metrics | grep "worker_idle_count"
-
-# Check request queue depth
-curl http://localhost:8000/metrics | grep "request_queue_depth"
-
-# If queue depth >100 or workers saturated, need more workers
+```promql
+# P99 latency across all services
+histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m]))
 ```
 
-#### 1.3 Profile Application Code
-
-```bash
-# Enable profiling (if not already enabled)
-curl -X POST http://localhost:8000/admin/profiling/enable
-
-# Collect profile for 30 seconds
-curl -X POST http://localhost:8000/admin/profiling/start \
-  -H "Content-Type: application/json" \
-  -d '{"duration_seconds": 30}'
-
-# Download profile
-curl http://localhost:8000/admin/profiling/download > /tmp/profile.prof
-
-# Analyze with py-spy or similar
-py-spy top --pid $(pgrep -f api_server.py) --duration 30
+```promql
+# P50 (median) latency across all services
+histogram_quantile(0.50, rate(http_request_duration_seconds_bucket[5m]))
 ```
 
-#### 1.4 Check for Code-Level Issues
+#### Latency by Service
 
-**Common Issues**:
-- Blocking I/O in async code
-- N+1 query problems
-- Missing database indexes
-- Large response payloads
-- Inefficient serialization
+```promql
+# P95 latency by service
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) by (job)
+```
 
-```bash
-# Check for blocking operations in logs
-kubectl logs -l app=api-server --tail=500 -n production | grep -i "blocking\|sync\|wait"
+```promql
+# Gateway latency breakdown
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="gateway"}[5m]))
+```
 
-# Check response size
-kubectl logs -l app=api-server --tail=100 -n production | \
-  grep "response_size" | \
-  awk '{sum+=$NF; count++} END {print "Avg response size:", sum/count, "bytes"}'
+```promql
+# API Server latency breakdown
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="api-server"}[5m])) by (endpoint)
+```
+
+```promql
+# Memory Service latency
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="memory-service"}[5m]))
+```
+
+```promql
+# Learning Engine latency
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="learning-engine"}[5m]))
+```
+
+#### Model Inference Latency
+
+```promql
+# P95 model inference latency by model
+histogram_quantile(0.95, rate(model_inference_duration_seconds_bucket[5m])) by (model)
+```
+
+```promql
+# Llama 3.3 8B inference latency
+histogram_quantile(0.95, rate(model_inference_duration_seconds_bucket{job="max-serve-llama"}[5m]))
+```
+
+```promql
+# Qwen inference latency
+histogram_quantile(0.95, rate(model_inference_duration_seconds_bucket{job="max-serve-qwen"}[5m]))
+```
+
+```promql
+# DeepSeek inference latency
+histogram_quantile(0.95, rate(model_inference_duration_seconds_bucket{job="max-serve-deepseek"}[5m]))
+```
+
+#### Database Latency
+
+```promql
+# Postgres query latency (avg)
+rate(pg_stat_database_blks_read[5m]) / rate(pg_stat_database_xact_commit[5m])
+```
+
+```promql
+# Qdrant search latency
+histogram_quantile(0.95, rate(qdrant_request_duration_seconds_bucket{operation="search"}[5m]))
+```
+
+```promql
+# Redis operation latency
+histogram_quantile(0.95, rate(redis_command_duration_seconds_bucket[5m])) by (cmd)
+```
+
+#### Latency by Endpoint
+
+```promql
+# P95 latency by API endpoint
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket{job="api-server"}[5m])) by (endpoint)
+```
+
+```promql
+# Slowest endpoints (top 10)
+topk(10, histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m])) by (endpoint))
+```
+
+#### Time Series Analysis
+
+```promql
+# Latency trend over last 24 hours
+histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
+```
+
+```promql
+# Compare current vs 1 hour ago
+(
+  histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))
+  -
+  histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m] offset 1h))
+)
+```
+
+```promql
+# Latency rate of change (detect spikes)
+deriv(histogram_quantile(0.95, rate(http_request_duration_seconds_bucket[5m]))[5m:1m])
 ```
 
 ---
 
-### Phase 2: Database Layer
+## Resource Saturation Diagnostics
 
-#### 2.1 PostgreSQL Investigation
+### CPU Saturation via cAdvisor Metrics
+
+#### Copy-Paste Ready Queries
+
+```promql
+# CPU usage by container (percentage)
+rate(container_cpu_usage_seconds_total{name!=""}[5m]) * 100
+```
+
+```promql
+# Containers with CPU >80%
+(rate(container_cpu_usage_seconds_total{name!=""}[5m]) * 100) > 80
+```
+
+```promql
+# API Server CPU usage
+rate(container_cpu_usage_seconds_total{name=~".*api-server.*"}[5m]) * 100
+```
+
+```promql
+# Model server CPU usage
+rate(container_cpu_usage_seconds_total{name=~".*max-serve.*"}[5m]) * 100 by (name)
+```
+
+```promql
+# CPU throttling (indicator of saturation)
+rate(container_cpu_cfs_throttled_seconds_total{name!=""}[5m])
+```
+
+```promql
+# Containers being throttled >10% of time
+(rate(container_cpu_cfs_throttled_seconds_total{name!=""}[5m]) / rate(container_cpu_cfs_periods_total{name!=""}[5m])) > 0.1
+```
+
+#### Manual Check via cAdvisor
 
 ```bash
-# Check active connections
-docker exec postgres psql -U ai_user -d ai_platform -c "
-  SELECT count(*), state 
-  FROM pg_stat_activity 
-  GROUP BY state;
-"
+# Check cAdvisor directly
+curl -s http://localhost:8080/api/v1.3/docker/ | jq
 
-# Check for locks
-docker exec postgres psql -U ai_user -d ai_platform -c "
-  SELECT pid, usename, pg_blocking_pids(pid) as blocked_by, query 
-  FROM pg_stat_activity 
-  WHERE cardinality(pg_blocking_pids(pid)) > 0;
-"
+# CPU usage for specific container
+curl -s http://localhost:8080/api/v1.3/docker/api-server | jq '.cpu.usage'
+```
 
-# Check table bloat
-docker exec postgres psql -U ai_user -d ai_platform -c "
-  SELECT schemaname, tablename, 
-    pg_size_pretty(pg_total_relation_size(schemaname||'.'||tablename)) AS size
-  FROM pg_tables 
-  ORDER BY pg_total_relation_size(schemaname||'.'||tablename) DESC 
-  LIMIT 10;
-"
+### Memory Saturation via cAdvisor Metrics
 
-# Check for missing indexes (slow queries)
-docker exec postgres psql -U ai_user -d ai_platform -c "
-  SELECT schemaname, tablename, attname, n_distinct, correlation
-  FROM pg_stats
-  WHERE schemaname NOT IN ('pg_catalog', 'information_schema')
-  ORDER BY abs(correlation) DESC
-  LIMIT 20;
-"
+#### Copy-Paste Ready Queries
 
-# Analyze slow queries (requires pg_stat_statements)
+```promql
+# Memory usage by container (bytes)
+container_memory_usage_bytes{name!=""}
+```
+
+```promql
+# Memory usage by container (percentage of limit)
+(container_memory_usage_bytes{name!=""} / container_spec_memory_limit_bytes{name!=""}) * 100
+```
+
+```promql
+# Containers with memory >80% of limit
+((container_memory_usage_bytes{name!=""} / container_spec_memory_limit_bytes{name!=""}) * 100) > 80
+```
+
+```promql
+# API Server memory usage
+container_memory_usage_bytes{name=~".*api-server.*"}
+```
+
+```promql
+# Model server memory usage
+container_memory_usage_bytes{name=~".*max-serve.*"} by (name)
+```
+
+```promql
+# Memory pressure (OOM kills)
+increase(container_memory_failcnt{name!=""}[5m])
+```
+
+```promql
+# Working set memory (active memory)
+container_memory_working_set_bytes{name!=""}
+```
+
+```promql
+# Memory cache vs working set ratio
+container_memory_cache{name!=""} / container_memory_working_set_bytes{name!=""}
+```
+
+#### Manual Check via cAdvisor
+
+```bash
+# Memory stats for all containers
+curl -s http://localhost:8080/api/v1.3/docker/ | jq '.memory'
+
+# Check for OOM events
+docker inspect api-server | jq '.[0].State.OOMKilled'
+```
+
+### Network Saturation
+
+```promql
+# Network receive bytes per second
+rate(container_network_receive_bytes_total{name!=""}[5m])
+```
+
+```promql
+# Network transmit bytes per second
+rate(container_network_transmit_bytes_total{name!=""}[5m])
+```
+
+```promql
+# Network errors
+rate(container_network_receive_errors_total{name!=""}[5m]) + rate(container_network_transmit_errors_total{name!=""}[5m])
+```
+
+### Disk I/O Saturation
+
+```promql
+# Disk read bytes per second
+rate(container_fs_reads_bytes_total{name!=""}[5m])
+```
+
+```promql
+# Disk write bytes per second
+rate(container_fs_writes_bytes_total{name!=""}[5m])
+```
+
+```promql
+# Disk I/O operations per second
+rate(container_fs_reads_total{name!=""}[5m]) + rate(container_fs_writes_total{name!=""}[5m])
+```
+
+### GPU Utilization (NVIDIA)
+
+```promql
+# GPU utilization percentage
+DCGM_FI_DEV_GPU_UTIL
+```
+
+```promql
+# GPU memory usage
+DCGM_FI_DEV_FB_USED / DCGM_FI_DEV_FB_FREE
+```
+
+```promql
+# GPU temperature
+DCGM_FI_DEV_GPU_TEMP
+```
+
+---
+
+## Database Diagnostics
+
+### Postgres Connection Pool Exhaustion
+
+#### Check Connection Pool via Prometheus
+
+```promql
+# Active connections
+pg_stat_database_numbackends{datname="ai_platform"}
+```
+
+```promql
+# Total connections vs max
+pg_stat_database_numbackends / pg_settings_max_connections
+```
+
+```promql
+# Connections by state
+pg_stat_activity_count by (state)
+```
+
+```promql
+# Idle in transaction (potential leak)
+pg_stat_activity_count{state="idle in transaction"}
+```
+
+```promql
+# Connection pool exhaustion risk (>80% used)
+(pg_stat_database_numbackends / pg_settings_max_connections) > 0.8
+```
+
+#### Check via pg_stat_activity
+
+```bash
+# Copy-paste ready: Show active connections by state
 docker exec postgres psql -U ai_user -d ai_platform -c "
-  SELECT query, calls, total_exec_time, mean_exec_time, max_exec_time
-  FROM pg_stat_statements
-  ORDER BY mean_exec_time DESC
-  LIMIT 10;
+SELECT 
+  state, 
+  count(*) as count,
+  max(now() - state_change) as max_age
+FROM pg_stat_activity 
+WHERE pid <> pg_backend_pid()
+GROUP BY state
+ORDER BY count DESC;
 "
 ```
 
-**Solutions for PostgreSQL Issues**:
-
 ```bash
-# Kill long-running query
-docker exec postgres psql -U ai_user -d ai_platform -c "SELECT pg_terminate_backend(<pid>);"
-
-# Add missing index
+# Show connections waiting for locks
 docker exec postgres psql -U ai_user -d ai_platform -c "
-  CREATE INDEX CONCURRENTLY idx_users_email ON users(email);
+SELECT 
+  pid,
+  usename,
+  application_name,
+  client_addr,
+  state,
+  wait_event_type,
+  wait_event,
+  now() - state_change as wait_duration,
+  query
+FROM pg_stat_activity
+WHERE wait_event IS NOT NULL
+  AND pid <> pg_backend_pid()
+ORDER BY wait_duration DESC
+LIMIT 20;
 "
-
-# Vacuum bloated table
-docker exec postgres psql -U ai_user -d ai_platform -c "VACUUM ANALYZE users;"
-
-# Increase connection pool (if exhausted)
-kubectl set env deployment/api-server DB_POOL_SIZE=100 -n production
 ```
 
-#### 2.2 Qdrant Investigation
+```bash
+# Show long-running queries (>5 seconds)
+docker exec postgres psql -U ai_user -d ai_platform -c "
+SELECT
+  pid,
+  now() - query_start AS duration,
+  state,
+  query
+FROM pg_stat_activity
+WHERE state <> 'idle'
+  AND pid <> pg_backend_pid()
+  AND now() - query_start > interval '5 seconds'
+ORDER BY duration DESC;
+"
+```
 
 ```bash
-# Check Qdrant metrics
-curl http://localhost:6333/metrics
+# Show blocked queries
+docker exec postgres psql -U ai_user -d ai_platform -c "
+SELECT
+  blocked_locks.pid AS blocked_pid,
+  blocked_activity.usename AS blocked_user,
+  blocking_locks.pid AS blocking_pid,
+  blocking_activity.usename AS blocking_user,
+  blocked_activity.query AS blocked_statement,
+  blocking_activity.query AS blocking_statement,
+  blocked_activity.application_name AS blocked_application
+FROM pg_catalog.pg_locks blocked_locks
+JOIN pg_catalog.pg_stat_activity blocked_activity ON blocked_activity.pid = blocked_locks.pid
+JOIN pg_catalog.pg_locks blocking_locks ON blocking_locks.locktype = blocked_locks.locktype
+  AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database
+  AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation
+  AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page
+  AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple
+  AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid
+  AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid
+  AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid
+  AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid
+  AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid
+  AND blocking_locks.pid <> blocked_locks.pid
+JOIN pg_catalog.pg_stat_activity blocking_activity ON blocking_activity.pid = blocking_locks.pid
+WHERE NOT blocked_locks.granted;
+"
+```
 
-# Check collection size and search performance
-curl http://localhost:6333/collections | jq
+```bash
+# Check connection pool configuration
+docker exec postgres psql -U ai_user -d ai_platform -c "
+SELECT 
+  name, 
+  setting, 
+  unit, 
+  short_desc
+FROM pg_settings
+WHERE name IN (
+  'max_connections',
+  'shared_buffers',
+  'effective_cache_size',
+  'work_mem',
+  'maintenance_work_mem'
+);
+"
+```
 
-# Check specific collection stats
-curl http://localhost:6333/collections/documents | jq
+### Postgres Query Performance
 
-# Test search latency
-time curl -X POST http://localhost:6333/collections/documents/points/search \
+```bash
+# Top 10 slowest queries (requires pg_stat_statements)
+docker exec postgres psql -U ai_user -d ai_platform -c "
+SELECT
+  substring(query, 1, 80) as short_query,
+  calls,
+  round(total_exec_time::numeric, 2) as total_time_ms,
+  round(mean_exec_time::numeric, 2) as mean_time_ms,
+  round(max_exec_time::numeric, 2) as max_time_ms,
+  round((100 * total_exec_time / sum(total_exec_time) OVER ())::numeric, 2) as pct_total
+FROM pg_stat_statements
+ORDER BY mean_exec_time DESC
+LIMIT 10;
+"
+```
+
+```bash
+# Cache hit ratio (should be >99%)
+docker exec postgres psql -U ai_user -d ai_platform -c "
+SELECT
+  sum(heap_blks_read) as heap_read,
+  sum(heap_blks_hit) as heap_hit,
+  round(100 * sum(heap_blks_hit) / nullif(sum(heap_blks_hit) + sum(heap_blks_read), 0), 2) as cache_hit_ratio
+FROM pg_statio_user_tables;
+"
+```
+
+```bash
+# Index usage statistics
+docker exec postgres psql -U ai_user -d ai_platform -c "
+SELECT
+  schemaname,
+  tablename,
+  indexname,
+  idx_scan as index_scans,
+  idx_tup_read as tuples_read,
+  idx_tup_fetch as tuples_fetched
+FROM pg_stat_user_indexes
+ORDER BY idx_scan DESC
+LIMIT 20;
+"
+```
+
+```bash
+# Unused indexes (candidates for removal)
+docker exec postgres psql -U ai_user -d ai_platform -c "
+SELECT
+  schemaname,
+  tablename,
+  indexname,
+  idx_scan,
+  pg_size_pretty(pg_relation_size(indexrelid)) as size
+FROM pg_stat_user_indexes
+WHERE idx_scan < 10
+  AND indexrelname NOT LIKE '%pkey'
+ORDER BY pg_relation_size(indexrelid) DESC;
+"
+```
+
+### Qdrant Performance
+
+```bash
+# Qdrant collection stats
+curl -s http://localhost:6333/collections | jq
+
+# Specific collection info
+curl -s http://localhost:6333/collections/documents | jq '.result | {
+  points_count,
+  segments_count,
+  status,
+  optimizer_status,
+  vectors_count
+}'
+```
+
+```promql
+# Qdrant search latency
+histogram_quantile(0.95, rate(qdrant_request_duration_seconds_bucket{operation="search"}[5m]))
+```
+
+### Redis Performance
+
+```bash
+# Redis stats
+docker exec redis redis-cli INFO stats | grep -E "total_commands_processed|instantaneous_ops_per_sec|keyspace_hits|keyspace_misses"
+
+# Cache hit ratio
+docker exec redis redis-cli INFO stats | awk '/keyspace_hits|keyspace_misses/ {print}'
+```
+
+```promql
+# Redis command latency
+histogram_quantile(0.95, rate(redis_command_duration_seconds_bucket[5m])) by (cmd)
+```
+
+---
+
+## Model Inference Diagnostics
+
+### Model Inference Queue Depth
+
+#### Prometheus Queries
+
+```promql
+# Inference queue depth (pending requests)
+model_inference_queue_depth
+```
+
+```promql
+# Inference queue depth by model
+model_inference_queue_depth by (model)
+```
+
+```promql
+# Llama queue depth
+model_inference_queue_depth{job="max-serve-llama"}
+```
+
+```promql
+# Qwen queue depth
+model_inference_queue_depth{job="max-serve-qwen"}
+```
+
+```promql
+# DeepSeek queue depth
+model_inference_queue_depth{job="max-serve-deepseek"}
+```
+
+```promql
+# Queue depth exceeding threshold (>10 requests)
+model_inference_queue_depth > 10
+```
+
+```promql
+# Inference requests waiting time
+histogram_quantile(0.95, rate(model_inference_queue_wait_seconds_bucket[5m])) by (model)
+```
+
+### Model Server Performance
+
+```promql
+# Inference throughput (requests/sec)
+rate(model_inference_requests_total[5m]) by (model)
+```
+
+```promql
+# Inference errors
+rate(model_inference_errors_total[5m]) by (model, error_type)
+```
+
+```promql
+# Model server concurrent requests
+model_inference_concurrent_requests by (model)
+```
+
+```promql
+# Tokens per second (generation speed)
+rate(model_tokens_generated_total[5m]) / rate(model_inference_requests_total[5m])
+```
+
+```promql
+# TTFT - Time to First Token (P95)
+histogram_quantile(0.95, rate(model_time_to_first_token_seconds_bucket[5m])) by (model)
+```
+
+```promql
+# TPOT - Time per Output Token (P95)
+histogram_quantile(0.95, rate(model_time_per_output_token_seconds_bucket[5m])) by (model)
+```
+
+### Manual Model Server Checks
+
+```bash
+# Check Llama server metrics
+curl -s http://localhost:8080/metrics | grep -E "queue_depth|concurrent|latency"
+
+# Check Qwen server metrics
+curl -s http://localhost:8081/metrics | grep -E "queue_depth|concurrent|latency"
+
+# Check DeepSeek server metrics
+curl -s http://localhost:8082/metrics | grep -E "queue_depth|concurrent|latency"
+```
+
+```bash
+# Test inference latency directly
+time curl -X POST http://localhost:8080/v1/completions \
   -H "Content-Type: application/json" \
   -d '{
-    "vector": [0.1, 0.2, 0.3, ...],
-    "limit": 10
+    "prompt": "Test prompt",
+    "max_tokens": 100,
+    "temperature": 0.7
   }'
-
-# Check if HNSW index needs optimization
-curl http://localhost:6333/collections/documents | jq '.result.config.hnsw_config'
 ```
 
-**Solutions for Qdrant Issues**:
+### GPU Utilization for Model Inference
+
+```promql
+# GPU utilization during inference
+DCGM_FI_DEV_GPU_UTIL{pod=~".*max-serve.*"}
+```
+
+```promql
+# GPU memory usage during inference
+DCGM_FI_DEV_FB_USED{pod=~".*max-serve.*"} / 1024 / 1024 / 1024
+```
+
+```promql
+# GPU temperature
+DCGM_FI_DEV_GPU_TEMP{pod=~".*max-serve.*"}
+```
 
 ```bash
-# Optimize HNSW index
+# Check GPU via nvidia-smi
+docker exec max-serve-llama nvidia-smi
+```
+
+---
+
+## Actionable Mitigation Steps
+
+### Root Cause: Kong Gateway Latency
+
+**Symptoms:**
+- High `kong_latency` metric
+- Gateway CPU >80%
+- Request rate limit errors
+
+**Immediate Actions:**
+
+```bash
+# 1. Scale Kong horizontally
+docker compose up -d --scale kong=3
+
+# 2. Increase Kong worker processes
+# Edit docker-compose.yml: KONG_NGINX_WORKER_PROCESSES=auto
+docker compose up -d kong
+
+# 3. Enable Kong caching (if not enabled)
+curl -X POST http://localhost:8001/plugins \
+  -d "name=proxy-cache" \
+  -d "config.strategy=memory" \
+  -d "config.memory.dictionary_name=kong_cache"
+
+# 4. Adjust rate limits if too aggressive
+curl -X PATCH http://localhost:8001/plugins/<rate-limit-plugin-id> \
+  -d "config.minute=1000"
+```
+
+**Long-term Solutions:**
+- Implement Kong clustering for high availability
+- Use Redis for distributed caching
+- Enable request coalescing for duplicate requests
+- Optimize Kong plugins (disable unused ones)
+
+---
+
+### Root Cause: API Server Application Latency
+
+**Symptoms:**
+- High `http_request_duration_seconds` for API server
+- API CPU >80%
+- Slow endpoint-specific latency
+
+**Immediate Actions:**
+
+```bash
+# 1. Scale API server horizontally
+docker compose up -d --scale api-server=5
+
+# 2. Increase worker processes/threads
+# Edit docker-compose.yml: UVICORN_WORKERS=8
+docker compose up -d api-server
+
+# 3. Enable response caching
+curl -X POST http://localhost:8000/admin/cache/enable
+
+# 4. Increase request timeout (temporary)
+# Edit docker-compose.yml: REQUEST_TIMEOUT=60
+docker compose up -d api-server
+
+# 5. Profile the application
+docker exec api-server python -m cProfile -o /tmp/profile.prof app.py
+```
+
+**Long-term Solutions:**
+- Optimize slow endpoints (use profiling data)
+- Implement async processing for slow operations
+- Add caching layer (Redis) for expensive computations
+- Optimize database queries (see below)
+- Implement pagination for large result sets
+
+---
+
+### Root Cause: Postgres Database Latency
+
+**Symptoms:**
+- High `pg_stat_statements_mean_exec_time`
+- Postgres CPU >80%
+- Connection pool exhaustion (`pg_stat_activity` shows high connection count)
+
+**Immediate Actions:**
+
+```bash
+# 1. Kill long-running queries
+docker exec postgres psql -U ai_user -d ai_platform -c "
+SELECT pg_terminate_backend(pid)
+FROM pg_stat_activity
+WHERE pid <> pg_backend_pid()
+  AND state <> 'idle'
+  AND now() - query_start > interval '30 seconds';
+"
+
+# 2. Increase connection pool size
+# Edit docker-compose.yml or API server config:
+# DB_POOL_SIZE=50
+# DB_MAX_OVERFLOW=20
+docker compose up -d api-server
+
+# 3. Increase Postgres max_connections
+docker exec postgres psql -U ai_user -d ai_platform -c "
+ALTER SYSTEM SET max_connections = 200;
+SELECT pg_reload_conf();
+"
+
+# 4. Add missing index (example)
+docker exec postgres psql -U ai_user -d ai_platform -c "
+CREATE INDEX CONCURRENTLY idx_users_email ON users(email);
+"
+
+# 5. Vacuum bloated tables
+docker exec postgres psql -U ai_user -d ai_platform -c "
+VACUUM ANALYZE;
+"
+
+# 6. Enable read replicas (if configured)
+# Route read queries to replica
+# Edit API server config: DB_READ_REPLICA_URL=...
+```
+
+**Long-term Solutions:**
+- Optimize slow queries (use `EXPLAIN ANALYZE`)
+- Add proper indexes for frequently queried columns
+- Implement connection pooling with PgBouncer
+- Set up read replicas for read-heavy workloads
+- Partition large tables
+- Implement query result caching
+- Tune Postgres configuration (shared_buffers, work_mem, etc.)
+
+---
+
+### Root Cause: Qdrant Vector Database Latency
+
+**Symptoms:**
+- High `qdrant_request_duration_seconds`
+- Slow vector search operations
+- Qdrant CPU/memory >80%
+
+**Immediate Actions:**
+
+```bash
+# 1. Optimize HNSW index
 curl -X POST http://localhost:6333/collections/documents/index \
   -H "Content-Type: application/json" \
-  -d '{"action": "optimize"}'
+  -d '{"operation": "optimize"}'
 
-# Increase HNSW ef parameter for better accuracy (but slower)
-curl -X PATCH http://localhost:6333/collections/documents \
+# 2. Reduce search accuracy for speed (temporary)
+# Decrease ef parameter in search requests
+curl -X POST http://localhost:6333/collections/documents/points/search \
   -H "Content-Type: application/json" \
   -d '{
-    "hnsw_config": {
-      "ef_construct": 200,
-      "m": 32
+    "vector": [...],
+    "limit": 10,
+    "params": {
+      "hnsw_ef": 64
     }
   }'
 
-# Scale Qdrant if needed
-kubectl scale statefulset/qdrant --replicas=3 -n production
+# 3. Enable Qdrant caching
+# Edit qdrant config: cache_size_mb=1024
+
+# 4. Scale Qdrant (if using cluster mode)
+docker compose up -d --scale qdrant=3
 ```
 
-#### 2.3 Neo4j Investigation
-
-```bash
-# Check slow queries
-docker exec neo4j cypher-shell -u neo4j -p neo4j_password "
-  CALL dbms.listQueries() 
-  YIELD queryId, query, elapsedTimeMillis, allocatedBytes
-  WHERE elapsedTimeMillis > 1000
-  RETURN queryId, query, elapsedTimeMillis, allocatedBytes;
-"
-
-# Check for missing indexes
-docker exec neo4j cypher-shell -u neo4j -p neo4j_password "SHOW INDEXES;"
-
-# Check cache hit rates
-docker exec neo4j cypher-shell -u neo4j -p neo4j_password "
-  CALL dbms.queryJmx('org.neo4j:*') 
-  YIELD name, attributes
-  WHERE name CONTAINS 'PageCache'
-  RETURN name, attributes;
-"
-```
-
-**Solutions for Neo4j Issues**:
-
-```bash
-# Kill slow query
-docker exec neo4j cypher-shell -u neo4j -p neo4j_password "CALL dbms.killQuery('<queryId>');"
-
-# Add missing index
-docker exec neo4j cypher-shell -u neo4j -p neo4j_password "
-  CREATE INDEX user_email IF NOT EXISTS FOR (u:User) ON (u.email);
-"
-
-# Warm up cache (after restart)
-docker exec neo4j cypher-shell -u neo4j -p neo4j_password "
-  MATCH (n) RETURN count(n);
-"
-```
+**Long-term Solutions:**
+- Optimize HNSW parameters (ef_construct, m)
+- Use quantization to reduce memory usage
+- Implement result caching for common queries
+- Shard collections across multiple Qdrant instances
+- Use payload filtering efficiently (indexed fields)
 
 ---
 
-### Phase 3: Infrastructure Layer
+### Root Cause: Model Inference Latency
 
-#### 3.1 CPU and Memory
+**Symptoms:**
+- High `model_inference_duration_seconds`
+- High `model_inference_queue_depth` (>10)
+- GPU utilization 100%
+- Slow TTFT or TPOT
 
-```bash
-# Check pod resource usage
-kubectl top pods -n production --sort-by=cpu
-kubectl top pods -n production --sort-by=memory
-
-# Check node resource usage
-kubectl top nodes
-
-# Check for CPU throttling
-kubectl describe pod <pod-name> -n production | grep -A 10 "Resource Limits"
-
-# Check for OOM kills
-kubectl get events -n production | grep OOM
-
-# Check for context switches (high = CPU contention)
-docker stats --no-stream | head -20
-```
-
-**Solutions**:
+**Immediate Actions:**
 
 ```bash
-# Increase resource limits
-kubectl set resources deployment/api-server \
-  --limits=cpu=2000m,memory=4Gi \
-  --requests=cpu=1000m,memory=2Gi \
-  -n production
+# 1. Scale model servers horizontally (add GPU instances)
+# Note: Requires additional GPU resources
+docker compose up -d --scale max-serve-llama=2
 
-# Scale horizontally
-kubectl scale deployment/api-server --replicas=10 -n production
+# 2. Reduce max_batch_size for lower latency
+# Edit model server config: MAX_BATCH_SIZE=4
+docker compose up -d max-serve-llama
 
-# Add nodes to cluster (if cluster-level resource exhaustion)
-# Cloud-specific commands
+# 3. Implement request queuing with priority
+# Route urgent requests to dedicated instance
+
+# 4. Reduce max_tokens for requests
+# Client-side: limit max_tokens to 512 instead of 2048
+
+# 5. Enable KV cache optimization
+# Edit model server config: USE_KV_CACHE=true
+
+# 6. Switch to faster model (temporary)
+# Route to Qwen/DeepSeek instead of Llama for non-critical requests
 ```
 
-#### 3.2 Network Latency
-
-```bash
-# Check network latency between pods
-kubectl exec -it deployment/api-server -n production -- ping postgres
-kubectl exec -it deployment/api-server -n production -- ping qdrant
-
-# Check DNS resolution time
-kubectl exec -it deployment/api-server -n production -- time nslookup qdrant
-
-# Check service mesh latency (if using Istio/Linkerd)
-kubectl logs -l app=istio-proxy --tail=100 -n production | grep latency
-```
-
-**Solutions**:
-
-```bash
-# If DNS slow, use IP addresses or adjust DNS config
-# If inter-pod latency high, check CNI plugin configuration
-# If external dependency slow, add caching layer
-```
-
-#### 3.3 Disk I/O
-
-```bash
-# Check disk I/O wait
-kubectl exec -it deployment/api-server -n production -- iostat -x 1 5
-
-# Check for slow volumes
-kubectl describe pvc -n production
-
-# Check database disk performance
-docker exec postgres df -h
-docker exec postgres iostat -x 1 5
-```
+**Long-term Solutions:**
+- Implement model quantization (INT8/INT4) for faster inference
+- Use speculative decoding for faster generation
+- Implement continuous batching (vLLM/TensorRT-LLM)
+- Add more GPU capacity
+- Implement request prioritization and queuing
+- Use model caching for common prompts
+- Optimize model configuration (temperature, top_p, etc.)
+- Implement early stopping for generated responses
 
 ---
 
-### Phase 4: Dependency Analysis
+### Root Cause: Memory Saturation
 
-#### 4.1 Circuit Breaker Status
+**Symptoms:**
+- `container_memory_usage_bytes` >80% of limit
+- OOM kills (`container_memory_failcnt`)
+- High GC pauses (for Python/Java services)
 
-```bash
-# Check circuit breaker status
-curl http://localhost:8000/metrics | grep circuit_breaker
-
-# Check which services have open circuit breakers
-curl http://localhost:8000/admin/circuit-breaker/status | jq
-
-# If circuit breaker open, investigate dependent service
-```
-
-#### 4.2 External API Latency
+**Immediate Actions:**
 
 ```bash
-# Test external API directly
-for i in {1..10}; do
-  curl -w "Time: %{time_total}s\n" -o /dev/null -s http://external-api.example.com/health
-  sleep 1
-done
+# 1. Increase memory limits
+docker compose up -d --scale api-server=0
+# Edit docker-compose.yml: 
+#   deploy.resources.limits.memory: 4G
+docker compose up -d api-server
 
-# Check application logs for external API calls
-kubectl logs -l app=api-server --tail=500 -n production | grep "external_api" | grep "duration"
+# 2. Restart containers to clear memory leaks
+docker compose restart api-server
+
+# 3. Clear application caches
+curl -X POST http://localhost:8000/admin/cache/clear
+
+# 4. Reduce model batch size (for model servers)
+# Edit model config: MAX_BATCH_SIZE=2
+docker compose up -d max-serve-llama
 ```
 
-#### 4.3 Rate Limiting
-
-```bash
-# Check if hitting rate limits
-kubectl logs -l app=api-server --tail=500 -n production | grep -i "rate.limit\|429"
-
-# Check Kong/Gateway rate limit metrics
-curl http://localhost:8001/metrics | grep rate_limit
-```
+**Long-term Solutions:**
+- Fix memory leaks in application code
+- Implement proper cache eviction policies
+- Tune garbage collection (Python: gc module)
+- Optimize data structures (use generators, iterators)
+- Implement memory profiling and monitoring
 
 ---
 
-## Common Causes and Solutions
+### Root Cause: CPU Saturation
 
-### 1. Database Connection Pool Exhaustion
+**Symptoms:**
+- `container_cpu_usage_seconds_total` >80%
+- High `container_cpu_cfs_throttled_seconds_total`
+- Slow request processing
 
-**Symptoms**:
-- Latency spikes during peak traffic
-- "connection pool exhausted" errors
-- Increasing wait time for connections
+**Immediate Actions:**
 
-**Solution**:
 ```bash
-# Increase connection pool size
-kubectl set env deployment/api-server \
-  DB_POOL_SIZE=100 \
-  DB_POOL_TIMEOUT=30 \
-  -n production
+# 1. Increase CPU limits
+# Edit docker-compose.yml:
+#   deploy.resources.limits.cpus: "4"
+docker compose up -d api-server
 
-# Monitor pool usage
-curl http://localhost:8000/metrics | grep db_pool
+# 2. Scale horizontally
+docker compose up -d --scale api-server=5
+
+# 3. Reduce workload (temporary rate limiting)
+curl -X POST http://localhost:8001/plugins \
+  -d "name=rate-limiting" \
+  -d "config.minute=500"
 ```
+
+**Long-term Solutions:**
+- Optimize CPU-intensive operations
+- Implement caching to reduce computation
+- Use async/await properly (avoid blocking)
+- Profile and optimize hot code paths
 
 ---
 
-### 2. Missing Database Index
+### Root Cause: Network Saturation
 
-**Symptoms**:
-- Queries get slower as data grows
-- High CPU on database
-- Full table scans in query plans
+**Symptoms:**
+- High `container_network_receive_bytes_total`
+- Network errors increasing
+- Slow inter-service communication
 
-**Solution**:
+**Immediate Actions:**
+
 ```bash
-# Identify missing index
-docker exec postgres psql -U ai_user -d ai_platform -c "
-  EXPLAIN ANALYZE SELECT * FROM users WHERE email = 'test@example.com';
-"
+# 1. Enable response compression
+# Edit API server config: ENABLE_GZIP=true
+docker compose up -d api-server
 
-# Create index
-docker exec postgres psql -U ai_user -d ai_platform -c "
-  CREATE INDEX CONCURRENTLY idx_users_email ON users(email);
-"
+# 2. Reduce payload sizes
+# Implement pagination, field filtering
+
+# 3. Use local caching to reduce network calls
+curl -X POST http://localhost:8000/admin/cache/enable
 ```
 
----
-
-### 3. Memory Pressure / GC Pauses
-
-**Symptoms**:
-- Periodic latency spikes
-- Sawtooth memory usage pattern
-- GC logs showing long pause times
-
-**Solution**:
-```bash
-# Increase memory allocation
-kubectl set resources deployment/api-server \
-  --limits=memory=4Gi \
-  --requests=memory=2Gi \
-  -n production
-
-# Tune GC (Python)
-kubectl set env deployment/api-server \
-  PYTHONMALLOC=malloc \
-  MALLOC_TRIM_THRESHOLD_=65536 \
-  -n production
-```
-
----
-
-### 4. N+1 Query Problem
-
-**Symptoms**:
-- Latency increases with result set size
-- Many small queries instead of few large ones
-- Database connection count spikes
-
-**Solution**:
-```python
-# Bad: N+1 queries
-users = db.query(User).all()
-for user in users:
-    user.posts = db.query(Post).filter(Post.user_id == user.id).all()
-
-# Good: Single query with join
-users = db.query(User).options(joinedload(User.posts)).all()
-```
-
----
-
-### 5. Blocking I/O in Async Code
-
-**Symptoms**:
-- Entire service becomes unresponsive
-- Thread pool exhaustion
-- Worker processes stuck
-
-**Solution**:
-```python
-# Bad: Blocking I/O in async function
-async def get_data():
-    result = requests.get('http://api.example.com')  # Blocks!
-    return result.json()
-
-# Good: Async HTTP client
-async def get_data():
-    async with httpx.AsyncClient() as client:
-        result = await client.get('http://api.example.com')
-        return result.json()
-```
-
----
-
-### 6. Large Payload Serialization
-
-**Symptoms**:
-- Latency correlates with response size
-- High CPU during serialization
-- Memory spikes
-
-**Solution**:
-```bash
-# Enable response compression
-kubectl set env deployment/api-server \
-  ENABLE_GZIP=true \
-  -n production
-
-# Implement pagination
-# Limit max response size
-# Use streaming for large responses
-```
-
----
-
-### 7. Cold Start / Cache Miss
-
-**Symptoms**:
-- First request slow, subsequent requests fast
-- Latency spike after deployments
-- Latency spike after cache eviction
-
-**Solution**:
-```bash
-# Pre-warm cache after deployment
-curl http://localhost:8000/admin/cache/warmup
-
-# Increase cache size
-kubectl set env deployment/api-server \
-  CACHE_SIZE_MB=512 \
-  -n production
-
-# Implement cache preloading in startup script
-```
-
----
-
-## Mitigation Strategies
-
-### Immediate Actions (< 5 minutes)
-
-1. **Scale Up**
-   ```bash
-   kubectl scale deployment/api-server --replicas=10 -n production
-   ```
-
-2. **Increase Timeouts** (temporary)
-   ```bash
-   kubectl set env deployment/api-server REQUEST_TIMEOUT=60 -n production
-   ```
-
-3. **Enable Caching** (if not already enabled)
-   ```bash
-   curl -X POST http://localhost:8000/admin/cache/enable
-   ```
-
-4. **Rate Limit Aggressive Clients**
-   ```bash
-   # Identify top clients
-   kubectl logs -l app=api-server --tail=1000 -n production | \
-     grep "client_ip" | \
-     awk '{print $5}' | \
-     sort | uniq -c | sort -rn | head -10
-   
-   # Add rate limit
-   curl -X POST http://localhost:8001/admin/rate-limits \
-     -H "Content-Type: application/json" \
-     -d '{"client_ip": "1.2.3.4", "limit": "100/min"}'
-   ```
-
-### Short-term Fixes (< 1 hour)
-
-1. **Optimize Slow Queries**
-2. **Add Missing Indexes**
-3. **Increase Resource Limits**
-4. **Enable Read Replicas** (if available)
-5. **Implement Circuit Breakers** (for external dependencies)
-
-### Long-term Solutions
-
-1. **Implement Caching Strategy**
-2. **Database Query Optimization**
-3. **Code Profiling and Optimization**
-4. **Asynchronous Processing** (for slow operations)
-5. **Content Delivery Network** (for static assets)
-6. **Auto-scaling Policies**
+**Long-term Solutions:**
+- Implement gRPC instead of HTTP/JSON for inter-service
+- Use CDN for static assets
+- Optimize data transfer formats (protobuf, msgpack)
+- Implement request batching
 
 ---
 
@@ -667,88 +1050,105 @@ kubectl set env deployment/api-server \
 
 ### Monitoring and Alerting
 
-```yaml
-# Prometheus alert rules
-- alert: LatencyHigh
-  expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 1.5
-  for: 5m
-  labels:
-    severity: warning
-  annotations:
-    summary: "High latency detected"
-    description: "P99 latency is {{ $value }}s"
+**Prometheus Alert Rules:**
 
-- alert: LatencyCritical
-  expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 3.0
-  for: 2m
-  labels:
-    severity: critical
-  annotations:
-    summary: "Critical latency spike"
-    description: "P99 latency is {{ $value }}s"
+```yaml
+groups:
+  - name: latency_alerts
+    interval: 30s
+    rules:
+      - alert: LatencyP99High
+        expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 1.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P99 latency exceeds 1.5s"
+          description: "P99 latency is {{ $value }}s for {{ $labels.job }}"
+
+      - alert: LatencyP99Critical
+        expr: histogram_quantile(0.99, rate(http_request_duration_seconds_bucket[5m])) > 3.0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "P99 latency exceeds 3s"
+          description: "P99 latency is {{ $value }}s for {{ $labels.job }}"
+
+      - alert: ModelQueueDepthHigh
+        expr: model_inference_queue_depth > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Model inference queue depth exceeds 10"
+          description: "Queue depth is {{ $value }} for {{ $labels.model }}"
+
+      - alert: PostgresConnectionPoolExhaustion
+        expr: (pg_stat_database_numbackends / pg_settings_max_connections) > 0.8
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Postgres connection pool >80% utilized"
+          description: "Connection pool is {{ $value | humanizePercentage }} utilized"
+
+      - alert: CPUSaturation
+        expr: (rate(container_cpu_usage_seconds_total[5m]) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container CPU >80%"
+          description: "CPU usage is {{ $value }}% for {{ $labels.name }}"
+
+      - alert: MemorySaturation
+        expr: ((container_memory_usage_bytes / container_spec_memory_limit_bytes) * 100) > 80
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Container memory >80%"
+          description: "Memory usage is {{ $value }}% for {{ $labels.name }}"
 ```
 
 ### Load Testing
 
 ```bash
 # Regular load tests to establish baselines
-k6 run --vus 100 --duration 300s k6_load_test.js
+k6 run --vus 100 --duration 300s tests/load/k6_load_test.js
 
-# Stress testing before major releases
-locust -f locust_load_test.py --users 1000 --spawn-rate 50
+# Stress testing before releases
+k6 run --vus 500 --duration 600s tests/load/k6_stress_test.js
 ```
 
 ### Performance Budgets
 
-- P50 latency < 200ms
-- P95 latency < 500ms
-- P99 latency < 1s
-- Database query time < 100ms
-- External API calls < 500ms
+- **P50 latency**: <200ms
+- **P95 latency**: <500ms
+- **P99 latency**: <1s
+- **Database query time**: <100ms
+- **Model inference**: <500ms (Llama), <300ms (Qwen/DeepSeek)
+- **CPU usage**: <70% average
+- **Memory usage**: <70% average
+- **Connection pool**: <60% utilized
 
 ### Code Review Checklist
 
 - [ ] No blocking I/O in async code
-- [ ] Database queries use indexes
+- [ ] Database queries use proper indexes
 - [ ] Pagination implemented for large result sets
-- [ ] Response size limited
-- [ ] Caching strategy defined
+- [ ] Response compression enabled
+- [ ] Caching strategy implemented
 - [ ] Timeouts configured for all external calls
+- [ ] Connection pooling properly configured
 - [ ] Load tested under expected peak traffic
+- [ ] Prometheus metrics instrumented
+- [ ] Circuit breakers configured for external dependencies
 
 ---
 
-## Appendix: Useful Commands
-
-### Quick Metrics Check
-
-```bash
-# One-liner for current P99 latency
-curl -s 'http://localhost:9090/api/v1/query?query=histogram_quantile(0.99,rate(http_request_duration_seconds_bucket[5m]))' | jq -r '.data.result[0].value[1]'
-
-# Monitor latency in real-time
-watch -n 5 "curl -s 'http://localhost:9090/api/v1/query?query=histogram_quantile(0.99,rate(http_request_duration_seconds_bucket[5m]))' | jq -r '.data.result[0].value[1]'"
-```
-
-### Log Analysis
-
-```bash
-# Find slowest requests
-kubectl logs -l app=api-server --tail=5000 -n production | \
-  grep "duration_ms" | \
-  awk '{print $NF}' | \
-  sort -n | \
-  tail -20
-
-# Average request duration
-kubectl logs -l app=api-server --tail=1000 -n production | \
-  grep "duration_ms" | \
-  awk '{sum+=$NF; count++} END {print "Avg:", sum/count, "ms"}'
-```
-
----
-
-**Version**: 1.0  
+**Version**: 2.0  
 **Last Updated**: 2025-01-30  
-**Next Review**: 2025-02-28  
-**Owner**: SRE Team
+**Owner**: SRE Team  
+**Next Review**: 2025-02-28
