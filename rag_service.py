@@ -5,6 +5,8 @@ Nomic Embed v1.5 integration, and Qdrant storage.
 """
 
 import os
+import json
+import hashlib
 import uuid
 import logging
 from typing import List, Dict, Optional, Any
@@ -23,8 +25,56 @@ from qdrant_client.models import (
     MatchAny,
 )
 
+from hybrid_retrieval import rank_bm25_lite, fuse_rrf
+from cheap_reranker import rerank_results
+
 logger = logging.getLogger(__name__)
 DEFAULT_WORKSPACE_ID = os.getenv("RAG_DEFAULT_WORKSPACE_ID", "default").strip() or "default"
+HYBRID_RETRIEVAL_ENABLED = os.getenv("HYBRID_RETRIEVAL_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+HYBRID_RRF_K = int(os.getenv("HYBRID_RRF_K", "60"))
+HYBRID_VECTOR_CANDIDATE_MULTIPLIER = int(os.getenv("HYBRID_VECTOR_CANDIDATE_MULTIPLIER", "3"))
+RERANK_ENABLED = os.getenv("RERANK_ENABLED", "true").strip().lower() in ("1", "true", "yes")
+RERANK_ALPHA = float(os.getenv("RERANK_ALPHA", "0.65"))
+RERANK_MAX_CANDIDATES = int(os.getenv("RERANK_MAX_CANDIDATES", "40"))
+RERANK_ALPHA_BY_WORKSPACE = os.getenv("RERANK_ALPHA_BY_WORKSPACE", "")
+
+
+
+
+
+
+def _stable_chunk_hash(text: str) -> str:
+    """Build stable chunk hash for idempotent ingestion."""
+    return hashlib.sha256((text or "").encode("utf-8")).hexdigest()
+
+
+def _build_idempotent_point_id(*, workspace_id: str, metadata: Dict[str, Any], chunk_hash: str) -> str:
+    """Derive deterministic point id from workspace/doc/chunk identity."""
+    document_id = str(metadata.get("document_id", ""))
+    chunk_index = str(metadata.get("chunk_index", ""))
+    commit_sha = str(metadata.get("commit_sha") or metadata.get("git_commit") or "")
+    key = "|".join([workspace_id, document_id, chunk_index, commit_sha, chunk_hash])
+    return hashlib.sha256(key.encode("utf-8")).hexdigest()
+
+def _resolve_rerank_alpha(workspace_id: str) -> float:
+    """Resolve rerank alpha with optional workspace-specific override."""
+    default_alpha = max(0.0, min(1.0, RERANK_ALPHA))
+    raw_mapping = (RERANK_ALPHA_BY_WORKSPACE or "").strip()
+    if not raw_mapping:
+        return default_alpha
+    try:
+        mapping = json.loads(raw_mapping)
+    except Exception:
+        return default_alpha
+    if not isinstance(mapping, dict):
+        return default_alpha
+    candidate = mapping.get(workspace_id)
+    if candidate is None:
+        return default_alpha
+    try:
+        return max(0.0, min(1.0, float(candidate)))
+    except (TypeError, ValueError):
+        return default_alpha
 
 
 class DocumentChunker:
@@ -255,10 +305,15 @@ class QdrantStorage:
         point_ids = []
         
         for text, embedding, metadata in zip(texts, embeddings, metadatas):
-            point_id = str(uuid.uuid4())
+            metadata_payload = metadata.copy() if metadata else {}
+            chunk_hash = _stable_chunk_hash(text)
+            point_id = _build_idempotent_point_id(
+                workspace_id=normalized_workspace_id,
+                metadata=metadata_payload,
+                chunk_hash=chunk_hash,
+            )
             point_ids.append(point_id)
 
-            metadata_payload = metadata.copy() if metadata else {}
             metadata_workspace_id = metadata_payload.get("workspace_id")
             if metadata_workspace_id is not None:
                 normalized_metadata_workspace = self._normalize_workspace_id(metadata_workspace_id)
@@ -267,7 +322,8 @@ class QdrantStorage:
                         "metadata.workspace_id must match the workspace_id argument"
                     )
             metadata_payload["workspace_id"] = normalized_workspace_id
-            
+            metadata_payload["chunk_hash"] = chunk_hash
+
             payload = {
                 "text": text,
                 "workspace_id": normalized_workspace_id,
@@ -606,14 +662,43 @@ class RAGIngestionService:
             filters=filters,
         )
         query_embedding = self.embedder.embed_text(query)
-        results = self.storage.search(
+        candidate_limit = max(limit, limit * max(1, HYBRID_VECTOR_CANDIDATE_MULTIPLIER))
+        vector_results = self.storage.search(
             query_embedding,
             workspace_id=resolved_workspace_id,
-            limit=limit,
+            limit=candidate_limit,
             filter_conditions=filters,
             collection_name=collection_name,
         )
-        return results
+
+        for result in vector_results:
+            result_workspace = str((result.get("metadata") or {}).get("workspace_id", "")).strip()
+            if result_workspace != resolved_workspace_id:
+                raise ValueError(
+                    f"Cross-workspace retrieval leakage detected: expected={resolved_workspace_id} got={result_workspace}"
+                )
+
+        if not HYBRID_RETRIEVAL_ENABLED:
+            base_results = vector_results[:limit]
+        else:
+            bm25_ranked = rank_bm25_lite(query, vector_results)
+            base_results = fuse_rrf(
+                vector_results,
+                bm25_ranked,
+                rrf_k=max(1, HYBRID_RRF_K),
+                top_k=max(limit, RERANK_MAX_CANDIDATES),
+            )
+
+        if not RERANK_ENABLED:
+            return base_results[:limit]
+
+        rerank_candidates = base_results[: max(limit, RERANK_MAX_CANDIDATES)]
+        return rerank_results(
+            query,
+            rerank_candidates,
+            alpha=_resolve_rerank_alpha(resolved_workspace_id),
+            top_k=limit,
+        )
 
     def semantic_search(
         self,
@@ -698,12 +783,39 @@ class RAGIngestionService:
             filters=filters,
         )
         query_embedding = self.embedder.embed_text(query)
+        candidate_limit = max(limit, limit * max(1, HYBRID_VECTOR_CANDIDATE_MULTIPLIER))
         vector_results = self.storage.search(
             query_embedding,
             workspace_id=resolved_workspace_id,
-            limit=limit,
+            limit=candidate_limit,
             filter_conditions=filters,
         )
+        for result in vector_results:
+            result_workspace = str((result.get("metadata") or {}).get("workspace_id", "")).strip()
+            if result_workspace != resolved_workspace_id:
+                raise ValueError(
+                    f"Cross-workspace retrieval leakage detected: expected={resolved_workspace_id} got={result_workspace}"
+                )
+        if HYBRID_RETRIEVAL_ENABLED:
+            bm25_ranked = rank_bm25_lite(query, vector_results)
+            vector_results = fuse_rrf(
+                vector_results,
+                bm25_ranked,
+                rrf_k=max(1, HYBRID_RRF_K),
+                top_k=max(limit, RERANK_MAX_CANDIDATES),
+            )
+        else:
+            vector_results = vector_results[: max(limit, RERANK_MAX_CANDIDATES)]
+
+        if RERANK_ENABLED:
+            vector_results = rerank_results(
+                query,
+                vector_results[: max(limit, RERANK_MAX_CANDIDATES)],
+                alpha=_resolve_rerank_alpha(resolved_workspace_id),
+                top_k=limit,
+            )
+        else:
+            vector_results = vector_results[:limit]
         
         # Step 2: Extract entities from query
         logger.info("Extracting entities from query")

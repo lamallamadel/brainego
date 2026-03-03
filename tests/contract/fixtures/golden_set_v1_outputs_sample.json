@@ -1,0 +1,434 @@
+{
+  "outputs": [
+    {
+      "id": "GS1-001",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-002",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-003",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-004",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-005",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-006",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-007",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-008",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-009",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-010",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-011",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-012",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-013",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-014",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-015",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-016",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-017",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-018",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-019",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-020",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-021",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-022",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-023",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-024",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-025",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-026",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-027",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-028",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-029",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-030",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-031",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-032",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-033",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-034",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-035",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-036",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-037",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-038",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-039",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-040",
+      "supported_answer": true,
+      "false_citation": false
+    },
+    {
+      "id": "GS1-041",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-042",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-043",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-044",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-045",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-046",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-047",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-048",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-049",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    },
+    {
+      "id": "GS1-050",
+      "supported_answer": false,
+      "false_citation": false,
+      "missing_context": {
+        "targeted_questions": [
+          "Quel doc ?"
+        ],
+        "ingestion_suggestion": "Ingest docs"
+      }
+    }
+  ]
+}
