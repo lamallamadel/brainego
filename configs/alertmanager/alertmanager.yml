@@ -114,6 +114,7 @@ receivers:
           *Component:* {{ .CommonLabels.component }}
           *Summary:* {{ .CommonAnnotations.summary }}
           *Description:* {{ .CommonAnnotations.description }}
+          *Runbook:* {{ .CommonAnnotations.runbook_url }}
           
           *Details:*
           {{ range .Alerts }}
@@ -133,6 +134,7 @@ receivers:
           *Component:* {{ .CommonLabels.component }}
           *Summary:* {{ .CommonAnnotations.summary }}
           *Description:* {{ .CommonAnnotations.description }}
+          *Runbook:* {{ .CommonAnnotations.runbook_url }}
           
           @channel - Immediate attention required!
           

@@ -1,0 +1,356 @@
+{
+  "version": "golden_set_v1",
+  "description": "S0-4 baseline golden set for grounded-first evaluation",
+  "cases": [
+    {
+      "id": "GS1-001",
+      "question": "Bonjour 1, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-002",
+      "question": "Bonjour 2, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-003",
+      "question": "Bonjour 3, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-004",
+      "question": "Bonjour 4, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-005",
+      "question": "Bonjour 5, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-006",
+      "question": "Bonjour 6, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-007",
+      "question": "Bonjour 7, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-008",
+      "question": "Bonjour 8, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-009",
+      "question": "Bonjour 9, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-010",
+      "question": "Bonjour 10, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-011",
+      "question": "Bonjour 11, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-012",
+      "question": "Bonjour 12, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-013",
+      "question": "Bonjour 13, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-014",
+      "question": "Bonjour 14, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-015",
+      "question": "Bonjour 15, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-016",
+      "question": "Bonjour 16, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-017",
+      "question": "Bonjour 17, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-018",
+      "question": "Bonjour 18, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-019",
+      "question": "Bonjour 19, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-020",
+      "question": "Bonjour 20, comment \u00e7a va?",
+      "intent": "freeform",
+      "answerable": false,
+      "category": "greeting"
+    },
+    {
+      "id": "GS1-021",
+      "question": "What does internal policy section 21 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-022",
+      "question": "What does internal policy section 22 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-023",
+      "question": "What does internal policy section 23 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-024",
+      "question": "What does internal policy section 24 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-025",
+      "question": "What does internal policy section 25 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-026",
+      "question": "What does internal policy section 26 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-027",
+      "question": "What does internal policy section 27 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-028",
+      "question": "What does internal policy section 28 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-029",
+      "question": "What does internal policy section 29 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-030",
+      "question": "What does internal policy section 30 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-031",
+      "question": "What does internal policy section 31 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-032",
+      "question": "What does internal policy section 32 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-033",
+      "question": "What does internal policy section 33 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-034",
+      "question": "What does internal policy section 34 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-035",
+      "question": "What does internal policy section 35 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-036",
+      "question": "What does internal policy section 36 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-037",
+      "question": "What does internal policy section 37 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-038",
+      "question": "What does internal policy section 38 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-039",
+      "question": "What does internal policy section 39 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-040",
+      "question": "What does internal policy section 40 say about retention?",
+      "intent": "must_ground",
+      "answerable": true,
+      "category": "internal_factual"
+    },
+    {
+      "id": "GS1-041",
+      "question": "Summarize undocumented project 41 architecture from corpus.",
+      "intent": "must_ground",
+      "answerable": false,
+      "category": "missing_context"
+    },
+    {
+      "id": "GS1-042",
+      "question": "Summarize undocumented project 42 architecture from corpus.",
+      "intent": "must_ground",
+      "answerable": false,
+      "category": "missing_context"
+    },
+    {
+      "id": "GS1-043",
+      "question": "Summarize undocumented project 43 architecture from corpus.",
+      "intent": "must_ground",
+      "answerable": false,
+      "category": "missing_context"
+    },
+    {
+      "id": "GS1-044",
+      "question": "Summarize undocumented project 44 architecture from corpus.",
+      "intent": "must_ground",
+      "answerable": false,
+      "category": "missing_context"
+    },
+    {
+      "id": "GS1-045",
+      "question": "Summarize undocumented project 45 architecture from corpus.",
+      "intent": "must_ground",
+      "answerable": false,
+      "category": "missing_context"
+    },
+    {
+      "id": "GS1-046",
+      "question": "Summarize undocumented project 46 architecture from corpus.",
+      "intent": "must_ground",
+      "answerable": false,
+      "category": "missing_context"
+    },
+    {
+      "id": "GS1-047",
+      "question": "Summarize undocumented project 47 architecture from corpus.",
+      "intent": "must_ground",
+      "answerable": false,
+      "category": "missing_context"
+    },
+    {
+      "id": "GS1-048",
+      "question": "Summarize undocumented project 48 architecture from corpus.",
+      "intent": "must_ground",
+      "answerable": false,
+      "category": "missing_context"
+    },
+    {
+      "id": "GS1-049",
+      "question": "Summarize undocumented project 49 architecture from corpus.",
+      "intent": "must_ground",
+      "answerable": false,
+      "category": "missing_context"
+    },
+    {
+      "id": "GS1-050",
+      "question": "Summarize undocumented project 50 architecture from corpus.",
+      "intent": "must_ground",
+      "answerable": false,
+      "category": "missing_context"
+    }
+  ]
+}

@@ -5,6 +5,12 @@ on:
     branches:
       - master
       - main
+  pull_request:
+    branches:
+      - master
+      - main
+  schedule:
+    - cron: "0 2 * * *"
   workflow_dispatch:
     inputs:
       environment:
@@ -30,6 +36,7 @@ env:
 jobs:
   load-test:
     name: K6 Load Test - SLO Validation
+    if: github.event_name != 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 45
     
@@ -126,3 +133,37 @@ jobs:
               body: reportBody,
               labels: ['performance', 'slo-violation', 'critical', 'load-test']
             });
+
+
+  nightly-load-test:
+    name: K6 Nightly Suite
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo gpg -k
+          sudo gpg --no-default-keyring --keyring /usr/share/keyrings/k6-archive-keyring.gpg --keyserver hkp://keyserver.ubuntu.com:80 --recv-keys C5AD17C747E3415A3642D57D77C6C491D6AC1D69
+          echo "deb [signed-by=/usr/share/keyrings/k6-archive-keyring.gpg] https://dl.k6.io/deb stable main" | sudo tee /etc/apt/sources.list.d/k6.list
+          sudo apt-get update
+          sudo apt-get install -y k6 jq bc curl
+
+      - name: Run k6 nightly suite
+        run: |
+          chmod +x ./scripts/load_test/run_k6_nightly_suite.sh
+          ./scripts/load_test/run_k6_nightly_suite.sh
+
+      - name: Upload nightly results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: load-test-nightly-results-${{ github.run_number }}-${{ github.run_attempt }}
+          path: |
+            load_test_results/
+          retention-days: 30
+          compression-level: 9

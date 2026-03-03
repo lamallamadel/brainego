@@ -40,6 +40,17 @@ from circuit_breaker import get_all_circuit_breaker_stats
 from internal_mcp_client import InternalMCPGatewayClient
 from tool_policy_engine import ToolPolicyEngine, load_default_tool_policy_engine
 from security_heuristics import detect_prompt_injection_patterns
+from grounding_intent_classifier import GroundingIntentClassifier
+from evidence_sufficiency import compute_evidence_sufficiency
+from missing_context_response import build_missing_context_payload, should_return_missing_context
+from teacher_broker import TeacherBroker
+from teacher_contract import validate_teacher_output
+from recovery_planner import run_recovery_attempts
+from learning_events_store import LearningEventsStore
+from retrieval_recipes_store import RetrievalRecipesStore, apply_retrieval_recipe
+from overlay_rules_store import OverlayRulesStore
+from overlay_router import pick_overlay_match
+from patch_engine import promote_learning_events
 from workspace_context import (
     build_rag_retrieval_filters,
     ensure_workspace_filter,
@@ -137,6 +148,9 @@ RAG_EMBEDDING_MODEL = os.getenv("RAG_EMBEDDING_MODEL", "nomic-ai/nomic-embed-tex
 RAG_EMBEDDING_PROVIDER = os.getenv("RAG_EMBEDDING_PROVIDER", "local")
 RAG_EMBEDDING_SERVICE_URL = os.getenv("RAG_EMBEDDING_SERVICE_URL", "http://embedding-service:8003")
 RAG_DEFAULT_WORKSPACE_ID = os.getenv("RAG_DEFAULT_WORKSPACE_ID", "default").strip() or "default"
+ESS_THRESHOLD_LOW = float(os.getenv("ESS_THRESHOLD_LOW", "0.35"))
+ESS_THRESHOLD_HIGH = float(os.getenv("ESS_THRESHOLD_HIGH", "0.60"))
+RECOVERY_MAX_ATTEMPTS = int(os.getenv("RECOVERY_MAX_ATTEMPTS", "2"))
 MCP_GATEWAY_URL = os.getenv("MCP_GATEWAY_URL", "http://mcpjungle:9100")
 MCP_GATEWAY_API_KEY = os.getenv("MCP_GATEWAY_API_KEY", "")
 WORKSPACE_ID_RESPONSE_HEADER = "X-Workspace-Id"
@@ -1787,6 +1801,15 @@ class MetricsStore:
         self.safety_blocked_category_counts: Dict[str, int] = {}
         self.safety_reason_code_counts: Dict[str, int] = {}
         self.user_metering: Dict[str, Dict[str, int]] = {}
+        self.intent_distribution: Dict[str, int] = {"must_ground": 0, "should_ground": 0, "freeform": 0}
+        self.ess_samples: List[float] = []
+        self.missing_context_responses = 0
+        self.false_citation_events = 0
+        self.teacher_calls = 0
+        self.teacher_blocked_redaction = 0
+        self.recovery_attempts = 0
+        self.recovery_successes = 0
+        self.unsupported_answer_events = 0
 
     @staticmethod
     def _normalize_user_id(value: Optional[str]) -> Optional[str]:
@@ -1872,6 +1895,64 @@ class MetricsStore:
             self.safety_reason_code_counts[normalized_reason] = (
                 self.safety_reason_code_counts.get(normalized_reason, 0) + 1
             )
+
+    def record_grounding_intent(self, intent: str):
+        """Track must/should/freeform grounding intent distribution."""
+        normalized = (intent or "").strip().lower()
+        if normalized not in self.intent_distribution:
+            normalized = "freeform"
+        self.intent_distribution[normalized] += 1
+
+    def record_ess(self, ess: float):
+        """Track evidence sufficiency score distribution."""
+        clamped = max(0.0, min(1.0, float(ess)))
+        self.ess_samples.append(clamped)
+        if len(self.ess_samples) > 5000:
+            self.ess_samples = self.ess_samples[-5000:]
+
+    def record_missing_context_response(self):
+        """Track count of standardized missing-context responses."""
+        self.missing_context_responses += 1
+
+    def record_false_citation_event(self):
+        """Track unsupported grounded answers downgraded to missing-context."""
+        self.false_citation_events += 1
+
+    def record_teacher_call(self):
+        self.teacher_calls += 1
+
+    def record_teacher_blocked_redaction(self):
+        self.teacher_blocked_redaction += 1
+
+    def record_recovery_attempt(self, success: bool = False):
+        self.recovery_attempts += 1
+        if success:
+            self.recovery_successes += 1
+
+    def record_unsupported_answer(self):
+        self.unsupported_answer_events += 1
+
+    def _build_ess_histogram(self) -> Dict[str, int]:
+        histogram = {
+            "0.0-0.2": 0,
+            "0.2-0.4": 0,
+            "0.4-0.6": 0,
+            "0.6-0.8": 0,
+            "0.8-1.0": 0,
+        }
+        for score in self.ess_samples:
+            if score < 0.2:
+                histogram["0.0-0.2"] += 1
+            elif score < 0.4:
+                histogram["0.2-0.4"] += 1
+            elif score < 0.6:
+                histogram["0.4-0.6"] += 1
+            elif score < 0.8:
+                histogram["0.6-0.8"] += 1
+            else:
+                histogram["0.8-1.0"] += 1
+        return histogram
+
     def record_memory_telemetry(
         self,
         memory_metadata: Optional[Dict[str, Any]],
@@ -1967,6 +2048,14 @@ class MetricsStore:
                     "blocked_category_counts": dict(self.safety_blocked_category_counts),
                     "reason_code_counts": dict(sorted(self.safety_reason_code_counts.items())),
                 },
+                "intent_distribution": dict(self.intent_distribution),
+                "ess_histogram": self._build_ess_histogram(),
+                "missing_context_rate": round(self.missing_context_responses / self.request_count, 4) if self.request_count else 0.0,
+                "false_citation_rate": round(self.false_citation_events / self.request_count, 4) if self.request_count else 0.0,
+                "teacher_calls": self.teacher_calls,
+                "teacher_blocked_redaction": self.teacher_blocked_redaction,
+                "recovery_success_rate": round(self.recovery_successes / self.recovery_attempts, 4) if self.recovery_attempts else 0.0,
+                "unsupported_answer_rate": round(self.unsupported_answer_events / self.request_count, 4) if self.request_count else 0.0,
                 "errors": self.errors,
                 "error_rate_percent": self._rate(self.errors, self.request_count),
                 "avg_latency_ms": 0,
@@ -1990,6 +2079,14 @@ class MetricsStore:
                 "blocked_category_counts": dict(self.safety_blocked_category_counts),
                 "reason_code_counts": dict(sorted(self.safety_reason_code_counts.items())),
             },
+            "intent_distribution": dict(self.intent_distribution),
+            "ess_histogram": self._build_ess_histogram(),
+            "missing_context_rate": round(self.missing_context_responses / self.request_count, 4) if self.request_count else 0.0,
+            "false_citation_rate": round(self.false_citation_events / self.request_count, 4) if self.request_count else 0.0,
+            "teacher_calls": self.teacher_calls,
+            "teacher_blocked_redaction": self.teacher_blocked_redaction,
+            "recovery_success_rate": round(self.recovery_successes / self.recovery_attempts, 4) if self.recovery_attempts else 0.0,
+            "unsupported_answer_rate": round(self.unsupported_answer_events / self.request_count, 4) if self.request_count else 0.0,
             "errors": self.errors,
             "error_rate_percent": self._rate(self.errors, self.request_count),
             "avg_latency_ms": round(self.total_latency / len(self.latencies), 2),
@@ -2228,6 +2325,11 @@ class UsageMeteringMetrics:
 
 
 metrics = MetricsStore()
+grounding_intent_classifier = GroundingIntentClassifier()
+teacher_broker = TeacherBroker(timeout_seconds=float(os.getenv("TEACHER_TIMEOUT_SECONDS", "1.5")))
+learning_events_store = LearningEventsStore()
+retrieval_recipes_store = RetrievalRecipesStore()
+overlay_rules_store = OverlayRulesStore()
 usage_metering = UsageMeteringMetrics()
 # Initialize services (lazy loading)
 agent_router = None
@@ -2930,6 +3032,26 @@ def rag_context_is_insufficient(
     return not rag_results or not rag_sources
 
 
+def _tokenize_support_text(text: str) -> set[str]:
+    tokens = re.findall(r"[a-z0-9]+", (text or "").lower())
+    stop = {"the","a","an","and","or","to","of","in","for","on","with","is","are","was","were","be","this","that","it","as","at","by","from"}
+    return {t for t in tokens if len(t) >= 4 and t not in stop}
+
+
+def answer_supported_by_context(answer: str, rag_results: List[Dict[str, Any]], *, min_overlap_ratio: float = 0.12) -> bool:
+    """Cheap support-check: answer must overlap with retrieved context tokens."""
+    if not answer or not rag_results:
+        return False
+    context_text = "\n".join(str(item.get("text", "")) for item in rag_results if isinstance(item, dict))
+    context_tokens = _tokenize_support_text(context_text)
+    answer_tokens = _tokenize_support_text(answer)
+    if not answer_tokens or not context_tokens:
+        return False
+    overlap = len(answer_tokens.intersection(context_tokens))
+    ratio = overlap / max(1, len(answer_tokens))
+    return ratio >= max(0.01, float(min_overlap_ratio))
+
+
 def render_rag_citation_section(rag_sources: List[Dict[str, str]]) -> str:
     """Render deterministic source citation section for answer payload."""
     if not rag_sources:
@@ -2965,6 +3087,24 @@ def append_rag_citations_and_guidance(
     if not normalized_text:
         return suffix
     return f"{normalized_text}\n\n{suffix}"
+def record_learning_event(*, workspace_id: str, event: Dict[str, Any]) -> None:
+    """Persist workspace-scoped learning event with redaction."""
+    try:
+        learning_events_store.append(workspace_id=workspace_id, event=event)
+    except Exception as exc:
+        logger.warning("Failed to persist learning event: %s", exc)
+
+
+def emit_workspace_audit_trace(*, endpoint: str, workspace_id: str, event: str) -> None:
+    """Emit structured workspace audit trace for retrieval isolation checks."""
+    logger.info(
+        "workspace_audit_trace endpoint=%s workspace_id=%s event=%s",
+        endpoint,
+        workspace_id,
+        event,
+    )
+
+
 def _hash_text_for_security_log(text: str) -> str:
     """Return a short non-reversible hash suitable for security logs."""
     if not text:
@@ -4601,6 +4741,7 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             context="/v1/chat/completions",
         )
         metering_workspace_id = workspace_id
+        emit_workspace_audit_trace(endpoint="/v1/chat/completions", workspace_id=workspace_id, event="request_start")
         authenticated_user_id = get_authenticated_user_id(raw_request)
         effective_user_id = authenticated_user_id or request.user
 
@@ -4625,6 +4766,30 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         memory_context_data = None
         memory_metadata = None
         security_metadata = detect_prompt_injection_patterns(request.messages)
+        latest_user_message = next((msg.content for msg in reversed(request.messages) if msg.role == "user"), "")
+        grounding_intent = grounding_intent_classifier.classify(latest_user_message).value
+        metrics.record_grounding_intent(grounding_intent)
+
+        overlay_rules = overlay_rules_store.get_active_rules(workspace_id)
+        overlay_match = pick_overlay_match(intent=grounding_intent, query=latest_user_message, rules=overlay_rules)
+        if overlay_match:
+            completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+            created = int(time.time())
+            return {
+                "id": completion_id,
+                "object": "chat.completion",
+                "created": created,
+                "model": request.model or "overlay-router",
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": overlay_match["response"]}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                "x-routing-metadata": {
+                    "overlay_applied": True,
+                    "overlay_rule_id": overlay_match.get("rule_id"),
+                    "overlay_rule_priority": overlay_match.get("priority"),
+                    "grounding_intent": grounding_intent,
+                    "workspace_id": workspace_id,
+                },
+            }
 
         if security_metadata["suspicious"]:
             logger.warning(
@@ -4722,6 +4887,9 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                     detail="RAG requires at least one user message or rag.query"
                 )
             retrieval_start = time.time()
+            grounding_intent = grounding_intent_classifier.classify(retrieval_query).value
+            metrics.record_grounding_intent(grounding_intent)
+
             rag_filters = build_rag_retrieval_filters(
                 request.rag.filters,
                 workspace_id,
@@ -4741,6 +4909,78 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
             rag_results, rag_sanitization = sanitize_retrieved_context_chunks(rag_results)
             rag_sources = extract_rag_sources(rag_results)
             rag_context_insufficient = rag_context_is_insufficient(rag_results, rag_sources)
+            ess_score = compute_evidence_sufficiency(rag_results, len(rag_sources))
+            metrics.record_ess(ess_score)
+            if should_return_missing_context(grounding_intent, ess_score, ESS_THRESHOLD_HIGH):
+                missing_context_payload = build_missing_context_payload(
+                    retrieval_query,
+                    ess_score,
+                    ESS_THRESHOLD_HIGH,
+                )
+                teacher_request, blocked = teacher_broker.build_request(
+                    question=retrieval_query,
+                    metadata={"workspace_id": workspace_id, "grounding_intent": grounding_intent, "ess": ess_score},
+                    redacted_summaries=[str(r.get("text", "")) for r in rag_results],
+                )
+                if blocked:
+                    metrics.record_teacher_blocked_redaction()
+                try:
+                    metrics.record_teacher_call()
+                    teacher_raw = await teacher_broker.call(teacher_request)
+                    teacher_validated = validate_teacher_output(teacher_raw)
+                    if teacher_validated is not None:
+                        missing_context_payload["teacher_guidance"] = teacher_validated.model_dump()
+                    else:
+                        missing_context_payload["teacher_guidance"] = {"invalid_teacher_output": True}
+                except Exception:
+                    missing_context_payload["teacher_guidance"] = {"timeout_or_error": True}
+                record_learning_event(workspace_id=workspace_id, event={"trigger": "missing_context", "teacher_used": True, "outcome": "missing_context"})
+                metrics.record_missing_context_response()
+                rag_metadata = {
+                    "enabled": True,
+                    "query": retrieval_query,
+                    "k": request.rag.k,
+                    "filters": rag_filters,
+                    "min_score": request.rag.min_score,
+                    "workspace_id": workspace_id,
+                    "chunks_retrieved": len(rag_results),
+                    "context_sanitization": rag_sanitization,
+                    "retrieval_time_ms": round(retrieval_time_ms, 2),
+                    "top_score": None,
+                    "avg_score": None,
+                    "sources": rag_sources,
+                    "source_count": len(rag_sources),
+                    "missing_context_guidance_required": True,
+                    "grounding_intent": grounding_intent,
+                    "ess": ess_score,
+                    "ess_threshold_low": ESS_THRESHOLD_LOW,
+                    "ess_threshold_high": ESS_THRESHOLD_HIGH,
+                    "response_mode": "missing_context",
+                    "missing_context": missing_context_payload,
+                }
+
+                completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
+                created = int(time.time())
+                response_model = request.model or "missing-context"
+                routing_metadata = {"model_id": "missing_context", "intent": "must_ground", "fallback_used": True}
+                response_data = {
+                    "id": completion_id,
+                    "object": "chat.completion",
+                    "created": created,
+                    "model": response_model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": json.dumps(missing_context_payload, ensure_ascii=False)},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0},
+                    "x-routing-metadata": routing_metadata,
+                    "x-rag-metadata": rag_metadata,
+                    "sources": rag_sources,
+                }
+                return response_data
             if rag_sanitization["chunks_with_injection"] or rag_sanitization["secret_redactions"]:
                 logger.warning(
                     "RAG context sanitized in chat_completions: injection_chunks=%s dropped_lines=%s secret_redactions=%s",
@@ -4790,7 +5030,12 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
                 "avg_score": round(sum(rag_scores) / len(rag_scores), 4) if rag_scores else None,
                 "sources": rag_sources,
                 "source_count": len(rag_sources),
+                "citation_contract": "path@commit",
                 "missing_context_guidance_required": rag_context_insufficient,
+                "grounding_intent": grounding_intent,
+                "ess": ess_score,
+                "ess_threshold_low": ESS_THRESHOLD_LOW,
+                "ess_threshold_high": ESS_THRESHOLD_HIGH,
             }
             if request.rag.include_context:
                 rag_context_data = [
@@ -4849,6 +5094,19 @@ async def chat_completions(request: ChatCompletionRequest, raw_request: Request)
         if guardrail_metadata:
             routing_metadata["output_guardrail"] = guardrail_metadata
         if request.rag and request.rag.enabled:
+            support_check_failed = bool(rag_sources) and not answer_supported_by_context(generated_text, rag_results)
+            if support_check_failed:
+                rag_context_insufficient = True
+                metrics.record_false_citation_event()
+                metrics.record_unsupported_answer()
+                missing_context_payload = build_missing_context_payload(retrieval_query, ess_score, ESS_THRESHOLD_HIGH)
+                generated_text = json.dumps(missing_context_payload, ensure_ascii=False)
+                if rag_metadata is None:
+                    rag_metadata = {}
+                rag_metadata["response_mode"] = "missing_context"
+                rag_metadata["support_check_failed"] = True
+                rag_metadata["missing_context"] = missing_context_payload
+                record_learning_event(workspace_id=workspace_id, event={"trigger": "support_check", "teacher_used": False, "outcome": "downgraded_missing_context"})
             generated_text = append_rag_citations_and_guidance(
                 generated_text,
                 rag_sources=rag_sources,
@@ -5065,6 +5323,10 @@ async def unified_chat(request: UnifiedChatRequest, raw_request: Request):
             endpoint="/v1/chat",
         )
         enforce_safety_gateway(safety_verdict)
+    latest_user_message = next((msg.content for msg in reversed(request.messages) if msg.role == "user"), "")
+    grounding_intent = grounding_intent_classifier.classify(latest_user_message).value
+    metrics.record_grounding_intent(grounding_intent)
+
     resolved_user = request.user_id or request.user
     resolved_user = get_authenticated_user_id(raw_request) or resolved_user
     completion_request = ChatCompletionRequest(
@@ -5101,6 +5363,8 @@ async def unified_chat(request: UnifiedChatRequest, raw_request: Request):
     response = await chat_completions(completion_request, raw_request)
     if isinstance(response, dict):
         routing_metadata = response.get("x-routing-metadata", {})
+        routing_metadata["grounding_intent"] = grounding_intent
+        response["x-routing-metadata"] = routing_metadata
         logger.info(
             "Unified chat intent classification: intent=%s model=%s fallback=%s",
             routing_metadata.get("intent"),
@@ -5399,7 +5663,7 @@ async def rag_search(request: RAGSearchRequest):
         workspace_id = get_current_workspace_id()
         workspace_id = _ensure_workspace_active(workspace_id, context="/v1/rag/search")
         rag_filters = build_rag_retrieval_filters(
-            request.filters,
+            merged_filters,
             workspace_id,
             repo=request.repo,
             path=request.path,
@@ -5596,6 +5860,19 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
             workspace_id,
             context="/v1/rag/query",
         )
+        emit_workspace_audit_trace(endpoint="/v1/rag/query", workspace_id=workspace_id, event="request_start")
+        grounding_intent = grounding_intent_classifier.classify(request.query).value
+        metrics.record_grounding_intent(grounding_intent)
+
+        active_recipes = retrieval_recipes_store.get_active_recipes(workspace_id)
+        recipe_plan = apply_retrieval_recipe(request.query, active_recipes, request.k)
+        rewritten_query = recipe_plan["query"]
+        effective_k = recipe_plan["top_k"]
+        recipe_filters = recipe_plan.get("filters", {}) if isinstance(recipe_plan.get("filters", {}), dict) else {}
+
+        merged_filters = dict(request.filters or {})
+        merged_filters.update(recipe_filters)
+
         rag_filters = build_rag_retrieval_filters(
             request.filters,
             workspace_id,
@@ -5614,14 +5891,14 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
         service = get_rag_service()
         logger.info(
             "RAG query with k=%s: %s",
-            request.k,
-            _redacted_log_preview(request.query, limit=100),
+            effective_k,
+            _redacted_log_preview(rewritten_query, limit=100),
         )
         
         retrieval_start = time.time()
         results = service.search_documents(
-            query=request.query,
-            limit=request.k,
+            query=rewritten_query,
+            limit=effective_k,
             filters=rag_filters,
             workspace_id=workspace_id,
         )
@@ -5635,8 +5912,8 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
         if should_enrich_with_graph:
             try:
                 enriched_results = service.search_with_graph_enrichment(
-                    query=request.query,
-                    limit=request.k,
+                    query=rewritten_query,
+                    limit=effective_k,
                     filters=rag_filters,
                     graph_depth=1,
                     graph_limit=request.graph_limit,
@@ -5654,6 +5931,8 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
         results, context_sanitization = sanitize_retrieved_context_chunks(results)
         source_citations = extract_rag_sources(results)
         missing_context_guidance_required = rag_context_is_insufficient(results, source_citations)
+        ess_score = compute_evidence_sufficiency(results, len(source_citations))
+        metrics.record_ess(ess_score)
         graph_context_sanitization = {
             "injection_detected": False,
             "dropped_injection_lines": 0,
@@ -5698,7 +5977,14 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
                 "graph_context_sanitization": graph_context_sanitization,
                 "sources": source_citations,
                 "source_count": len(source_citations),
+                "recipe_applied": recipe_plan.get("recipe_applied", False),
+                "rewritten_query": rewritten_query,
+                "citation_contract": "path@commit",
                 "missing_context_guidance_required": missing_context_guidance_required,
+                "grounding_intent": grounding_intent,
+                "ess": ess_score,
+                "ess_threshold_low": ESS_THRESHOLD_LOW,
+                "ess_threshold_high": ESS_THRESHOLD_HIGH,
             }
         else:
             context_text = _format_untrusted_context_chunks(results)
@@ -5716,8 +6002,89 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
                 "graph_context_sanitization": graph_context_sanitization,
                 "sources": source_citations,
                 "source_count": len(source_citations),
+                "recipe_applied": recipe_plan.get("recipe_applied", False),
+                "rewritten_query": rewritten_query,
+                "citation_contract": "path@commit",
                 "missing_context_guidance_required": missing_context_guidance_required,
+                "grounding_intent": grounding_intent,
+                "ess": ess_score,
+                "ess_threshold_low": ESS_THRESHOLD_LOW,
+                "ess_threshold_high": ESS_THRESHOLD_HIGH,
             }
+        if should_return_missing_context(grounding_intent, ess_score, ESS_THRESHOLD_HIGH):
+            missing_context_payload = build_missing_context_payload(request.query, ess_score, ESS_THRESHOLD_HIGH)
+            teacher_request, blocked = teacher_broker.build_request(
+                question=request.query,
+                metadata={"workspace_id": workspace_id, "grounding_intent": grounding_intent, "ess": ess_score},
+                redacted_summaries=[str(r.get("text", "")) for r in results],
+            )
+            if blocked:
+                metrics.record_teacher_blocked_redaction()
+            teacher_guidance = {}
+            try:
+                metrics.record_teacher_call()
+                teacher_raw = await teacher_broker.call(teacher_request)
+                teacher_validated = validate_teacher_output(teacher_raw)
+                if teacher_validated is not None:
+                    teacher_guidance = teacher_validated.model_dump()
+                else:
+                    teacher_guidance = {"invalid_teacher_output": True}
+            except Exception:
+                teacher_guidance = {"timeout_or_error": True}
+            missing_context_payload["teacher_guidance"] = teacher_guidance
+            record_learning_event(workspace_id=workspace_id, event={"trigger": "missing_context", "teacher_used": True, "outcome": "teacher_guidance_attached"})
+
+            candidate_queries = teacher_guidance.get("candidate_queries", []) if isinstance(teacher_guidance, dict) else []
+            if isinstance(candidate_queries, list) and candidate_queries:
+                recovered_results, recovered_ess, attempts_used = run_recovery_attempts(
+                    service=service,
+                    candidate_queries=[str(q) for q in candidate_queries],
+                    workspace_id=workspace_id,
+                    rag_filters=rag_filters,
+                    initial_results=results,
+                    initial_sources=source_citations,
+                    max_attempts=RECOVERY_MAX_ATTEMPTS,
+                    top_k=request.k,
+                )
+                if attempts_used > 0:
+                    metrics.record_recovery_attempt(success=recovered_ess >= ESS_THRESHOLD_HIGH)
+                    retrieval_stats["recovery_attempts_used"] = attempts_used
+                    retrieval_stats["recovered_ess"] = recovered_ess
+                if recovered_ess >= ESS_THRESHOLD_HIGH and recovered_results:
+                    # recovery succeeded in same request, continue with recovered context
+                    results = recovered_results
+                    source_citations = extract_rag_sources(results)
+                    missing_context_guidance_required = False
+                    ess_score = recovered_ess
+                    retrieval_stats["recovery_succeeded"] = True
+                    retrieval_stats["response_mode"] = "grounded_after_recovery"
+                else:
+                    retrieval_stats["recovery_succeeded"] = False
+
+            if retrieval_stats.get("response_mode") == "grounded_after_recovery":
+                pass
+            else:
+                retrieval_stats["response_mode"] = "missing_context"
+            retrieval_stats["missing_context"] = missing_context_payload
+            record_learning_event(workspace_id=workspace_id, event={"trigger": "support_check", "teacher_used": False, "outcome": "downgraded_missing_context"})
+            if retrieval_stats.get("response_mode") != "grounded_after_recovery":
+                metrics.record_missing_context_response()
+                return RAGQueryResponse(
+                id=f"rag-{uuid.uuid4().hex[:24]}",
+                created=int(time.time()),
+                query=request.query,
+                context=[
+                    {"text": r["text"], "score": round(r["score"], 4), "metadata": r.get("metadata"), "id": r.get("id")}
+                    for r in results
+                ] if request.include_context and results else None,
+                sources=source_citations if source_citations else None,
+                graph_context=graph_context if request.include_context else None,
+                graph_context_formatted=graph_context_formatted if request.include_context else None,
+                response=json.dumps(missing_context_payload, ensure_ascii=False),
+                usage=ChatCompletionUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+                retrieval_stats=retrieval_stats,
+            )
+
         messages_list = build_hardened_messages(request.messages or [])
         if context_text or graph_context_formatted:
             graph_context_text = _format_untrusted_context_text_block(
@@ -5788,6 +6155,16 @@ async def rag_query(request: RAGQueryRequest, raw_request: Request):
         generated_text, guardrail_metadata = apply_output_guardrails(generated_text)
         if guardrail_metadata:
             routing_metadata["output_guardrail"] = guardrail_metadata
+        support_check_failed = bool(source_citations) and not answer_supported_by_context(generated_text, results)
+        if support_check_failed:
+            missing_context_guidance_required = True
+            metrics.record_false_citation_event()
+            missing_context_payload = build_missing_context_payload(request.query, ess_score, ESS_THRESHOLD_HIGH)
+            generated_text = json.dumps(missing_context_payload, ensure_ascii=False)
+            retrieval_stats["response_mode"] = "missing_context"
+            retrieval_stats["support_check_failed"] = True
+            retrieval_stats["missing_context"] = missing_context_payload
+            record_learning_event(workspace_id=workspace_id, event={"trigger": "support_check", "teacher_used": False, "outcome": "downgraded_missing_context"})
         generated_text = append_rag_citations_and_guidance(
             generated_text,
             rag_sources=source_citations,
@@ -6041,6 +6418,7 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
             workspace_id,
             context="/v1/rag/query/graph-enriched",
         )
+        emit_workspace_audit_trace(endpoint="/v1/rag/query/graph-enriched", workspace_id=workspace_id, event="request_start")
         rag_filters = build_rag_retrieval_filters(
             request.filters,
             workspace_id,
@@ -6072,8 +6450,8 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
         
         retrieval_start = time.time()
         enriched_results = service.search_with_graph_enrichment(
-            query=request.query,
-            limit=request.k,
+            query=rewritten_query,
+            limit=effective_k,
             filters=rag_filters,
             graph_depth=request.graph_depth,
             graph_limit=request.graph_limit,
@@ -6086,6 +6464,8 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
         vector_results, context_sanitization = sanitize_retrieved_context_chunks(vector_results)
         source_citations = extract_rag_sources(vector_results)
         missing_context_guidance_required = rag_context_is_insufficient(vector_results, source_citations)
+        ess_score = compute_evidence_sufficiency(vector_results, len(source_citations))
+        metrics.record_ess(ess_score)
         
         logger.info(
             f"Retrieved {len(vector_results)} vector chunks and "
@@ -6107,7 +6487,13 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
                 "context_sanitization": context_sanitization,
                 "sources": source_citations,
                 "source_count": len(source_citations),
+                "recipe_applied": recipe_plan.get("recipe_applied", False),
+                "rewritten_query": rewritten_query,
                 "missing_context_guidance_required": missing_context_guidance_required,
+                "grounding_intent": grounding_intent,
+                "ess": ess_score,
+                "ess_threshold_low": ESS_THRESHOLD_LOW,
+                "ess_threshold_high": ESS_THRESHOLD_HIGH,
             }
         else:
             context_text = _format_untrusted_context_chunks(vector_results)
@@ -6125,9 +6511,55 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
                 "context_sanitization": context_sanitization,
                 "sources": source_citations,
                 "source_count": len(source_citations),
+                "recipe_applied": recipe_plan.get("recipe_applied", False),
+                "rewritten_query": rewritten_query,
                 "missing_context_guidance_required": missing_context_guidance_required,
+                "grounding_intent": grounding_intent,
+                "ess": ess_score,
+                "ess_threshold_low": ESS_THRESHOLD_LOW,
+                "ess_threshold_high": ESS_THRESHOLD_HIGH,
             }
         
+        if should_return_missing_context(grounding_intent, ess_score, ESS_THRESHOLD_HIGH):
+            missing_context_payload = build_missing_context_payload(request.query, ess_score, ESS_THRESHOLD_HIGH)
+            teacher_request, blocked = teacher_broker.build_request(
+                question=request.query,
+                metadata={"workspace_id": workspace_id, "grounding_intent": grounding_intent, "ess": ess_score},
+                redacted_summaries=[str(r.get("text", "")) for r in vector_results],
+            )
+            if blocked:
+                metrics.record_teacher_blocked_redaction()
+            teacher_guidance = {}
+            try:
+                metrics.record_teacher_call()
+                teacher_raw = await teacher_broker.call(teacher_request)
+                teacher_validated = validate_teacher_output(teacher_raw)
+                if teacher_validated is not None:
+                    teacher_guidance = teacher_validated.model_dump()
+                else:
+                    teacher_guidance = {"invalid_teacher_output": True}
+            except Exception:
+                teacher_guidance = {"timeout_or_error": True}
+            missing_context_payload["teacher_guidance"] = teacher_guidance
+            record_learning_event(workspace_id=workspace_id, event={"trigger": "graph_missing_context", "teacher_used": True, "outcome": "teacher_guidance_attached"})
+            retrieval_stats["response_mode"] = "missing_context"
+            retrieval_stats["missing_context"] = missing_context_payload
+            metrics.record_missing_context_response()
+            return RAGGraphQueryResponse(
+                id=f"rag-graph-{uuid.uuid4().hex[:24]}",
+                created=int(time.time()),
+                query=request.query,
+                context=[
+                    {"text": r["text"], "score": round(r["score"], 4), "metadata": r.get("metadata"), "id": r.get("id")}
+                    for r in vector_results
+                ] if request.include_context and vector_results else None,
+                graph_context=graph_context if request.include_context else None,
+                graph_context_formatted=None,
+                response=json.dumps(missing_context_payload, ensure_ascii=False),
+                usage=ChatCompletionUsage(prompt_tokens=0, completion_tokens=0, total_tokens=0),
+                retrieval_stats=retrieval_stats,
+            )
+
         messages_list = build_hardened_messages(request.messages or [])
         
         graph_context_formatted = ""
@@ -6199,6 +6631,15 @@ async def rag_graph_query(request: RAGGraphQueryRequest, raw_request: Request):
         generated_text, guardrail_metadata = apply_output_guardrails(generated_text)
         if guardrail_metadata:
             routing_metadata["output_guardrail"] = guardrail_metadata
+        support_check_failed = bool(source_citations) and not answer_supported_by_context(generated_text, vector_results)
+        if support_check_failed:
+            missing_context_guidance_required = True
+            metrics.record_false_citation_event()
+            missing_context_payload = build_missing_context_payload(request.query, ess_score, ESS_THRESHOLD_HIGH)
+            generated_text = json.dumps(missing_context_payload, ensure_ascii=False)
+            retrieval_stats["response_mode"] = "missing_context"
+            retrieval_stats["support_check_failed"] = True
+            retrieval_stats["missing_context"] = missing_context_payload
         generated_text = append_rag_citations_and_guidance(
             generated_text,
             rag_sources=source_citations,
@@ -7081,3 +7522,15 @@ if __name__ == "__main__":
         access_log=True
     )
 
+
+@app.post("/v1/learning/promote")
+async def promote_learning(workspace_id: str):
+    """Promote workspace learning events into overlay rules and retrieval recipes."""
+    events = learning_events_store.list_workspace(workspace_id)
+    result = promote_learning_events(
+        workspace_id=workspace_id,
+        learning_events=events,
+        overlay_store=overlay_rules_store,
+        recipes_store=retrieval_recipes_store,
+    )
+    return {"workspace_id": workspace_id, **result}

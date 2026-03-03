@@ -33,3 +33,16 @@ def test_unified_chat_endpoint_maps_to_chat_completion_options():
     assert "response = await chat_completions(completion_request, raw_request)" in API_SERVER_SOURCE
     assert "Unified chat intent classification: intent=%s model=%s fallback=%s" in API_SERVER_SOURCE
     assert "return response" in API_SERVER_SOURCE
+
+
+def test_unified_chat_emits_grounding_intent_metadata():
+    """Unified endpoint should classify and attach grounding intent metadata."""
+    assert "grounding_intent = grounding_intent_classifier.classify(latest_user_message).value" in API_SERVER_SOURCE
+    assert "metrics.record_grounding_intent(grounding_intent)" in API_SERVER_SOURCE
+    assert 'routing_metadata["grounding_intent"] = grounding_intent' in API_SERVER_SOURCE
+
+
+def test_rag_query_records_grounding_intent_and_stats():
+    """RAG query should classify intent and expose it in retrieval stats."""
+    assert "grounding_intent = grounding_intent_classifier.classify(request.query).value" in API_SERVER_SOURCE
+    assert '"grounding_intent": grounding_intent' in API_SERVER_SOURCE
