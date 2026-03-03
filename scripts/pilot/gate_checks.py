@@ -1850,6 +1850,266 @@ def _capture_logs(use_docker: bool, container_name: str = "api-server", minutes:
         return None
 
 
+def runtime_smoke_checks(base_url: str, timeout: float = DEFAULT_TIMEOUT) -> int:
+    """
+    Runtime smoke checks against live endpoint (no mocks).
+    
+    Verifies:
+    1. GET /health returns 200 + all deps healthy
+    2. GET /metrics returns Prometheus format with brainego_ prefix
+    3. 2-3 non-destructive API calls return expected status codes:
+       - POST /v1/chat/completions (rate limited or denied)
+       - POST /v1/rag/query (rate limited or denied)
+       - POST /internal/mcp/tools/call (denied without workspace)
+    
+    Exit non-zero if unhealthy/degraded beyond tolerance.
+    
+    Args:
+        base_url: Base URL of the API endpoint (e.g., http://localhost:8000)
+        timeout: HTTP timeout in seconds
+    
+    Returns:
+        0 if all checks pass, 1 otherwise
+    """
+    print("=" * 60)
+    print("RUNTIME SMOKE CHECKS")
+    print("=" * 60)
+    print(f"Base URL: {base_url}")
+    print(f"Timeout:  {timeout}s")
+    print()
+    
+    failures = []
+    base_url = base_url.rstrip("/")
+    
+    # Check 1: GET /health returns 200 + all deps healthy
+    print("[1/5] Checking GET /health...")
+    try:
+        request = urllib.request.Request(url=f"{base_url}/health", method="GET")
+        request.add_header("Accept", "application/json")
+        
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status_code = response.getcode()
+            body = response.read().decode("utf-8", errors="replace")
+            data = _parse_json(body)
+            
+            if status_code != 200:
+                failures.append(f"/health returned {status_code}, expected 200")
+                print(f"  ✗ Status: {status_code} (expected 200)")
+            else:
+                print(f"  ✓ Status: 200")
+            
+            if not isinstance(data, dict):
+                failures.append(f"/health response is not JSON object: {type(data)}")
+                print(f"  ✗ Response is not JSON object")
+            else:
+                status = data.get("status", "")
+                if status not in ("healthy", "ok"):
+                    failures.append(f"/health status is '{status}', expected 'healthy' or 'ok'")
+                    print(f"  ✗ Overall status: {status} (expected healthy/ok)")
+                else:
+                    print(f"  ✓ Overall status: {status}")
+                
+                deps = data.get("dependencies", {}) or data.get("deps", {})
+                if deps:
+                    unhealthy_deps = []
+                    for dep_name, dep_info in deps.items():
+                        if isinstance(dep_info, dict):
+                            dep_status = dep_info.get("status", "unknown")
+                        elif isinstance(dep_info, str):
+                            dep_status = dep_info
+                        else:
+                            dep_status = "unknown"
+                        
+                        if dep_status in ("healthy", "ok", "up"):
+                            print(f"  ✓ {dep_name}: {dep_status}")
+                        else:
+                            unhealthy_deps.append(f"{dep_name}={dep_status}")
+                            print(f"  ✗ {dep_name}: {dep_status}")
+                    
+                    if unhealthy_deps:
+                        failures.append(f"Unhealthy dependencies: {', '.join(unhealthy_deps)}")
+                else:
+                    print(f"  ⚠ No dependencies reported")
+    
+    except urllib.error.HTTPError as exc:
+        failures.append(f"/health returned HTTP error {exc.code}")
+        print(f"  ✗ HTTP error {exc.code}")
+    except urllib.error.URLError as exc:
+        failures.append(f"/health connection error: {exc}")
+        print(f"  ✗ Connection error: {exc}")
+    except Exception as exc:
+        failures.append(f"/health check failed: {exc}")
+        print(f"  ✗ Unexpected error: {exc}")
+    
+    # Check 2: GET /metrics returns Prometheus format with brainego_ prefix
+    print("\n[2/5] Checking GET /metrics...")
+    try:
+        request = urllib.request.Request(url=f"{base_url}/metrics", method="GET")
+        
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            status_code = response.getcode()
+            body = response.read().decode("utf-8", errors="replace")
+            
+            if status_code != 200:
+                failures.append(f"/metrics returned {status_code}, expected 200")
+                print(f"  ✗ Status: {status_code} (expected 200)")
+            else:
+                print(f"  ✓ Status: 200")
+            
+            lines = body.strip().split("\n")
+            has_prometheus_format = False
+            brainego_counters = []
+            
+            for line in lines:
+                line = line.strip()
+                if not line:
+                    continue
+                
+                if line.startswith("#") or ("=" in line or (" " in line and not line.startswith("#"))):
+                    has_prometheus_format = True
+                
+                if line.startswith("brainego_"):
+                    metric_name = line.split("{")[0].split()[0] if "{" in line or " " in line else line.split()[0]
+                    if metric_name and metric_name not in brainego_counters:
+                        brainego_counters.append(metric_name)
+            
+            if not has_prometheus_format:
+                failures.append("/metrics does not appear to be Prometheus text format")
+                print(f"  ✗ Not Prometheus text format")
+            else:
+                print(f"  ✓ Prometheus text format detected")
+            
+            if not brainego_counters:
+                failures.append("/metrics has no brainego_ prefixed metrics")
+                print(f"  ✗ No brainego_ prefixed metrics found")
+            else:
+                print(f"  ✓ Found {len(brainego_counters)} brainego_ metric(s)")
+                for counter in brainego_counters[:3]:
+                    print(f"    - {counter}")
+                if len(brainego_counters) > 3:
+                    print(f"    ... and {len(brainego_counters) - 3} more")
+    
+    except urllib.error.HTTPError as exc:
+        failures.append(f"/metrics returned HTTP error {exc.code}")
+        print(f"  ✗ HTTP error {exc.code}")
+    except urllib.error.URLError as exc:
+        failures.append(f"/metrics connection error: {exc}")
+        print(f"  ✗ Connection error: {exc}")
+    except Exception as exc:
+        failures.append(f"/metrics check failed: {exc}")
+        print(f"  ✗ Unexpected error: {exc}")
+    
+    # Check 3: POST /v1/chat/completions (expect 400/403/422/429, not 500)
+    print("\n[3/5] Checking POST /v1/chat/completions...")
+    try:
+        status, body = http_request(
+            "POST",
+            f"{base_url}/v1/chat/completions",
+            payload={
+                "model": "llama-3.3-8b-instruct",
+                "messages": [{"role": "user", "content": "test"}],
+            },
+            timeout=timeout,
+        )
+        
+        if status == 200:
+            print(f"  ✓ Status: 200 (success)")
+        elif status in (400, 403, 422, 429):
+            print(f"  ✓ Status: {status} (expected client error)")
+        elif status == 0:
+            failures.append("/v1/chat/completions connection error")
+            print(f"  ✗ Connection error")
+        elif status >= 500:
+            failures.append(f"/v1/chat/completions returned {status} (server error)")
+            print(f"  ✗ Status: {status} (server error, not expected)")
+        else:
+            print(f"  ⚠ Status: {status} (unusual)")
+    
+    except Exception as exc:
+        failures.append(f"/v1/chat/completions check failed: {exc}")
+        print(f"  ✗ Unexpected error: {exc}")
+    
+    # Check 4: POST /v1/rag/query (expect 400/403/422/429, not 500)
+    print("\n[4/5] Checking POST /v1/rag/query...")
+    try:
+        status, body = http_request(
+            "POST",
+            f"{base_url}/v1/rag/query",
+            payload={
+                "query": "test query",
+                "workspace_id": "smoke-test",
+            },
+            timeout=timeout,
+        )
+        
+        if status == 200:
+            print(f"  ✓ Status: 200 (success)")
+        elif status in (400, 403, 404, 422, 429):
+            print(f"  ✓ Status: {status} (expected client error)")
+        elif status == 0:
+            failures.append("/v1/rag/query connection error")
+            print(f"  ✗ Connection error")
+        elif status >= 500:
+            failures.append(f"/v1/rag/query returned {status} (server error)")
+            print(f"  ✗ Status: {status} (server error, not expected)")
+        else:
+            print(f"  ⚠ Status: {status} (unusual)")
+    
+    except Exception as exc:
+        failures.append(f"/v1/rag/query check failed: {exc}")
+        print(f"  ✗ Unexpected error: {exc}")
+    
+    # Check 5: POST /internal/mcp/tools/call without workspace (expect 400/403/422)
+    print("\n[5/5] Checking POST /internal/mcp/tools/call (tool deny)...")
+    try:
+        status, body = http_request(
+            "POST",
+            f"{base_url}/internal/mcp/tools/call",
+            payload={
+                "server_id": "mcp-filesystem",
+                "tool_name": "read_file",
+                "arguments": {"path": "/etc/passwd"},
+            },
+            timeout=timeout,
+        )
+        
+        if status in (400, 403, 422):
+            print(f"  ✓ Status: {status} (correctly denied)")
+        elif status == 200:
+            failures.append("/internal/mcp/tools/call returned 200 without workspace (should be denied)")
+            print(f"  ✗ Status: 200 (should be denied without workspace)")
+        elif status == 0:
+            failures.append("/internal/mcp/tools/call connection error")
+            print(f"  ✗ Connection error")
+        elif status >= 500:
+            failures.append(f"/internal/mcp/tools/call returned {status} (server error)")
+            print(f"  ✗ Status: {status} (server error, not expected)")
+        else:
+            print(f"  ⚠ Status: {status} (unusual)")
+    
+    except Exception as exc:
+        failures.append(f"/internal/mcp/tools/call check failed: {exc}")
+        print(f"  ✗ Unexpected error: {exc}")
+    
+    # Summary
+    print("\n" + "=" * 60)
+    print("RUNTIME SMOKE CHECKS SUMMARY")
+    print("=" * 60)
+    
+    if failures:
+        print(f"✗ {len(failures)} check(s) failed:")
+        for failure in failures:
+            print(f"  - {failure}")
+        print()
+        print("Status: FAILED")
+        return 1
+    else:
+        print("✓ All runtime smoke checks passed")
+        print()
+        print("Status: PASSED")
+        return 0
+
+
 def main() -> int:
     """Run all pilot gate checks."""
     parser = argparse.ArgumentParser(
@@ -1926,8 +2186,18 @@ def main() -> int:
         action="store_true",
         help="Run smoke test for log scrubbing with marker secrets",
     )
+    parser.add_argument(
+        "--runtime-smoke",
+        type=str,
+        metavar="BASE_URL",
+        help="Run runtime smoke checks against live endpoint (no mocks). Example: --runtime-smoke http://localhost:8000",
+    )
     
     args = parser.parse_args()
+    
+    # Handle --runtime-smoke mode (highest priority)
+    if args.runtime_smoke:
+        return runtime_smoke_checks(base_url=args.runtime_smoke, timeout=args.timeout)
     
     # Handle individual smoke test modes (backward compatibility)
     if args.smoke_log_scrubbing and not args.smoke_staging and not args.smoke_only:
