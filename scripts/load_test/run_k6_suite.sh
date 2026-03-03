@@ -19,6 +19,8 @@ STAGING_BASE_URL="${STAGING_BASE_URL:-https://api-staging.brainego.io}"
 STAGING_GATEWAY_URL="${STAGING_GATEWAY_URL:-https://gateway-staging.brainego.io}"
 STAGING_MCP_URL="${STAGING_MCP_URL:-https://mcp-staging.brainego.io}"
 PROMETHEUS_PUSHGATEWAY="${PROMETHEUS_PUSHGATEWAY:-http://pushgateway.brainego.io:9091}"
+K6_ABORT_ON_HEALTHCHECK_FAILURE="${K6_ABORT_ON_HEALTHCHECK_FAILURE:-true}"
+K6_FORCE_RUN="${K6_FORCE_RUN:-false}"
 
 # SLO thresholds (aligned with slo_definitions.yaml)
 MAX_ERROR_RATE=0.005  # 0.5%
@@ -49,6 +51,25 @@ warn() {
 
 info() {
     echo -e "${BLUE}[$(date +'%Y-%m-%d %H:%M:%S')] INFO:${NC} $1"
+}
+
+extract_host() {
+    local url=$1
+    local without_scheme="${url#*://}"
+    echo "${without_scheme%%/*}" | cut -d: -f1
+}
+
+dns_resolves() {
+    local host=$1
+    if command -v getent &>/dev/null; then
+        getent hosts "$host" >/dev/null 2>&1
+        return $?
+    fi
+    if command -v nslookup &>/dev/null; then
+        nslookup "$host" >/dev/null 2>&1
+        return $?
+    fi
+    return 0
 }
 
 # Create results directory
@@ -117,7 +138,30 @@ check_endpoint "$STAGING_BASE_URL" "API Server"
 check_endpoint "$STAGING_GATEWAY_URL" "Gateway"
 check_endpoint "$STAGING_MCP_URL" "MCP Server"
 
+# DNS preflight (fail-fast to avoid long k6 loops on NXDOMAIN)
+dns_failed=0
+for endpoint in "$STAGING_BASE_URL" "$STAGING_GATEWAY_URL" "$STAGING_MCP_URL"; do
+    host=$(extract_host "$endpoint")
+    if dns_resolves "$host"; then
+        info "DNS resolved: $host"
+    else
+        warn "DNS lookup failed for host: $host"
+        dns_failed=1
+    fi
+done
+
+if [ $dns_failed -eq 1 ] && [ "$K6_FORCE_RUN" != "true" ]; then
+    error "❌ DNS preflight failed (no such host). Aborting load test early."
+    error "   Set K6_FORCE_RUN=true to override."
+    exit 2
+fi
+
 if [ $health_check_failed -eq 1 ]; then
+    if [ "$K6_ABORT_ON_HEALTHCHECK_FAILURE" = "true" ] && [ "$K6_FORCE_RUN" != "true" ]; then
+        error "❌ Health checks failed and fail-fast is enabled. Aborting load test early."
+        error "   Set K6_ABORT_ON_HEALTHCHECK_FAILURE=false or K6_FORCE_RUN=true to override."
+        exit 3
+    fi
     warn "⚠️  Some health checks failed, but proceeding with tests..."
     warn "    Tests may fail if services are not accessible."
     log ""
