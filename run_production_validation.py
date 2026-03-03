@@ -180,12 +180,16 @@ class ProductionValidator:
             logger.info('Running Chaos Engineering Tests')
         logger.info('=' * 60)
 
-        # Run Python script directly with flags
-        cmd = ['python', 'chaos_engineering.py']
-        if chaos_suite:
-            cmd.extend(['--chaos-suite', chaos_suite])
-        elif advanced:
-            cmd.append('--advanced')
+        # Run validation script if chaos_suite is 'basic', otherwise use chaos_engineering.py
+        if chaos_suite == 'basic':
+            cmd = ['python', 'scripts/validation/run_production_validation.py', '--chaos-suite', 'basic']
+        else:
+            # Run Python script directly with flags
+            cmd = ['python', 'chaos_engineering.py']
+            if chaos_suite:
+                cmd.extend(['--chaos-suite', chaos_suite])
+            elif advanced:
+                cmd.append('--advanced')
         
         result = self.run_command(cmd, timeout=2400)
 
@@ -205,20 +209,37 @@ class ProductionValidator:
                     chaos_results = json.load(f)
                 self.results['tests']['chaos_engineering']['report'] = chaos_results
                 
-                # Log overall resilience score
-                resilience_score = chaos_results.get('overall_resilience_score', 0)
-                if resilience_score >= 90:
-                    logger.info(f'✓ Excellent resilience score: {resilience_score}%')
+                # Check if this is ultra-basic suite (different report format)
+                if chaos_results.get('suite') == 'ultra-basic':
+                    # Ultra-basic suite format
+                    summary = chaos_results.get('summary', {})
+                    total_tests = summary.get('total_tests', 0)
+                    passed_tests = summary.get('passed_tests', 0)
+                    
+                    logger.info(f'Ultra-basic chaos suite: {passed_tests}/{total_tests} tests passed')
+                    
+                    # Log MTTR report
+                    mttr_report = chaos_results.get('mttr_report', {})
+                    if mttr_report:
+                        logger.info('MTTR Report:')
+                        for service, data in mttr_report.items():
+                            avg_mttr = data.get('average_mttr', 0)
+                            logger.info(f'  - {service}: {avg_mttr:.2f}s average MTTR')
                 else:
-                    logger.warning(f'⚠ Resilience score needs improvement: {resilience_score}%')
-                
-                # Log per-service resilience scores
-                service_scores = chaos_results.get('service_resilience_scores', {})
-                if service_scores:
-                    logger.info('Per-Service Resilience Scores:')
-                    for service, score in service_scores.items():
-                        status = '✓' if score >= 90 else '⚠' if score >= 75 else '✗'
-                        logger.info(f'  {status} {service}: {score}%')
+                    # Standard advanced suite format
+                    resilience_score = chaos_results.get('overall_resilience_score', 0)
+                    if resilience_score >= 90:
+                        logger.info(f'✓ Excellent resilience score: {resilience_score}%')
+                    else:
+                        logger.warning(f'⚠ Resilience score needs improvement: {resilience_score}%')
+                    
+                    # Log per-service resilience scores
+                    service_scores = chaos_results.get('service_resilience_scores', {})
+                    if service_scores:
+                        logger.info('Per-Service Resilience Scores:')
+                        for service, score in service_scores.items():
+                            status = '✓' if score >= 90 else '⚠' if score >= 75 else '✗'
+                            logger.info(f'  {status} {service}: {score}%')
                         
             except Exception as e:
                 logger.warning(f'Could not read chaos report: {e}')

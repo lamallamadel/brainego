@@ -33,6 +33,24 @@ Complete list of files created for production validation implementation.
   - Automated recovery verification
   - JSON report generation
 
+- **scripts/validation/run_production_validation.py**
+  - Ultra-basic chaos suite for production validation
+  - Container kill + auto-restart verification (api-server, kong)
+  - MTTR (Mean Time To Recovery) measurement per service
+  - Alert triggering verification via AlertManager API
+  - CPU stress testing on learning-engine (stress-ng --cpu 4 --timeout 60s)
+  - Graceful degradation verification
+  - Post-chaos database integrity check (schema_migrations table)
+  - Per-service MTTR report generation
+  - Excludes: DB failover, network partitions, advanced memory pressure
+  - JSON report generation with ultra-basic suite format
+
+- **scripts/validation/README.md**
+  - Documentation for ultra-basic chaos suite
+  - Usage instructions and examples
+  - Report format documentation
+  - Integration guide
+
 ## Security Audit
 
 - **security_audit.py**
@@ -161,12 +179,20 @@ The following files are generated when running validation:
 .
 ├── k6_load_test.js                           # k6 load testing
 ├── locust_load_test.py                       # Locust load testing
-├── chaos_engineering.py                      # Chaos engineering
+├── chaos_engineering.py                      # Chaos engineering (advanced)
 ├── security_audit.py                         # Security audit
 ├── test_backup_restore.py                    # Backup/restore testing
 ├── run_production_validation.py              # Validation orchestrator
 ├── slo_definitions.yaml                      # SLO configuration
 ├── requirements-production-validation.txt    # Dependencies
+├── scripts/
+│   └── validation/
+│       ├── __init__.py                       # Package init
+│       ├── run_production_validation.py      # Ultra-basic chaos suite
+│       └── README.md                         # Chaos suite docs
+├── tests/
+│   └── unit/
+│       └── test_ultra_basic_chaos_suite.py   # Chaos suite tests
 ├── PRODUCTION_VALIDATION.md                  # Full guide
 ├── PRODUCTION_VALIDATION_QUICKSTART.md       # Quick start
 └── PRODUCTION_VALIDATION_FILES_CREATED.md    # This file
@@ -240,8 +266,14 @@ python run_production_validation.py --full
 locust -f locust_load_test.py --headless --users=50 --run-time=10m
 k6 run k6_load_test.js
 
-# Chaos engineering
-python chaos_engineering.py
+# Chaos engineering - Ultra-basic suite
+python run_production_validation.py --chaos-suite basic
+
+# Chaos engineering - Advanced suite
+python chaos_engineering.py --chaos-suite advanced
+
+# Chaos engineering - Direct execution of ultra-basic suite
+python scripts/validation/run_production_validation.py --chaos-suite basic
 
 # Security audit
 python security_audit.py
