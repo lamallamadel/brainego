@@ -2,12 +2,12 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# Copy wheelhouse (offline dependencies)
+COPY vendor/wheels/ /tmp/wheels/
 
-# Download SpaCy model for NER
-RUN python -m spacy download en_core_web_sm
+# Install dependencies from offline wheelhouse
+COPY requirements.txt .
+RUN pip install --no-index --find-links=/tmp/wheels/ -r requirements.txt
 
 # Copy application code
 COPY api_server.py .
