@@ -1,0 +1,28 @@
+ARG PYTHON_VERSION=3.11
+FROM python:${PYTHON_VERSION}-slim
+
+WORKDIR /app
+
+# Copy wheelhouse (offline dependencies)
+COPY vendor/wheels/ /tmp/wheels/
+
+# Install dependencies from offline wheelhouse
+COPY requirements-test.txt .
+COPY vendor/wheels/ /tmp/wheels/
+
+# RUN pip install --no-index --find-links=/tmp/wheels/ -r requirements-test.txt
+RUN pip install  -r requirements-test.txt
+
+# Copy application code
+COPY api_server.py .
+COPY agent_router.py .
+COPY rag_service.py .
+COPY memory_service.py .
+COPY graph_service.py .
+COPY embedding_service.py .
+
+# Expose port
+EXPOSE 8000
+
+# Run the application
+CMD ["python", "api_server.py"]
